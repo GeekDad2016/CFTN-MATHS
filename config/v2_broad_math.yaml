@@ -1,0 +1,205 @@
+project:
+  name: cftn_text_v2_broad_math_400k
+  seed: 719
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k}
+  data_root: ${CFTN_DATA_ROOT:-data/manifests/v2_broad_math_400k}
+
+data:
+  format: cftn_text_broad_math_v2
+  calibration_examples: 2000
+  train_examples: 400000
+  validation_examples: 12000
+  test_examples: 12000
+  heldout_language_examples: 10000
+  extrapolation_examples: 12000
+  compositional_examples: 10000
+  max_math_length: 1152
+  max_gpt_length: 768
+  bridge_train_split: train
+  bridge_validation_split: validation
+  bridge_train_examples: 50000
+  bridge_validation_examples: 5000
+  training_sources:
+    local: 100000
+    deepmind: 292527
+    gsm8k: 7473
+  split_sources:
+    calibration:
+      local: 2000
+    validation:
+      local: 5000
+      deepmind_interpolate: 7000
+    test:
+      local: 4000
+      deepmind_interpolate: 8000
+    heldout_language:
+      local: 10000
+    extrapolation:
+      local: 4000
+      deepmind_extrapolate: 8000
+    compositional:
+      local: 10000
+  gsm8k_test_examples: 1319
+  gsm_symbolic_examples_per_variant: 5000
+  deepmind_modules:
+    train:
+      - algebra__linear_1d
+      - algebra__linear_1d_composed
+      - algebra__linear_2d
+      - algebra__linear_2d_composed
+      - arithmetic__add_sub_multiple
+      - arithmetic__div
+      - arithmetic__mixed
+      - arithmetic__mul_div_multiple
+      - polynomials__collect
+      - polynomials__evaluate
+      - polynomials__expand
+      - polynomials__simplify_power
+    interpolate:
+      - algebra__linear_1d
+      - algebra__linear_1d_composed
+      - algebra__linear_2d
+      - algebra__linear_2d_composed
+      - arithmetic__add_sub_multiple
+      - arithmetic__div
+      - arithmetic__mixed
+      - arithmetic__mul_div_multiple
+      - polynomials__collect
+      - polynomials__evaluate
+      - polynomials__expand
+      - polynomials__simplify_power
+    extrapolate:
+      - arithmetic__add_or_sub_big
+      - arithmetic__add_sub_multiple_longer
+      - arithmetic__div_big
+      - arithmetic__mixed_longer
+      - arithmetic__mul_big
+      - arithmetic__mul_div_multiple_longer
+  curriculum:
+    enabled: true
+    examples_per_epoch: 400000
+    phases:
+      - name: foundations
+        through_epoch: 2
+        max_difficulty: 1
+      - name: rational_and_nested
+        through_epoch: 6
+        max_difficulty: 2
+      - name: systems_and_language
+        through_epoch: 12
+        max_difficulty: 3
+
+gpt:
+  model_name: gpt2
+  local_files_only: false
+  receiver_layers: [7, 9, 11]
+
+math_tower:
+  layers: 8
+  hidden_size: 384
+  attention_heads: 6
+  feed_forward_size: 1536
+  dropout: 0.1
+  max_sequence_length: 1152
+  receiver_layers: [2, 5]
+  answer_min: -4096
+  answer_max: 4096
+
+bridge:
+  message_tokens: 8
+  message_width: 256
+  attention_heads: 8
+  dropout: 0.1
+  gate_hidden_size: 256
+  gate_init: -2.0
+  zero_init_output: true
+
+math_training:
+  batch_size: 32
+  eval_batch_size: 64
+  max_epochs: 12
+  minimum_epochs: 8
+  early_stop_patience: 4
+  learning_rate: 0.0003
+  minimum_learning_rate: 0.000015
+  warmup_fraction: 0.03
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  answer_head_weight: 0.10
+  precision: bf16
+  num_workers: 4
+  report_every_steps: 250
+
+bridge_training:
+  batch_size: 12
+  eval_batch_size: 24
+  max_epochs: 12
+  minimum_epochs: 6
+  early_stop_patience: 4
+  learning_rate: 0.0002
+  minimum_learning_rate: 0.00001
+  warmup_fraction: 0.03
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  math_loss_weight: 1.0
+  gpt_loss_weight: 1.0
+  answer_head_weight: 0.10
+  precision: bf16
+  num_workers: 4
+  report_every_steps: 250
+
+evaluation:
+  batch_size: 16
+  maximum_generation_examples: 5000
+  collaboration_maximum_examples: 2000
+  max_math_new_tokens: 160
+  max_gpt_new_tokens: 64
+  bootstrap_samples: 10000
+  specialist_splits:
+    - test
+    - heldout_language
+    - extrapolation
+    - compositional
+    - gsm8k_test
+    - gsm_symbolic
+    - gsm_symbolic_p1
+    - gsm_symbolic_p2
+  collaboration_splits:
+    - test
+    - heldout_language
+    - extrapolation
+    - compositional
+  specialist_gates:
+    test: 0.70
+    heldout_language: 0.60
+    extrapolation: 0.40
+    gsm8k_test: 0.15
+
+monitoring:
+  status_interval_minutes: 30
+  detailed_report_every_epochs: 1
+  keep_latest_checkpoints: 3
+
+gpt_calibration:
+  batch_size: 32
+  candidate_batch_size: 32
+  maximum_examples: 2000
+  max_new_tokens: 32
+  few_shot_examples: 3
+  precision: bf16
+  plausible_candidates: 8
+  minimum_headroom_percentage_points: 10.0
+  maximum_acceptable_gpt_accuracy: 0.90
+
+wandb:
+  project: ${WANDB_PROJECT:-cftn-text-v2}
+  group: ${WANDB_GROUP:-broad-math-400k}
+  mode: online
+  require_api_key_environment: true
+
+scaling:
+  initial_train_examples: 400000
+  maximum_train_examples: 1000000
+  auto_scale: false
+  minimum_recent_validation_gain: 0.002
+  recent_epochs: 3

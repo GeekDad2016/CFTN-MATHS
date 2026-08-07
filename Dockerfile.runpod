@@ -1,0 +1,13 @@
+ARG PYTORCH_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM ${PYTORCH_IMAGE}
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TOKENIZERS_PARALLELISM=false
+
+WORKDIR /workspace/cftn-text
+COPY . /workspace/cftn-text
+RUN python -m pip install --upgrade pip && python -m pip install -e .
+RUN chmod +x /workspace/cftn-text/scripts/runpod_entrypoint.sh
+
+ENTRYPOINT ["/workspace/cftn-text/scripts/runpod_entrypoint.sh"]

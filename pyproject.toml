@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cftn-text"
+version = "0.1.0"
+description = "Corpus-callosum communication between a frozen GPT generalist and a scratch math specialist"
+requires-python = ">=3.11"
+dependencies = [
+  "torch>=2.2",
+  "transformers>=4.45",
+  "PyYAML>=6.0",
+  "wandb>=0.18",
+  "datasets>=3.0,<5",
+  "mathematics_dataset==1.0.1",
+  "numpy>=1.26,<2",
+  "sympy>=1.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cftn_text*", "tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

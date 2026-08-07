@@ -1,0 +1,111 @@
+project:
+  name: cftn_text_v1_linear_equations
+  seed: 719
+  artifact_root: G:/ctfn-text/artifacts/v1_linear_equations
+  data_root: G:/ctfn-text/data/manifests/v1_linear_equations
+
+data:
+  calibration_examples: 5000
+  train_examples: 100000
+  validation_examples: 10000
+  test_examples: 10000
+  heldout_language_examples: 10000
+  extrapolation_examples: 10000
+  compositional_examples: 10000
+  max_math_length: 256
+  max_gpt_length: 256
+  train_a_min: -20
+  train_a_max: 20
+  train_x_min: -50
+  train_x_max: 50
+  train_b_min: -100
+  train_b_max: 100
+  extrapolation_a_abs_min: 21
+  extrapolation_a_abs_max: 50
+  extrapolation_x_abs_min: 51
+  extrapolation_x_abs_max: 200
+  extrapolation_b_abs_min: 101
+  extrapolation_b_abs_max: 500
+  maximum_abs_intermediate: 20000
+
+gpt:
+  model_name: gpt2
+  local_files_only: true
+  receiver_layers: [7, 9, 11]
+
+math_tower:
+  layers: 8
+  hidden_size: 384
+  attention_heads: 6
+  feed_forward_size: 1536
+  dropout: 0.1
+  max_sequence_length: 256
+  receiver_layers: [2, 5]
+  answer_min: -256
+  answer_max: 256
+
+bridge:
+  message_tokens: 8
+  message_width: 256
+  attention_heads: 8
+  dropout: 0.1
+  gate_hidden_size: 256
+  gate_init: -2.0
+  zero_init_output: true
+
+math_training:
+  batch_size: 128
+  eval_batch_size: 256
+  max_epochs: 100
+  minimum_epochs: 10
+  early_stop_patience: 10
+  learning_rate: 0.0003
+  minimum_learning_rate: 0.00001
+  warmup_fraction: 0.03
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  answer_head_weight: 0.25
+  precision: bf16
+  num_workers: 2
+  report_every_steps: 100
+
+bridge_training:
+  batch_size: 24
+  eval_batch_size: 32
+  max_epochs: 100
+  minimum_epochs: 10
+  early_stop_patience: 10
+  learning_rate: 0.0002
+  minimum_learning_rate: 0.00001
+  warmup_fraction: 0.03
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  math_loss_weight: 1.0
+  gpt_loss_weight: 1.0
+  answer_head_weight: 0.25
+  precision: bf16
+  num_workers: 2
+  report_every_steps: 100
+
+evaluation:
+  batch_size: 16
+  maximum_generation_examples: 10000
+  max_math_new_tokens: 128
+  max_gpt_new_tokens: 32
+  bootstrap_samples: 10000
+
+monitoring:
+  status_interval_minutes: 30
+  detailed_report_every_epochs: 10
+  keep_latest_checkpoints: 3
+
+gpt_calibration:
+  batch_size: 64
+  candidate_batch_size: 64
+  maximum_examples: 5000
+  max_new_tokens: 16
+  few_shot_examples: 3
+  precision: bf16
+  plausible_candidates: 8
+  minimum_headroom_percentage_points: 20.0
+  maximum_acceptable_gpt_accuracy: 0.80

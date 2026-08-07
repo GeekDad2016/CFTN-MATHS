@@ -1,0 +1,9 @@
+torch>=2.2
+transformers>=4.45
+PyYAML>=6.0
+pytest>=8.0
+wandb>=0.18
+datasets>=3.0,<5
+mathematics_dataset==1.0.1
+numpy>=1.26,<2
+sympy>=1.12
