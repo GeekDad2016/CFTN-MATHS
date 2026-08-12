@@ -202,8 +202,13 @@ conditional-message utility, shared-view no-harm, and causal collaboration.
 Its curriculum includes variables on both
 sides, nested parentheses, signed fractions, two-variable systems, 2–4-step
 word problems, distractors, held-out paraphrases, and numerical extrapolation.
-DeepMind-generated mathematics and GSM8K-train supply breadth; GSM8K-test and
-GSM-Symbolic remain sealed generalization benchmarks.
+The fixed 400K mix is 150,000 project-generated exact problems, 212,690
+balanced DeepMind problems, all 29,837 MathQA training programs, and all 7,473
+GSM8K training problems. The tower is still trained by autoregressive teacher
+forcing over UTF-8 bytes. This revision preserves raw prompts and
+source-native programs/traces where available; it does not replace learning
+with a symbolic solver. GSM8K-test, MathQA validation/test, and GSM-Symbolic
+remain sealed generalization benchmarks.
 
 The math answer head is disabled and checkpoint selection is based first on
 validation greedy-generation accuracy. GPT-to-math training freezes the

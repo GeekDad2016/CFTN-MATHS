@@ -12,11 +12,11 @@ training_view_policy: mixed_necessity_v2
 
 paths:
   base_config: config/v2_broad_math.yaml
-  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k}
-  math_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k}/math_selected/math.selected.pth
-  source_bridge_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k}/bridge_m2g_contextual/bridge_m2g.best.pth
-  mechanism_prerequisite_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k}/mechanism_prerequisites.json
-  specialist_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k}/evaluation_math_v2/report.json
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}
+  math_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}/math_selected/math.selected.pth
+  source_bridge_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}/bridge_m2g_contextual/bridge_m2g.best.pth
+  mechanism_prerequisite_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}/mechanism_prerequisites.json
+  specialist_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}/evaluation_math_v2/report.json
 
 training:
   base_train_examples: 50000

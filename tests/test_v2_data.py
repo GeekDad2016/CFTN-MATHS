@@ -11,6 +11,7 @@ from cftn_text.v2_data import (
     iter_gsm8k_records,
     iter_gsm_symbolic_records,
     iter_local_records,
+    iter_mathqa_records,
     prepare_v2_manifests,
     validate_v2_record,
 )
@@ -26,6 +27,9 @@ def test_local_v2_generator_covers_every_requested_family_without_overlap():
         assert record["gpt_problem"]
         assert record["math_problem"]
         assert record["target_trace"].endswith(record["target_answer"])
+        assert record["raw_problem"]
+        assert record["native_program"]
+        assert record["execution_trace"]
 
 
 def test_gsm_adapters_keep_training_and_symbolic_evaluation_contracts():
@@ -43,7 +47,36 @@ def test_gsm_adapters_keep_training_and_symbolic_evaluation_contracts():
         )
     )[0]
     assert gsm8k["normalized_answer"] == "12"
+    assert gsm8k["native_program"] == "4*3"
+    assert gsm8k["execution_trace"] == "<work>4*3=12</work>"
+    assert gsm8k["target_trace"] == "<work>4*3=12</work><answer>12</answer>"
     assert gsm8k["metadata"]["official_split"] == "train"
+    mathqa = list(
+        iter_mathqa_records(
+            hf_split="train",
+            output_split="train",
+            count=1,
+            dataset_rows=[
+                {
+                    "Problem": "How many ways are there?",
+                    "Rationale": "Five choices for four questions.",
+                    "options": (
+                        "['a ) 24', 'b ) 120', 'c ) 625', "
+                        "'d ) 720', 'e ) 1024']"
+                    ),
+                    "correct": "c",
+                    "annotated_formula": "power(5, 4)",
+                    "linear_formula": "power(n1,n0)|",
+                    "category": "general",
+                }
+            ],
+        )
+    )[0]
+    assert mathqa["normalized_answer"] == "625"
+    assert mathqa["native_program"] == "power(n1,n0)"
+    assert mathqa["execution_trace"] == "<program>power(n1,n0)</program>"
+    assert mathqa["target_trace"].endswith("<answer>625</answer>")
+    assert mathqa["metadata"]["license"] == "Apache-2.0"
     symbolic = list(
         iter_gsm_symbolic_records(
             variant="gsm_symbolic",
@@ -61,7 +94,7 @@ def test_gsm_adapters_keep_training_and_symbolic_evaluation_contracts():
         )
     )[0]
     assert symbolic["metadata"]["evaluation_only"] is True
-    assert symbolic["metadata"]["license"] == "CC-BY-NC-ND-4.0"
+    assert symbolic["metadata"]["license"] == "Apple-Sample-Code-License"
     assert "do-not-copy" not in str(symbolic)
 
 
@@ -92,3 +125,18 @@ def test_small_local_only_v2_manifest_is_immutable_and_auditable(tmp_path: Path)
     result = audit_v2_manifest(manifest, config["project"]["data_root"])
     assert result["pass"] is True
     assert result["training_overlap"] == 0
+
+
+def test_v2_recommended_400k_mix_and_sealed_mathqa_splits_are_fixed():
+    source = Path(__file__).parents[1] / "config" / "v2_broad_math.yaml"
+    config = load_config(source)
+    assert config["data"]["training_sources"] == {
+        "local": 150000,
+        "deepmind": 212690,
+        "mathqa": 29837,
+        "gsm8k": 7473,
+    }
+    assert sum(config["data"]["training_sources"].values()) == 400000
+    assert config["data"]["mathqa_validation_examples"] == 4475
+    assert config["data"]["mathqa_test_examples"] == 2985
+    assert config["data"]["max_math_length"] == 1536

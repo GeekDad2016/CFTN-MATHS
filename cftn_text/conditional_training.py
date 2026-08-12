@@ -590,7 +590,7 @@ def _chunks(values: list[Any], size: int) -> Iterable[list[Any]]:
 
 
 def _generation_is_correct(text: str, record: dict[str, Any]) -> bool:
-    if record.get("schema_version") == "cftn_math_record_v2":
+    if str(record.get("schema_version", "")).startswith("cftn_math_record_v2"):
         from .v2_metrics import answers_equivalent, extract_v2_answer
 
         return answers_equivalent(

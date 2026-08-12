@@ -7,7 +7,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /workspace/cftn-text
 COPY . /workspace/cftn-text
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
 RUN python -m pip install --upgrade pip && python -m pip install -e .
 RUN chmod +x /workspace/cftn-text/scripts/runpod_entrypoint.sh
+
+EXPOSE 8000
 
 ENTRYPOINT ["/workspace/cftn-text/scripts/runpod_entrypoint.sh"]

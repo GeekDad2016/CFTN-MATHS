@@ -366,6 +366,11 @@ def main() -> None:
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--from-stage")
     parser.add_argument("--through-stage")
+    parser.add_argument(
+        "--control-root",
+        default=os.environ.get("CFTN_CONTROL_ROOT"),
+        help="Optional control directory used for safe pause-at-stage-boundary requests",
+    )
     args = parser.parse_args()
     config_path = str(Path(args.config).resolve())
     config = load_config(config_path)
@@ -417,11 +422,12 @@ def main() -> None:
         "project": config["project"]["name"],
         "state": "running",
         "started_unix": time.time(),
+        "stage_count": len(stages),
         "stages": {},
     }
     atomic_json_dump(state, state_path)
     try:
-        for stage in stages:
+        for stage_index, stage in enumerate(stages, start=1):
             if args.resume and _is_complete(stage, config):
                 state["stages"][stage.name] = {
                     "state": "skipped_completed",
@@ -441,6 +447,8 @@ def main() -> None:
                 "stdout": str(stdout_path.resolve()),
                 "stderr": str(stderr_path.resolve()),
             }
+            state["current_stage"] = stage.name
+            state["current_stage_index"] = stage_index
             atomic_json_dump(state, state_path)
             print(f"Starting V2 stage: {stage.name}", flush=True)
             with stdout_path.open("a", encoding="utf-8") as stdout, stderr_path.open(
@@ -464,8 +472,22 @@ def main() -> None:
                 }
             )
             atomic_json_dump(state, state_path)
+            if args.control_root:
+                pause_path = Path(args.control_root).resolve() / "pause_after_stage.json"
+                if pause_path.is_file():
+                    state["state"] = "paused"
+                    state["paused_after_stage"] = stage.name
+                    state["paused_unix"] = time.time()
+                    state["current_stage"] = None
+                    atomic_json_dump(state, state_path)
+                    print(
+                        f"V2 pipeline paused safely after stage: {stage.name}",
+                        flush=True,
+                    )
+                    return
         state["state"] = "completed"
         state["completed_unix"] = time.time()
+        state["current_stage"] = None
         atomic_json_dump(state, state_path)
     except BaseException as exc:
         state["state"] = "error"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import json
@@ -19,7 +20,7 @@ from .data_generator import file_sha256, sha256_bytes
 
 
 V2_FORMAT = "cftn_text_broad_math_v2"
-V2_RECORD_SCHEMA = "cftn_math_record_v2"
+V2_RECORD_SCHEMA = "cftn_math_record_v2_1"
 LOCAL_FAMILIES = (
     "variables_both_sides",
     "nested_parentheses",
@@ -30,7 +31,13 @@ LOCAL_FAMILIES = (
 )
 DEEPMIND_LICENSE = "Apache-2.0"
 GSM8K_LICENSE = "MIT"
-GSM_SYMBOLIC_LICENSE = "CC-BY-NC-ND-4.0"
+MATHQA_LICENSE = "Apache-2.0"
+MATHQA_DATA_REVISION = "19d7ec749e673c6bf764ae968f78fd082ac8ad3e"
+MATHQA_PARQUET_ROOT = (
+    "https://huggingface.co/datasets/allenai/math_qa/resolve/"
+    f"{MATHQA_DATA_REVISION}/data"
+)
+GSM_SYMBOLIC_LICENSE = "Apple-Sample-Code-License"
 GSM_SYMBOLIC_FILES = {
     "gsm_symbolic": "GSM_symbolic.jsonl",
     "gsm_symbolic_p1": "GSM_p1.jsonl",
@@ -42,6 +49,9 @@ GSM_SYMBOLIC_RAW_ROOT = (
 
 _INTEGER = re.compile(r"^[+-]?\d+$")
 _ANSWER_TAG = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
+_WORK_TAG = re.compile(r"<work>\s*(.*?)\s*</work>", re.IGNORECASE | re.DOTALL)
+_GSM8K_CALCULATION = re.compile(r"<<(.*?)>>", re.DOTALL)
+_MATHQA_OPTION = re.compile(r"(?:^|,\s*)([a-e])\s*\)\s*", re.IGNORECASE)
 _WHITESPACE = re.compile(r"\s+")
 _SLOTS = tuple("PQRSTUVWXYZABCDEFGHIJKLMNO")
 
@@ -95,11 +105,15 @@ def make_v2_record(
     problem: str,
     answer: str,
     target_trace: str | None = None,
+    raw_problem: str | None = None,
+    native_program: str | None = None,
+    execution_trace: str | None = None,
     answer_value: int | None = None,
     gpt_problem: str | None = None,
     math_problem: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    original_problem = str(problem if raw_problem is None else raw_problem).strip()
     problem = normalize_problem(problem)
     normalized_answer = normalize_answer(answer)
     if not problem:
@@ -107,7 +121,17 @@ def make_v2_record(
     if not normalized_answer:
         raise ValueError("V2 answer cannot be empty")
     target_answer = f"<answer>{normalized_answer}</answer>"
-    trace = str(target_trace or target_answer).strip()
+    normalized_execution_trace = (
+        str(execution_trace).strip() if execution_trace is not None else None
+    )
+    trace = str(
+        target_trace
+        or (
+            f"{normalized_execution_trace}{target_answer}"
+            if normalized_execution_trace
+            else target_answer
+        )
+    ).strip()
     if not trace.endswith(target_answer):
         trace = f"{trace}{target_answer}"
     if (gpt_problem is None) != (math_problem is None):
@@ -120,7 +144,12 @@ def make_v2_record(
         "source": str(source),
         "family": str(family),
         "difficulty": int(difficulty),
+        "raw_problem": original_problem,
         "problem": problem,
+        "native_program": (
+            str(native_program).strip() if native_program is not None else None
+        ),
+        "execution_trace": normalized_execution_trace,
         "target_trace": trace,
         "target_answer": target_answer,
         "normalized_answer": normalized_answer,
@@ -147,7 +176,10 @@ def validate_v2_record(record: dict[str, Any]) -> None:
         "source",
         "family",
         "difficulty",
+        "raw_problem",
         "problem",
+        "native_program",
+        "execution_trace",
         "target_trace",
         "target_answer",
         "normalized_answer",
@@ -163,6 +195,8 @@ def validate_v2_record(record: dict[str, Any]) -> None:
         raise ValueError("unsupported V2 record schema")
     if int(record["difficulty"]) not in {1, 2, 3}:
         raise ValueError("V2 difficulty must be 1, 2, or 3")
+    if not isinstance(record["raw_problem"], str) or not record["raw_problem"].strip():
+        raise ValueError("V2 raw_problem must be a non-empty string")
     problem = normalize_problem(record["problem"])
     if record["content_id"] != _signature({"problem": problem.casefold()}):
         raise ValueError("V2 content_id does not match the normalized problem")
@@ -174,6 +208,15 @@ def validate_v2_record(record: dict[str, Any]) -> None:
         raise ValueError("V2 target_answer does not match normalized_answer")
     if not str(record["target_trace"]).endswith(expected_answer):
         raise ValueError("V2 target_trace must end with target_answer")
+    for field in ("native_program", "execution_trace"):
+        value = record[field]
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f"V2 {field} must be a non-empty string or null")
+    execution_trace = record["execution_trace"]
+    if execution_trace is not None and not str(record["target_trace"]).startswith(
+        execution_trace
+    ):
+        raise ValueError("V2 target_trace must begin with execution_trace")
     answer_value = record["answer_value"]
     if answer_value is not None and not isinstance(answer_value, int):
         raise ValueError("V2 answer_value must be an integer or null")
@@ -552,6 +595,11 @@ def iter_local_records(
             problem=problem,
             answer=answer,
             target_trace=trace,
+            raw_problem=problem,
+            native_program=(
+                _WORK_TAG.search(trace).group(1) if _WORK_TAG.search(trace) else None
+            ),
+            execution_trace=trace,
             gpt_problem=gpt_problem,
             math_problem=math_problem,
             metadata={
@@ -710,7 +758,8 @@ def iter_deepmind_records(
                 example = function()
             except (ArithmeticError, ValueError, OverflowError):
                 continue
-            problem = normalize_problem(str(example.question))
+            raw_problem = str(example.question)
+            problem = normalize_problem(raw_problem)
             answer = normalize_answer(str(example.answer))
             signature = _signature(["deepmind", mode, name, problem.casefold()])
             if signature in seen_signatures:
@@ -722,6 +771,7 @@ def iter_deepmind_records(
                 difficulty=difficulty,
                 problem=problem,
                 answer=answer,
+                raw_problem=raw_problem,
                 metadata={
                     "problem_signature": signature,
                     "module": name,
@@ -748,6 +798,21 @@ def _gsm8k_answer(raw_answer: str) -> str:
     return normalize_answer(raw_answer.rsplit("####", 1)[-1])
 
 
+def _gsm8k_program_and_trace(raw_answer: str) -> tuple[str | None, str | None]:
+    calculations = [
+        normalize_problem(item)
+        for item in _GSM8K_CALCULATION.findall(str(raw_answer))
+        if normalize_problem(item)
+    ]
+    if not calculations:
+        return None, None
+    expressions = [
+        item.rsplit("=", 1)[0].strip() if "=" in item else item
+        for item in calculations
+    ]
+    return "; ".join(expressions), f"<work>{'; '.join(calculations)}</work>"
+
+
 def iter_gsm8k_records(
     *,
     hf_split: str,
@@ -769,8 +834,11 @@ def iter_gsm8k_records(
     for index, row in enumerate(dataset_rows):
         if count is not None and produced >= int(count):
             break
-        problem = normalize_problem(row["question"])
-        answer = _gsm8k_answer(str(row["answer"]))
+        raw_problem = str(row["question"])
+        raw_answer = str(row["answer"])
+        problem = normalize_problem(raw_problem)
+        answer = _gsm8k_answer(raw_answer)
+        native_program, execution_trace = _gsm8k_program_and_trace(raw_answer)
         signature = _signature(["gsm8k", hf_split, problem.casefold()])
         if signature in seen_signatures:
             continue
@@ -782,11 +850,19 @@ def iter_gsm8k_records(
             difficulty=3 if step_count >= 4 else 2,
             problem=problem,
             answer=answer,
+            raw_problem=raw_problem,
+            native_program=native_program,
+            execution_trace=execution_trace,
             metadata={
                 "problem_signature": signature,
                 "official_split": hf_split,
                 "official_index": index,
                 "estimated_steps": step_count,
+                "trace_provenance": (
+                    "gsm8k_calculator_annotations"
+                    if execution_trace is not None
+                    else "answer_only"
+                ),
                 "license": GSM8K_LICENSE,
                 "source_url": "https://huggingface.co/datasets/openai/gsm8k",
             },
@@ -800,6 +876,130 @@ def iter_gsm8k_records(
     if count is not None and produced != int(count):
         raise RuntimeError(
             f"requested {count} unique GSM8K {hf_split} rows, found {produced}"
+        )
+
+
+def _mathqa_options(options: str) -> dict[str, str]:
+    text = str(options).strip()
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            serialized = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            serialized = None
+        if isinstance(serialized, (list, tuple)) and all(
+            isinstance(item, str) for item in serialized
+        ):
+            text = ", ".join(serialized)
+    matches = list(_MATHQA_OPTION.finditer(text))
+    parsed: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        value = text[start:end].strip().strip(",").strip()
+        if value:
+            parsed[match.group(1).casefold()] = value
+    return parsed
+
+
+def iter_mathqa_records(
+    *,
+    hf_split: str,
+    output_split: str,
+    count: int | None,
+    seen_content: set[str] | None = None,
+    seen_signatures: set[str] | None = None,
+    dataset_rows: Iterable[dict[str, Any]] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Adapt MathQA while retaining its validated native operation program."""
+
+    seen_content = seen_content if seen_content is not None else set()
+    seen_signatures = seen_signatures if seen_signatures is not None else set()
+    if dataset_rows is None:
+        try:
+            from datasets import load_dataset
+        except ImportError as exc:
+            raise RuntimeError("datasets is required to download MathQA") from exc
+        # MathQA's main branch still contains a legacy dataset script, which
+        # modern `datasets` versions intentionally refuse to execute. Use the
+        # immutable official Parquet conversion directly instead.
+        dataset_rows = load_dataset(
+            "parquet",
+            data_files={
+                hf_split: (
+                    f"{MATHQA_PARQUET_ROOT}/{hf_split}-00000-of-00001.parquet"
+                )
+            },
+            split=hf_split,
+        )
+    produced = 0
+    for index, row in enumerate(dataset_rows):
+        if count is not None and produced >= int(count):
+            break
+        raw_problem = str(row["Problem"])
+        raw_options = str(row["options"])
+        problem = normalize_problem(f"{raw_problem} Answer choices: {raw_options}")
+        correct = str(row["correct"]).strip().casefold()
+        options = _mathqa_options(raw_options)
+        if correct not in options:
+            raise ValueError(
+                f"MathQA {hf_split} row {index} has no option {correct!r}"
+            )
+        answer = normalize_answer(options[correct])
+        annotated_program = normalize_problem(str(row.get("annotated_formula") or ""))
+        linear_program = normalize_problem(str(row.get("linear_formula") or "")).rstrip(
+            "|"
+        )
+        # The linear form is the source-native execution trace: it names each
+        # operation once and references prior results instead of recursively
+        # duplicating the whole expression tree (some nested forms exceed 6K
+        # bytes despite representing only a few dozen operations).
+        native_program = linear_program or annotated_program
+        if not native_program:
+            raise ValueError(f"MathQA {hf_split} row {index} has no operation program")
+        execution_trace = f"<program>{native_program}</program>"
+        signature = _signature(["mathqa", hf_split, problem.casefold()])
+        if signature in seen_signatures:
+            continue
+        operation_count = max(
+            1,
+            (linear_program.count("|") + 1) if linear_program else annotated_program.count("("),
+        )
+        record = make_v2_record(
+            split=output_split,
+            source="mathqa",
+            family=str(row.get("category") or "mathqa_word_problem"),
+            difficulty=1 if operation_count == 1 else (2 if operation_count <= 3 else 3),
+            problem=problem,
+            answer=answer,
+            raw_problem=raw_problem,
+            native_program=native_program,
+            execution_trace=execution_trace,
+            metadata={
+                "problem_signature": signature,
+                "official_split": hf_split,
+                "official_index": index,
+                "correct_option": correct,
+                "options": raw_options,
+                "annotated_formula": annotated_program,
+                "program_representation": (
+                    "mathqa_linear_formula" if linear_program else "mathqa_annotated_formula"
+                ),
+                "operation_count": operation_count,
+                "trace_provenance": "mathqa_official_operation_program",
+                "dataset_revision": MATHQA_DATA_REVISION,
+                "license": MATHQA_LICENSE,
+                "source_url": "https://huggingface.co/datasets/allenai/math_qa",
+            },
+        )
+        if record["content_id"] in seen_content:
+            continue
+        seen_content.add(record["content_id"])
+        seen_signatures.add(signature)
+        produced += 1
+        yield record
+    if count is not None and produced != int(count):
+        raise RuntimeError(
+            f"requested {count} unique MathQA {hf_split} rows, found {produced}"
         )
 
 
@@ -849,8 +1049,11 @@ def iter_gsm_symbolic_records(
     for index, row in enumerate(rows):
         if count is not None and produced >= int(count):
             break
-        problem = normalize_problem(row["question"])
-        answer = _gsm8k_answer(str(row["answer"]))
+        raw_problem = str(row["question"])
+        raw_answer = str(row["answer"])
+        problem = normalize_problem(raw_problem)
+        answer = _gsm8k_answer(raw_answer)
+        native_program, execution_trace = _gsm8k_program_and_trace(raw_answer)
         signature = _signature(["gsm_symbolic", variant, problem.casefold()])
         if signature in seen_signatures:
             continue
@@ -861,6 +1064,9 @@ def iter_gsm_symbolic_records(
             difficulty=3,
             problem=problem,
             answer=answer,
+            raw_problem=raw_problem,
+            native_program=native_program,
+            execution_trace=execution_trace,
             metadata={
                 "problem_signature": signature,
                 "variant": variant,
@@ -893,6 +1099,7 @@ def _atomic_write_records(
     *,
     expected_count: int | None = None,
     progress_callback: Callable[[int], None] | None = None,
+    max_math_length: int | None = None,
 ) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -901,22 +1108,39 @@ def _atomic_write_records(
     source_counts: Counter[str] = Counter()
     family_counts: Counter[str] = Counter()
     difficulty_counts: Counter[str] = Counter()
-    with temporary.open("wb") as handle:
-        for record in records:
-            validate_v2_record(record)
-            payload = (canonical_json(record) + "\n").encode("utf-8")
-            handle.write(payload)
-            digest.update(payload)
-            count += 1
-            source_counts[str(record["source"])] += 1
-            family_counts[str(record["family"])] += 1
-            difficulty_counts[str(record["difficulty"])] += 1
-            if progress_callback is not None and (
-                count == 1 or count % 1000 == 0
-            ):
-                progress_callback(count)
-        handle.flush()
-        os.fsync(handle.fileno())
+    maximum_math_tokens = 0
+    try:
+        with temporary.open("wb") as handle:
+            for record in records:
+                validate_v2_record(record)
+                math_problem = str(record.get("math_problem") or record["problem"])
+                math_tokens = (
+                    len(f"Problem: {math_problem}\nSolution:".encode("utf-8"))
+                    + len(str(record["target_trace"]).encode("utf-8"))
+                    + 3  # BOS, separator, and EOS control tokens.
+                )
+                maximum_math_tokens = max(maximum_math_tokens, math_tokens)
+                if max_math_length is not None and math_tokens > int(max_math_length):
+                    raise RuntimeError(
+                        f"record {record['record_id']} requires {math_tokens} math tokens; "
+                        f"configured maximum is {max_math_length}"
+                    )
+                payload = (canonical_json(record) + "\n").encode("utf-8")
+                handle.write(payload)
+                digest.update(payload)
+                count += 1
+                source_counts[str(record["source"])] += 1
+                family_counts[str(record["family"])] += 1
+                difficulty_counts[str(record["difficulty"])] += 1
+                if progress_callback is not None and (
+                    count == 1 or count % 1000 == 0
+                ):
+                    progress_callback(count)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     if expected_count is not None and count != int(expected_count):
         temporary.unlink(missing_ok=True)
         raise RuntimeError(f"split wrote {count} records; expected {expected_count}")
@@ -928,6 +1152,7 @@ def _atomic_write_records(
         "source_counts": dict(sorted(source_counts.items())),
         "family_counts": dict(sorted(family_counts.items())),
         "difficulty_counts": dict(sorted(difficulty_counts.items())),
+        "maximum_math_sequence_tokens": maximum_math_tokens,
     }
 
 
@@ -984,6 +1209,14 @@ def _chain_sources(
             )
         elif source == "gsm8k":
             yield from iter_gsm8k_records(
+                hf_split="train",
+                output_split=split,
+                count=count,
+                seen_content=seen_content,
+                seen_signatures=seen_signatures,
+            )
+        elif source == "mathqa":
+            yield from iter_mathqa_records(
                 hf_split="train",
                 output_split=split,
                 count=count,
@@ -1079,6 +1312,7 @@ def prepare_v2_manifests(
             ),
             expected_count=expected,
             progress_callback=progress,
+            max_math_length=int(data["max_math_length"]),
         )
 
     if include_external_benchmarks:
@@ -1120,7 +1354,32 @@ def prepare_v2_manifests(
             progress_callback=benchmark_progress(
                 "gsm8k_test", gsm8k_test_count
             ),
+            max_math_length=int(data["max_math_length"]),
         )
+        for mathqa_split, configured_key in (
+            ("validation", "mathqa_validation_examples"),
+            ("test", "mathqa_test_examples"),
+        ):
+            benchmark_name = f"mathqa_{mathqa_split}"
+            benchmark_count = int(
+                data.get(
+                    configured_key,
+                    4475 if mathqa_split == "validation" else 2985,
+                )
+            )
+            split_metadata[benchmark_name] = _atomic_write_records(
+                root / f"{benchmark_name}.jsonl",
+                iter_mathqa_records(
+                    hf_split=mathqa_split,
+                    output_split=benchmark_name,
+                    count=benchmark_count,
+                    seen_content=seen_content,
+                    seen_signatures=seen_signatures,
+                ),
+                expected_count=benchmark_count,
+                progress_callback=benchmark_progress(benchmark_name, benchmark_count),
+                max_math_length=int(data["max_math_length"]),
+            )
         maximum_symbolic = data.get("gsm_symbolic_examples_per_variant")
         for variant in GSM_SYMBOLIC_FILES:
             iterator = iter_gsm_symbolic_records(
@@ -1141,6 +1400,7 @@ def prepare_v2_manifests(
                     if maximum_symbolic is not None
                     else None
                 ),
+                max_math_length=int(data["max_math_length"]),
             )
 
     source_path = Path(__file__).resolve()
@@ -1155,11 +1415,13 @@ def prepare_v2_manifests(
         "train_records": split_metadata["train"]["count"],
         "content_overlap": 0,
         "training_uses_gsm8k_test": False,
+        "training_uses_mathqa_validation_or_test": False,
         "training_uses_gsm_symbolic": False,
         "external_data_committed_to_git": False,
         "licenses": {
             "deepmind_mathematics": DEEPMIND_LICENSE,
             "gsm8k": GSM8K_LICENSE,
+            "mathqa": MATHQA_LICENSE,
             "gsm_symbolic": GSM_SYMBOLIC_LICENSE,
         },
     }

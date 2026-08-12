@@ -75,7 +75,7 @@ def complementary_record(
     from learning a static slot convention.
     """
 
-    if record.get("schema_version") == "cftn_math_record_v2":
+    if str(record.get("schema_version", "")).startswith("cftn_math_record_v2"):
         if not record.get("gpt_problem") or not record.get("math_problem"):
             raise ValueError("V2 record has no prepared complementary private views")
         result = dict(record)

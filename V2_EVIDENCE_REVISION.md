@@ -30,7 +30,9 @@ and verifies that its report chains to the exact sealed V1.2 report.
 The V2 runner now performs these checks and stages in order:
 
 1. verify passed, hash-chained V1.2 and V1.3 mechanism reports;
-2. generate and hash the immutable 400K data contract;
+2. generate and hash the immutable 400K data contract: 150,000 exact
+   project-generated problems, 212,690 balanced DeepMind problems, 29,837
+   MathQA training programs, and 7,473 GSM8K training problems;
 3. train the scratch byte-level math transformer for all 12 curriculum epochs;
 4. compare the teacher-forced best and retained epoch checkpoints on a
    validation-only greedy-generation panel, then copy the winner by hash;
@@ -50,10 +52,14 @@ The V2 runner now performs these checks and stages in order:
 11. assemble one report whose overall result is the conjunction of every gate.
 
 The categorical integer answer head is disabled. It cannot mask failure of
-autoregressive sign-and-digit or symbolic generation. Generation is allowed to
-use the model's full 1,152-token context rather than the old fixed 160-token
-ceiling. Evaluation reports over-context exclusions rather than silently
-truncating them.
+autoregressive sign-and-digit or symbolic generation. Training remains
+next-byte teacher forcing over complete traces; no external solver is placed in
+the model path. The V2.1 record contract preserves raw prompts and available
+source-native programs/execution traces so future failures can be separated
+into interpretation, procedure, and final-answer errors. Generation is allowed
+to use the model's full 1,536-token context rather than the old fixed 160-token
+ceiling. Data preparation rejects over-context records before optimization, and
+evaluation reports exclusions rather than silently truncating them.
 
 ## Fail-closed behavior
 

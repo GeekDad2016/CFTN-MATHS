@@ -29,7 +29,9 @@ class EquationDataset(Dataset[dict[str, Any]]):
 
                         first = json.loads(line)
                         break
-            if first and first.get("schema_version") == "cftn_math_record_v2":
+            if first and str(first.get("schema_version", "")).startswith(
+                "cftn_math_record_v2"
+            ):
                 from .v2_data import load_v2_records
 
                 self.records = load_v2_records(path)
@@ -143,7 +145,9 @@ class CFTNCollator(MathCollator):
             prompt = self.gpt_prompt(
                 record.get("gpt_problem", record["problem"]),
                 generic_answer=(
-                    record.get("schema_version") == "cftn_math_record_v2"
+                    str(record.get("schema_version", "")).startswith(
+                        "cftn_math_record_v2"
+                    )
                 ),
             )
             prompt_ids = _external_encode(self.gpt_tokenizer, prompt)
