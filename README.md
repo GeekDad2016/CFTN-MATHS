@@ -33,6 +33,38 @@ Add `--execute` to run it. Long-running stages write `status.json` and
 append-only `metrics.jsonl` in their artifact directories. See [guide.md](guide.md)
 for the architecture contract, controls, and preregistered success criteria.
 
+## Algorithmic V1.1
+
+V1.1 corrects an unfair V1 extrapolation setup. V1 trained a categorical
+integer head only on answers from -50 to 50 and then tested classes from 51 to
+200. V1.1 disables that auxiliary classifier, judges exact generated
+sign-and-digit answers, and uses four progressively expanding numeric bands.
+It separates larger-input extrapolation from genuinely unseen-answer
+extrapolation so the two failures cannot be conflated.
+
+The exact checkpoints, hashes, completed metrics, causal findings, failed
+claims, and unresolved Stage 9 decision for the active seed-719 run are recorded
+in [V1_1_RUN_REVIEW.md](V1_1_RUN_REVIEW.md). Read that evidence record before
+interpreting individual training or evaluation metrics.
+
+The ordered runner executes all 15 preparation, training, evaluation, causal
+control, fixed-open comparison, and evidence stages without manual handoffs:
+
+```powershell
+py -3.11 -m tools.run_experiment --config config/v1_1_algorithmic_linear_equations.yaml --synergy-protocol config/synergy_v1_1.yaml --execute --include-fixed-open --wandb --wandb-project cftn-text --wandb-run-name v1-1-algorithmic
+```
+
+To wait for an existing stage before starting that fresh pipeline, use the
+local continuation process. It polls on the machine and does not consume model
+tokens while idle:
+
+```powershell
+py -3.11 -m tools.wait_then_run_experiment --wait-status G:\ctfn-text\artifacts\v1_linear_equations\bridge_m2g_contextual\status.json --config config/v1_1_algorithmic_linear_equations.yaml --synergy-protocol config/synergy_v1_1.yaml --poll-seconds 300 --include-fixed-open --wandb --wandb-project cftn-text --wandb-run-name v1-1-algorithmic
+```
+
+Pipeline-level progress is written to `pipeline_status.json`; the waiting
+handoff is recorded in `continuation_status.json`.
+
 Math-tower training is deliberately blocked until the frozen-GPT calibration
 report exists and confirms at least 20 percentage points of capability
 headroom. The calibration split is never used to update any model.
@@ -91,14 +123,95 @@ hashed experiment configuration and resumes optimizer and scheduler state:
 py -3.11 -m tools.train_math_tower --config config/v1_linear_equations.yaml --device cuda --resume --disable-early-stopping --wandb --wandb-project cftn-text
 ```
 
+## Conditional-communication V1.2
+
+V1.2 is a bridge-only revision between V1.1 and broad-math V2. It reuses the
+frozen V1.1 GPT and math towers, preserves the successful math-to-GPT return
+path, and retrains only GPT-to-math communication plus its math-side receiver
+gates. Every target appears in a complementary view where communication is
+required and a shared view where communication must be residual-neutral.
+
+The objective combines task loss, frozen-specialist preservation, a
+correct-versus-shuffled message margin, and a soft redundant-view gate penalty.
+Best-checkpoint selection uses a fixed greedy-generation causal panel rather
+than teacher forcing alone. The preregistered evidence, losses, controls and
+acceptance criteria are in
+[V1_2_BRIDGE_REVISION.md](V1_2_BRIDGE_REVISION.md).
+
+Preview the isolated five-stage pipeline:
+
+```powershell
+py -3.11 -m tools.run_v1_2_experiment --revision-config config/v1_2_conditional_bridge.yaml --device cuda --wandb
+```
+
+After the sealed V1.1 pipeline has completed, execute it with:
+
+```powershell
+py -3.11 -m tools.run_v1_2_experiment --revision-config config/v1_2_conditional_bridge.yaml --device cuda --wandb --execute
+```
+
+The prerequisite audit refuses to launch training while V1.1 is still active
+or its reports/checkpoint hashes are incomplete. V1.2 writes only under its own
+artifact root and never modifies V1.1 artifacts.
+
+Stage 5 also renders `V1_2_EXPERIMENT_RESULTS.md` from the sealed evidence. The
+version-controlled document records what passed, what failed, why the
+ablations suggest particular failure hypotheses, and whether to proceed or run
+a targeted repair.
+
+## Wake-gated multi-specialist V1.3
+
+If V1.2 passes, V1.3 is the next mechanism experiment. It combines the math
+specialist with a new exact-string specialist and tests prompts requiring no
+specialist, one specialist, or both specialists. GPT alone receives the raw
+prompt; independent wake gates activate the relevant towers, bounded latent
+messages carry requests and results, and up to three recurrent callosal rounds
+allow sequential expert dependencies.
+
+The complete task matrix, training sequence, ablations, compute measurements,
+and fixed acceptance criteria are preregistered in
+[V1_3_EXPERIMENT_PLAN.md](V1_3_EXPERIMENT_PLAN.md). Its eventual findings are
+recorded in [V1_3_EXPERIMENT_RESULTS.md](V1_3_EXPERIMENT_RESULTS.md).
+
+The isolated V1.3 implementation is now under
+`config/v1_3_multi_specialist.yaml`, `cftn_text/v1_3_*`, and the matching
+`tools/*v1_3*` entry points. Preview its 12 ordered stages and epoch limits:
+
+```powershell
+py -3.11 -m tools.run_v1_3_experiment --config config/v1_3_multi_specialist.yaml --device cuda
+```
+
+The automatic continuation waits without consuming GPU compute, validates the
+sealed V1.2 report and checkpoint hashes, and launches exactly once only on a
+full V1.2 pass:
+
+```powershell
+py -3.11 -m tools.wait_then_run_v1_3 --config config/v1_3_multi_specialist.yaml --device cuda --poll-seconds 300 --wandb
+```
+
+Every direct V1.3 training/evaluation entry point repeats the same prerequisite
+audit, so bypassing the continuation cannot start the experiment early.
+
 ## Broad-math V2
 
 V2 expands the proof to 400,000 unique examples while keeping GPT-2 frozen and
-retaining the same bridge classes. Its curriculum includes variables on both
+retaining the same bridge classes. The executable pipeline now incorporates
+the V1.1/V1.2 lessons rather than merely documenting them: it is fail-closed on
+sealed V1.2/V1.3 mechanism evidence, generative specialist quality,
+conditional-message utility, shared-view no-harm, and causal collaboration.
+Its curriculum includes variables on both
 sides, nested parentheses, signed fractions, two-variable systems, 2–4-step
 word problems, distractors, held-out paraphrases, and numerical extrapolation.
 DeepMind-generated mathematics and GSM8K-train supply breadth; GSM8K-test and
 GSM-Symbolic remain sealed generalization benchmarks.
+
+The math answer head is disabled and checkpoint selection is based first on
+validation greedy-generation accuracy. GPT-to-math training freezes the
+successful math-to-GPT path and uses paired required/redundant views,
+specialist preservation, a shuffled-message margin, and generation-led model
+selection. See [V2_EVIDENCE_REVISION.md](V2_EVIDENCE_REVISION.md) for the
+evidence mapping, exact stage gates, and explicit natural-interface claim
+boundary.
 
 Preview or execute the complete resumable experiment:
 
@@ -106,6 +219,11 @@ Preview or execute the complete resumable experiment:
 py -3.11 -m tools.run_v2_experiment --config config/v2_broad_math.yaml --wandb
 py -3.11 -m tools.run_v2_experiment --config config/v2_broad_math.yaml --device cuda --execute --resume --wandb
 ```
+
+Execution intentionally refuses to start while
+`evidence/v1_3_final_report.json` is absent or failed. After V1.3 seals, copy
+that immutable report into place (or set `CFTN_V1_3_REPORT`) without editing
+its contents.
 
 For online V2 logging, the runner requires `WANDB_API_KEY` in the process
 environment and never stores its value. RunPod setup, persistent-volume paths,

@@ -1,0 +1,30 @@
+format: cftn_text_synergy_benchmark_v1
+seed: 719
+
+benchmark:
+  artifact_name: synergy_v1_1_algorithmic
+  source_splits:
+    - test
+    - heldout_language
+    - extrapolation
+    - answer_extrapolation
+    - compositional
+  examples_per_split: 1000
+  distractor_splits:
+    - compositional
+
+evaluation:
+  bootstrap_samples: 10000
+  generation_batch_size: 16
+  maximum_pairs_per_split: 1000
+
+success_criteria:
+  minimum_synergy_gain: 0.10
+  minimum_correct_vs_shuffled_gap: 0.10
+  minimum_directional_gain: 0.02
+  maximum_shared_view_regression: 0.02
+  maximum_joint_vs_serial_regression: 0.02
+  minimum_counterfactual_pair_accuracy: 0.90
+  minimum_message_swap_donor_follow: 0.80
+  minimum_fixed_open_advantage: 0.02
+  require_ci95_above_zero: true

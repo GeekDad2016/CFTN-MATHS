@@ -22,8 +22,11 @@ def main() -> None:
     args = parser.parse_args()
     config = load_config(args.config)
     protocol = load_synergy_protocol(args.protocol)
+    benchmark_name = str(protocol["benchmark"].get("artifact_name", "synergy_v1"))
     output_root = args.output_root or (
-        Path(config["project"]["data_root"]).parents[1] / "benchmarks" / "synergy_v1"
+        Path(config["project"]["data_root"]).parents[1]
+        / "benchmarks"
+        / benchmark_name
     )
     report = prepare_synergy_benchmark(
         config,

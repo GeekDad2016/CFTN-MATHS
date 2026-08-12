@@ -65,8 +65,11 @@ def evaluate_v2_collaboration(
     splits: list[str] | None = None,
     maximum_examples: int | None = None,
     output_root: str | Path | None = None,
+    view_mode: str = "complementary",
     wandb_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if view_mode not in {"shared", "complementary"}:
+        raise ValueError("V2 collaboration view_mode must be shared or complementary")
     device = resolve_device(device_name)
     data_root, manifest = load_data_contract(config)
     if manifest.get("format") != "cftn_text_broad_math_v2":
@@ -99,10 +102,21 @@ def evaluate_v2_collaboration(
             settings["maximum_generation_examples"],
         )
     )
-    split_names = splits or list(settings["collaboration_splits"])
+    split_names = splits or list(
+        settings[
+            "shared_no_harm_splits"
+            if view_mode == "shared"
+            else "collaboration_splits"
+        ]
+    )
     artifact_root = Path(
         output_root
-        or Path(config["project"]["artifact_root"]) / "evaluation_collaboration_v2"
+        or Path(config["project"]["artifact_root"])
+        / (
+            "evaluation_shared_no_harm_v2"
+            if view_mode == "shared"
+            else "evaluation_collaboration_v2"
+        )
     )
     artifact_root.mkdir(parents=True, exist_ok=True)
     status_path = artifact_root / "status.json"
@@ -110,12 +124,13 @@ def evaluate_v2_collaboration(
     tracker = initialize_wandb(
         wandb_options,
         artifact_dir=artifact_root,
-        stage="evaluation_collaboration_v2",
+        stage=f"evaluation_{view_mode}_v2",
         config={
             "project": config["project"]["name"],
             "checkpoint": str(Path(checkpoint_path).resolve()),
             "config_sha256": config_sha256(config),
             "manifest_sha256": manifest["manifest_sha256"],
+            "view_mode": view_mode,
         },
     )
     report: dict[str, Any] = {
@@ -127,19 +142,22 @@ def evaluate_v2_collaboration(
         "config_sha256": config_sha256(config),
         "manifest_sha256": manifest["manifest_sha256"],
         "conditions": list(CONDITIONS),
+        "view_mode": view_mode,
         "splits": {},
     }
     try:
         for split_index, split in enumerate(split_names):
             raw_records = split_dataset(data_root, manifest, split).records
-            raw_records = [
-                record
-                for record in raw_records
-                if record.get("gpt_problem") and record.get("math_problem")
-            ][:maximum]
+            if view_mode == "complementary":
+                raw_records = [
+                    record
+                    for record in raw_records
+                    if record.get("gpt_problem") and record.get("math_problem")
+                ]
+            raw_records = raw_records[:maximum]
             records = apply_view_mode(
                 raw_records,
-                view_mode="complementary",
+                view_mode=view_mode,
                 seed=int(config["project"]["seed"]),
             )
             if not records:
@@ -147,8 +165,14 @@ def evaluate_v2_collaboration(
             outputs = {condition: [] for condition in CONDITIONS}
             for start, chunk in _chunks(records, int(settings["batch_size"])):
                 shared = [record["problem"] for record in chunk]
-                gpt_views = [record["gpt_problem"] for record in chunk]
-                math_views = [record["math_problem"] for record in chunk]
+                gpt_views = [
+                    str(record.get("gpt_problem") or record["problem"])
+                    for record in chunk
+                ]
+                math_views = [
+                    str(record.get("math_problem") or record["problem"])
+                    for record in chunk
+                ]
                 for condition, options in CONDITIONS.items():
                     gate_mode = str(options.get("gate_mode", "contextual"))
                     model.set_gate_mode(gate_mode)
@@ -259,25 +283,39 @@ def evaluate_v2_collaboration(
                 event="split_completed",
             )
 
-        synergy_intervals = [
-            split["causal"]["synergy_vs_strongest_individual"]
-            for split in report["splits"].values()
-        ]
-        shuffle_intervals = [
-            split["causal"]["both_shuffled_effect"]
-            for split in report["splits"].values()
-        ]
-        report["collaboration_gate"] = {
-            "all_splits_synergy_at_least_10_points": bool(synergy_intervals)
-            and all(item["mean_difference"] >= 0.10 for item in synergy_intervals),
-            "all_synergy_ci95_above_zero": bool(synergy_intervals)
-            and all(item["ci95_low"] > 0.0 for item in synergy_intervals),
-            "shuffling_removes_at_least_5_points": bool(shuffle_intervals)
-            and all(item["mean_difference"] >= 0.05 for item in shuffle_intervals),
-        }
-        report["collaboration_gate"]["pass"] = all(
-            report["collaboration_gate"].values()
-        )
+        if view_mode == "shared":
+            regressions = {
+                name: float(split["metrics"]["gpt_to_math_closed"]["math"]["accuracy"])
+                - float(split["metrics"]["joint_contextual"]["math"]["accuracy"])
+                for name, split in report["splits"].items()
+            }
+            maximum = float(settings.get("maximum_shared_math_regression", 0.02))
+            report["shared_no_harm_gate"] = {
+                "maximum_allowed_regression": maximum,
+                "regression_by_split": regressions,
+                "pass": bool(regressions)
+                and all(value <= maximum for value in regressions.values()),
+            }
+        else:
+            synergy_intervals = [
+                split["causal"]["synergy_vs_strongest_individual"]
+                for split in report["splits"].values()
+            ]
+            shuffle_intervals = [
+                split["causal"]["both_shuffled_effect"]
+                for split in report["splits"].values()
+            ]
+            report["collaboration_gate"] = {
+                "all_splits_synergy_at_least_10_points": bool(synergy_intervals)
+                and all(item["mean_difference"] >= 0.10 for item in synergy_intervals),
+                "all_synergy_ci95_above_zero": bool(synergy_intervals)
+                and all(item["ci95_low"] > 0.0 for item in synergy_intervals),
+                "shuffling_removes_at_least_5_points": bool(shuffle_intervals)
+                and all(item["mean_difference"] >= 0.05 for item in shuffle_intervals),
+            }
+            report["collaboration_gate"]["pass"] = all(
+                report["collaboration_gate"].values()
+            )
         atomic_json_dump(report, artifact_root / "report.json")
         atomic_json_dump(
             {
@@ -289,7 +327,12 @@ def evaluate_v2_collaboration(
             status_path,
         )
         tracker.update_summary(
-            {"run/state": "completed", "collaboration_gate": report["collaboration_gate"]}
+            {
+                "run/state": "completed",
+                "acceptance_gate": report.get(
+                    "collaboration_gate", report.get("shared_no_harm_gate")
+                ),
+            }
         )
         tracker.finish()
         return report

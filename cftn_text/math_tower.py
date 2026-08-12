@@ -27,6 +27,8 @@ class MathTower(nn.Module):
         self.max_sequence_length = int(config["max_sequence_length"])
         self.answer_min = int(config["answer_min"])
         self.answer_max = int(config["answer_max"])
+        self.answer_head_mode = str(config.get("answer_head_mode", "categorical"))
+        self.answer_head_enabled = self.answer_head_mode == "categorical"
         layers = int(config["layers"])
         heads = int(config["attention_heads"])
         feed_forward = int(config["feed_forward_size"])
@@ -73,6 +75,8 @@ class MathTower(nn.Module):
         self.execution_count = 0
 
     def answer_classes(self, values: torch.Tensor) -> torch.Tensor:
+        if not self.answer_head_enabled:
+            return torch.full_like(values.to(dtype=torch.long), -100)
         classes = values.to(dtype=torch.long) - self.answer_min
         valid = (values >= self.answer_min) & (values <= self.answer_max)
         return torch.where(valid, classes, torch.full_like(classes, -100))
@@ -132,8 +136,15 @@ class MathTower(nn.Module):
             min=0, max=sequence_length - 1
         )
         pooled = hidden[torch.arange(batch, device=input_ids.device), prefix_indices]
+        answer_logits = (
+            self.answer_head(pooled)
+            if self.answer_head_enabled
+            else pooled.new_zeros(
+                (batch, self.answer_max - self.answer_min + 1)
+            )
+        )
         return MathTowerOutput(
             logits=logits,
             hidden_states=hidden,
-            answer_logits=self.answer_head(pooled),
+            answer_logits=answer_logits,
         )

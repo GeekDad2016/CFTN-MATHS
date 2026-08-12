@@ -25,6 +25,59 @@ def _chunks(values: list[Any], size: int):
         yield start, values[start : start + size]
 
 
+def _acceptance_report(
+    report: dict[str, Any], config: dict[str, Any]
+) -> dict[str, Any]:
+    configured = config["evaluation"].get("specialist_acceptance")
+    if not configured:
+        test = report["splits"].get("test", {})
+        extrapolation = report["splits"].get("extrapolation", {})
+        legacy = {
+            "test_exact_accuracy_at_least_99_9": (
+                test.get("generation", {}).get("exact_accuracy", 0.0) >= 0.999
+            ),
+            "test_valid_rate_100": (
+                test.get("generation", {}).get("valid_rate", 0.0) >= 1.0
+            ),
+            "test_trace_exact_at_least_99": (
+                test.get("canonical_trace_exact_rate", 0.0) >= 0.99
+            ),
+            "extrapolation_accuracy_at_least_95": (
+                extrapolation.get("generation", {}).get("exact_accuracy", 0.0)
+                >= 0.95
+            ),
+        }
+        legacy["pass"] = all(legacy.values())
+        return legacy
+
+    details: dict[str, Any] = {}
+    for split, criteria in configured.items():
+        split_report = report["splits"].get(split, {})
+        generation = split_report.get("generation", {})
+        split_details: dict[str, Any] = {}
+        for metric, threshold_value in criteria.items():
+            threshold = float(threshold_value)
+            if metric == "trace_exact_rate":
+                observed = float(split_report.get("canonical_trace_exact_rate", 0.0))
+            else:
+                observed = float(generation.get(metric, 0.0))
+            split_details[metric] = {
+                "observed": observed,
+                "threshold": threshold,
+                "pass": observed >= threshold,
+            }
+        details[split] = split_details
+    return {
+        "name": "standalone_specialist_acceptance",
+        "criteria": details,
+        "pass": all(
+            criterion["pass"]
+            for split_details in details.values()
+            for criterion in split_details.values()
+        ),
+    }
+
+
 @torch.inference_mode()
 def generate_math_tower(
     model,
@@ -50,7 +103,7 @@ def generate_math_tower(
         input_ids = input_ids.to(device)
         attention_mask = attention_mask.to(device)
         output = model(input_ids, attention_mask, prefix_lengths)
-        if answer_predictions is None:
+        if answer_predictions is None and model.answer_head_enabled:
             classes = output.answer_logits.argmax(dim=-1).tolist()
             answer_predictions = [
                 int(index) + int(model.answer_min) for index in classes
@@ -105,12 +158,12 @@ def evaluate_math_checkpoint(
         if maximum_examples is not None
         else settings["maximum_generation_examples"]
     )
-    split_names = splits or [
-        "test",
-        "heldout_language",
-        "extrapolation",
-        "compositional",
-    ]
+    split_names = splits or list(
+        settings.get(
+            "splits",
+            ["test", "heldout_language", "extrapolation", "compositional"],
+        )
+    )
     artifact_root = Path(
         output_root
         or Path(config["project"]["artifact_root"]) / "evaluation_math"
@@ -186,28 +239,17 @@ def evaluate_math_checkpoint(
         report["splits"][split] = {
             "examples": len(records),
             "generation": generation_metrics,
+            "answer_head_enabled": bool(model.answer_head_enabled),
             "answer_head_valid_rate": sum(answer_head_valid) / len(records),
             "answer_head_accuracy": sum(answer_head_correct) / len(records),
             "canonical_trace_exact_rate": sum(trace_exact) / len(records),
             "generation_rows": str(rows_path.resolve()),
         }
-    test = report["splits"].get("test", {})
-    extrapolation = report["splits"].get("extrapolation", {})
-    report["specialist_gate"] = {
-        "test_exact_accuracy_at_least_99_9": (
-            test.get("generation", {}).get("exact_accuracy", 0.0) >= 0.999
-        ),
-        "test_valid_rate_100": (
-            test.get("generation", {}).get("valid_rate", 0.0) >= 1.0
-        ),
-        "test_trace_exact_at_least_99": (
-            test.get("canonical_trace_exact_rate", 0.0) >= 0.99
-        ),
-        "extrapolation_accuracy_at_least_95": (
-            extrapolation.get("generation", {}).get("exact_accuracy", 0.0) >= 0.95
-        ),
-    }
-    report["specialist_gate"]["pass"] = all(report["specialist_gate"].values())
+    acceptance = _acceptance_report(report, config)
+    report["specialist_acceptance"] = acceptance
+    # Backward-compatible alias for evidence bundles created before the
+    # acceptance-check terminology was clarified.
+    report["specialist_gate"] = acceptance
     atomic_json_dump(report, artifact_root / "report.json")
     atomic_json_dump(
         {

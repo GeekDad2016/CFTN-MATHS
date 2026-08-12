@@ -83,7 +83,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def validate_config(config: dict[str, Any]) -> None:
     data = config["data"]
     format_name = str(data.get("format", "cftn_text_linear_equations_v1"))
-    size_keys = (
+    size_keys = [
         "calibration_examples",
         "train_examples",
         "validation_examples",
@@ -91,7 +91,9 @@ def validate_config(config: dict[str, Any]) -> None:
         "heldout_language_examples",
         "extrapolation_examples",
         "compositional_examples",
-    )
+    ]
+    if format_name == "cftn_text_linear_equations_v1_1":
+        size_keys.append("answer_extrapolation_examples")
     for key in size_keys:
         if key not in data:
             raise ValueError(f"data.{key} is required for {format_name}")
@@ -117,6 +119,45 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("V2 curriculum through_epoch values must increase")
         if through_epochs[-1] != int(config["math_training"]["max_epochs"]):
             raise ValueError("the final V2 curriculum phase must reach max_epochs")
+    elif format_name == "cftn_text_linear_equations_v1_1":
+        bands = data.get("numeric_curriculum_bands", [])
+        if len(bands) < 2:
+            raise ValueError("V1.1 requires at least two numeric curriculum bands")
+        previous = (0, 0, 0)
+        for index, band in enumerate(bands, start=1):
+            maxima = (
+                int(band["max_abs_a"]),
+                int(band["max_abs_x"]),
+                int(band["max_abs_b"]),
+            )
+            if any(value < prior for value, prior in zip(maxima, previous)):
+                raise ValueError("V1.1 numeric curriculum bounds must not decrease")
+            if maxima == previous or min(maxima) < 1:
+                raise ValueError(
+                    f"V1.1 numeric curriculum band {index} must expand the bounds"
+                )
+            if float(band.get("weight", 0.0)) <= 0.0:
+                raise ValueError("V1.1 curriculum weights must be positive")
+            if float(band.get("evaluation_weight", band.get("weight", 0.0))) <= 0.0:
+                raise ValueError("V1.1 evaluation weights must be positive")
+            previous = maxima
+        curriculum = data.get("curriculum", {})
+        phases = curriculum.get("phases", [])
+        if not curriculum.get("enabled", False) or not phases:
+            raise ValueError("V1.1 requires an enabled epoch curriculum")
+        through_epochs = [int(phase["through_epoch"]) for phase in phases]
+        if through_epochs != sorted(through_epochs) or len(set(through_epochs)) != len(
+            through_epochs
+        ):
+            raise ValueError("V1.1 curriculum through_epoch values must increase")
+        if through_epochs[-1] != int(config["math_training"]["max_epochs"]):
+            raise ValueError("the final V1.1 curriculum phase must reach max_epochs")
+        if any(
+            int(phase["max_difficulty"]) < 1
+            or int(phase["max_difficulty"]) > len(bands)
+            for phase in phases
+        ):
+            raise ValueError("V1.1 curriculum max_difficulty is outside its bands")
     if int(data["max_math_length"]) > int(config["math_tower"]["max_sequence_length"]):
         raise ValueError("data.max_math_length exceeds the math tower context")
     width = int(config["bridge"]["message_width"])
@@ -131,6 +172,21 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("bridge.message_tokens must be positive")
     if int(config["math_tower"]["answer_min"]) >= int(config["math_tower"]["answer_max"]):
         raise ValueError("math answer range is invalid")
+    answer_head_mode = str(config["math_tower"].get("answer_head_mode", "categorical"))
+    if answer_head_mode not in {"categorical", "disabled"}:
+        raise ValueError("math_tower.answer_head_mode must be categorical or disabled")
+    for section_name in ("specialist_acceptance", "collaboration_acceptance"):
+        allowed_metrics = (
+            {"exact_accuracy", "valid_rate", "trace_exact_rate"}
+            if section_name == "specialist_acceptance"
+            else {"exact_accuracy", "valid_rate"}
+        )
+        for criteria in config["evaluation"].get(section_name, {}).values():
+            for metric, threshold in criteria.items():
+                if metric not in allowed_metrics:
+                    raise ValueError(f"unsupported {section_name} metric: {metric}")
+                if not 0.0 <= float(threshold) <= 1.0:
+                    raise ValueError(f"{section_name} thresholds must be in [0, 1]")
 
 
 def with_data_sizes(config: dict[str, Any], size: int) -> dict[str, Any]:
@@ -138,7 +194,7 @@ def with_data_sizes(config: dict[str, Any], size: int) -> dict[str, Any]:
     if size < 1:
         raise ValueError("size must be positive")
     result = copy.deepcopy(config)
-    for key in (
+    keys = [
         "calibration_examples",
         "train_examples",
         "validation_examples",
@@ -146,7 +202,10 @@ def with_data_sizes(config: dict[str, Any], size: int) -> dict[str, Any]:
         "heldout_language_examples",
         "extrapolation_examples",
         "compositional_examples",
-    ):
+    ]
+    if "answer_extrapolation_examples" in result["data"]:
+        keys.append("answer_extrapolation_examples")
+    for key in keys:
         result["data"][key] = size
     result.pop("_meta", None)
     validate_config(result)

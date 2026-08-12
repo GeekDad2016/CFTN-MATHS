@@ -16,12 +16,11 @@ from .data_generator import (
     canonical_trace,
     equation_key,
     file_sha256,
-    load_records,
     render_problem,
     sha256_bytes,
     validate_record,
 )
-from .training import load_data_contract
+from .training import load_data_contract, split_dataset
 
 
 SYNERGY_BENCHMARK_FORMAT = "cftn_text_synergy_benchmark_v1"
@@ -204,10 +203,10 @@ def prepare_synergy_benchmark(
     source_splits = [str(split) for split in settings["source_splits"]]
     distractor_splits = set(settings.get("distractor_splits", []))
     all_source_equations: set[str] = set()
-    for metadata in source_manifest["splits"].values():
+    for split in source_manifest["splits"]:
         all_source_equations.update(
             record["equation_id"]
-            for record in load_records(data_root / metadata["path"])
+            for record in split_dataset(data_root, source_manifest, split).records
         )
     seen_equations = set(all_source_equations)
     split_metadata: dict[str, Any] = {}
@@ -215,7 +214,7 @@ def prepare_synergy_benchmark(
     for split in source_splits:
         if split not in source_manifest["splits"]:
             raise ValueError(f"synergy source split does not exist: {split}")
-        records = load_records(data_root / source_manifest["splits"][split]["path"])
+        records = split_dataset(data_root, source_manifest, split).records
         selected = _selected_records(records, split=split, count=count, seed=seed)
         rows: list[dict[str, Any]] = []
         for base in selected:

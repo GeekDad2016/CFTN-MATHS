@@ -1,8 +1,12 @@
 project:
-  name: cftn_text_v2_broad_math_400k
+  name: cftn_text_v2_broad_math_400k_evidence_integrated
   seed: 719
   artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k}
   data_root: ${CFTN_DATA_ROOT:-data/manifests/v2_broad_math_400k}
+
+prerequisites:
+  v1_2_report: ${CFTN_V1_2_REPORT:-evidence/v1_2_final_report.json}
+  v1_3_report: ${CFTN_V1_3_REPORT:-evidence/v1_3_final_report.json}
 
 data:
   format: cftn_text_broad_math_v2
@@ -102,6 +106,7 @@ math_tower:
   dropout: 0.1
   max_sequence_length: 1152
   receiver_layers: [2, 5]
+  answer_head_mode: disabled
   answer_min: -4096
   answer_max: 4096
 
@@ -118,17 +123,19 @@ math_training:
   batch_size: 32
   eval_batch_size: 64
   max_epochs: 12
-  minimum_epochs: 8
+  minimum_epochs: 12
   early_stop_patience: 4
+  early_stopping_enabled: false
   learning_rate: 0.0003
   minimum_learning_rate: 0.000015
   warmup_fraction: 0.03
   weight_decay: 0.01
   gradient_clip: 1.0
-  answer_head_weight: 0.10
+  answer_head_weight: 0.0
   precision: bf16
   num_workers: 4
   report_every_steps: 250
+  keep_latest_checkpoints: 12
 
 bridge_training:
   batch_size: 12
@@ -143,16 +150,25 @@ bridge_training:
   gradient_clip: 1.0
   math_loss_weight: 1.0
   gpt_loss_weight: 1.0
-  answer_head_weight: 0.10
+  answer_head_weight: 0.0
   precision: bf16
   num_workers: 4
   report_every_steps: 250
+  keep_latest_checkpoints: 3
+
+checkpoint_selection:
+  split: validation
+  generation_examples: 512
+
+conditional_bridge:
+  revision_config: config/v2_conditional_bridge.yaml
 
 evaluation:
   batch_size: 16
   maximum_generation_examples: 5000
   collaboration_maximum_examples: 2000
-  max_math_new_tokens: 160
+  generation_policy: full_context_v1
+  max_math_new_tokens: 1152
   max_gpt_new_tokens: 64
   bootstrap_samples: 10000
   specialist_splits:
@@ -169,11 +185,21 @@ evaluation:
     - heldout_language
     - extrapolation
     - compositional
+  shared_no_harm_splits:
+    - test
+    - heldout_language
+    - extrapolation
+    - compositional
+  maximum_shared_math_regression: 0.02
   specialist_gates:
     test: 0.70
     heldout_language: 0.60
     extrapolation: 0.40
+    compositional: 0.50
     gsm8k_test: 0.15
+    gsm_symbolic: 0.10
+    gsm_symbolic_p1: 0.10
+    gsm_symbolic_p2: 0.10
 
 monitoring:
   status_interval_minutes: 30
@@ -201,5 +227,5 @@ scaling:
   initial_train_examples: 400000
   maximum_train_examples: 1000000
   auto_scale: false
-  minimum_recent_validation_gain: 0.002
+  minimum_recent_generation_gain: 0.002
   recent_epochs: 3

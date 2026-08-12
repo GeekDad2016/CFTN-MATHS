@@ -649,3 +649,180 @@ sequence reproducibly:
 
 That result will tell us whether the corpus-callosum concept itself is useful in
 a clean setting before returning to much harder multimodal generation.
+
+## V1.1 numerical-generalization correction
+
+The phrase `specialist acceptance` means a go/no-go benchmark for the frozen
+math tower; it is not one of CFTN's learned contextual gates. V1.1 evaluates
+the specialist before bridge training, but only generated answers contribute
+to numerical acceptance. The per-integer categorical head is disabled because
+classes absent from training receive no positive supervision and therefore
+cannot provide a fair extrapolation measurement.
+
+V1.1 uses four cumulative curriculum phases and two distinct numeric shifts:
+
+1. `extrapolation` increases coefficients and offsets while answers remain in
+   trained numeric support;
+2. `answer_extrapolation` keeps coefficient support familiar while answers
+   move beyond every magnitude seen during training.
+
+The first diagnoses arithmetic under larger inputs. The second is the stricter
+algorithmic test. Held-out language and compositional prompts remain separate
+because the later GPT-to-math bridge is expected to contribute language
+interpretation. Full CFTN acceptance is evaluated only after both bridge
+directions have been trained and causally ablated.
+
+## Future extension: exact string reasoning and a multi-tower CFTN brain
+
+The math tower currently uses a lossless UTF-8 byte tokenizer with 256 byte
+tokens and four control tokens. This makes every input string representable
+without an unknown token and exposes the individual ASCII characters in words
+such as `strawberry`. It does not, by itself, teach character counting or word
+semantics. For ASCII, `strawberry` is ten character tokens and contains three
+`r` tokens; the tower must still learn how to identify the requested span,
+select the requested character, and count it. Non-ASCII evaluation must state
+whether the target is UTF-8 bytes, Unicode code points, or grapheme clusters.
+
+A future curriculum should extend the algorithmic specialist incrementally
+with exact string operations:
+
+1. string length and character-frequency counting;
+2. character indexing and position queries;
+3. reversal, substring matching, and simple substitutions;
+4. multiple constraints over longer, previously unseen strings;
+5. natural-language formulations and counterfactual pairs that change either
+   the target string or requested operation.
+
+This is a particularly clean CFTN task. The frozen GPT tower should interpret
+the instruction and identify what operation is requested. The byte-level
+algorithmic tower should execute the exact operation. GPT-to-specialist bridge
+messages should carry the interpreted operation and relevant span; the return
+bridge should carry an exact result that GPT can place into a coherent answer.
+The bridge-active system must outperform both towers alone, while closing or
+shuffling either bridge must remove the corresponding gain.
+
+If this succeeds, CFTN can expand one verified capability at a time into a
+network of small complementary towers: for example language, arithmetic and
+algebra, exact string manipulation, spatial reasoning, and eventually vision.
+The general-language tower maintains the problem context and response, while
+one or several specialists exchange bounded latent messages through learned
+corpus-callosum bridges. A question may cause several bridges to open at once,
+allowing representations from multiple specialists to contribute to the same
+reasoning process.
+
+This must remain contextual communication rather than mixture-of-experts
+routing. A gate controls how much task-relevant information crosses a bridge;
+it does not select a winning tower, dispatch the whole example to an expert, or
+combine independently produced final answers. Towers remain parts of one
+stateful system, communication is bidirectional, and more than one specialist
+may affect the same intermediate representation.
+
+The safe scaling sequence is:
+
+1. train and validate each specialist independently on its exact capability;
+2. freeze existing towers and prove each new bridge can transmit relevant
+   information on a small capacity set;
+3. train contextual gates on mixed and genuinely cross-tower tasks;
+4. compare active, closed, direction-disabled, shuffled-message, fixed-open,
+   and simple serial-pipeline controls on identical examples;
+5. add multi-specialist problems that no individual tower can solve reliably;
+6. unfreeze narrowly and only after causal bridge dependence is established;
+7. retain old-task evaluations to detect interference or lost capabilities.
+
+Increasing coverage step by step can produce a more capable system, but adding
+towers alone is not evidence of a unified brain. Each extension must show
+positive synergy, relevant bridge-message dependence, context-sensitive gate
+behavior, preservation of existing skills, and an advantage over a simple
+pipeline. This incremental evidence should guide how gates are initialized,
+trained, regularized, and eventually coordinated across several simultaneous
+specialists.
+
+### Immediate bridge-control revision before broad V2 scaling
+
+V1.1 showed that this sequence needs an explicit conditional-communication
+step. Complementary private-view evaluation demonstrated genuine bidirectional
+cooperation, but shared-view evaluation showed that redundant GPT-to-specialist
+messages can damage an already-capable specialist. Separately trained
+fixed-open controls collapsed rapidly, so always-on residual injection is not a
+safe replacement for contextual communication.
+
+V1.2 therefore freezes both towers and the successful specialist-to-GPT return
+path, then retrains only GPT-to-specialist communication on paired examples:
+
+- a complementary view where language context is required;
+- a shared view where the specialist already has sufficient information.
+
+The objective combines task loss, specialist-preservation distillation against
+the bridge-disabled baseline, a correct-versus-shuffled message margin on
+required examples, and a soft redundant-view gate penalty. Checkpoint selection
+uses greedy generated answers and causal ablations, not teacher forcing alone.
+The complete preregistered design is recorded in
+`V1_2_BRIDGE_REVISION.md`.
+
+This revision does not change CFTN into routing or mixture of experts. Both
+towers continue to run; only the amount and content of the cross-tower residual
+changes. Broad V2 specialist training should follow this communication-safety
+test rather than attempt to solve it indirectly with more data.
+
+## Future runtime: iterative wake gates and conditional specialist compute
+
+The mature CFTN design should keep towers parameter-separated but
+state-connected. GPT acts as the persistent general-language workspace: it
+begins processing a question, exposes an evolving context state, receives
+bounded specialist messages, and continues reasoning. Specialists retain their
+own learned representations and do not become ordinary GPT feed-forward
+blocks, but their state is coupled to GPT through bidirectional callosal
+bridges.
+
+Each specialist should eventually have two distinct gate mechanisms:
+
+1. a cheap **wake gate** decides whether that tower should consume compute in
+   the current reasoning round;
+2. continuous **message gates** control what information crosses the bridge in
+   each direction after the tower is active.
+
+Wake decisions should be independent rather than winner-take-all or top-k. A
+round may activate no specialist, one specialist, several specialists, or all
+of them. Independent active towers should execute in parallel. Dependent work
+remains sequential across callosal rounds: GPT forms context, relevant towers
+compute, their messages update the shared context, and the updated state may
+wake a different set of towers for the next round.
+
+Conditional execution must not be introduced before communication itself is
+proven. The development sequence is:
+
+1. run all towers during training and gate only their messages, preserving a
+   dense differentiable learning path;
+2. establish positive synergy and causal bridge dependence with frozen towers;
+3. train and calibrate cheap wake gates using tasks that require zero, one, and
+   multiple specialists;
+4. harden wake decisions gradually and add a modest compute-cost objective;
+5. measure quality, specialist activation, latency, and total active parameters
+   against the dense CFTN model and simple serial pipelines.
+
+This remains different from mixture-of-experts routing. GPT is not bypassed,
+the entire example is not dispatched to a winning expert, and specialists do
+not produce independent final answers for weighted combination. Instead,
+multiple persistent representational systems exchange information over several
+reasoning rounds and jointly modify one evolving problem state.
+
+The frozen GPT-2 implementation does not natively perform recurrent latent
+deliberation. A later version must therefore add explicit callosal reasoning
+rounds around selected GPT receiver layers or autoregressive latent thought
+steps. Gate-collapse controls are mandatory: training must detect always-open
+and always-closed wake gates, require relevant-message dependence under
+shuffling and direction ablations, and verify that conditional execution
+preserves the accuracy of the proven dense model.
+
+The concrete first implementation of this runtime is preregistered as V1.3 in
+`V1_3_EXPERIMENT_PLAN.md`. It begins with two specialists—math and exact-string
+reasoning—so the same sealed benchmark can require none, exactly one, several,
+or all available towers. It includes parallel and sequential compositions,
+where the sequential subset requires a second callosal round. V1.3 starts only
+after V1.2 passes; otherwise a targeted V1.2.x repair comes first.
+
+Every completed revision must retain a human-readable experiment record in
+addition to machine-readable metrics. `V1_2_EXPERIMENT_RESULTS.md` and
+`V1_3_EXPERIMENT_RESULTS.md` preserve context, provenance, passed and failed
+claims, diagnostic hypotheses, limitations, and the evidence-backed next
+action so later reviews do not reinterpret earlier runs.

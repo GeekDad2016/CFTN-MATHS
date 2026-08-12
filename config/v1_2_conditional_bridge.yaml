@@ -1,0 +1,66 @@
+format: cftn_text_conditional_bridge_revision_v1_2
+
+revision:
+  name: cftn_text_v1_2_conditional_bridge
+  seed: 719
+  intent: conditional_message_utility_without_routing
+
+paths:
+  base_config: config/v1_1_algorithmic_linear_equations.yaml
+  v1_1_artifact_root: ${CFTN_V1_1_ARTIFACT_ROOT:-artifacts/v1_1_algorithmic_linear_equations}
+  artifact_root: ${CFTN_V1_2_ARTIFACT_ROOT:-artifacts/v1_2_conditional_bridge}
+  math_checkpoint: ${CFTN_V1_1_ARTIFACT_ROOT:-artifacts/v1_1_algorithmic_linear_equations}/math/math.best.pth
+  source_bridge_checkpoint: ${CFTN_V1_1_ARTIFACT_ROOT:-artifacts/v1_1_algorithmic_linear_equations}/bridge_bidirectional_contextual_complementary/bridge_bidirectional.best.pth
+  synergy_protocol: config/synergy_v1_1.yaml
+
+training:
+  base_train_examples: 50000
+  base_validation_examples: 5000
+  batch_size: 24
+  eval_batch_size: 32
+  max_epochs: 30
+  minimum_epochs: 8
+  early_stop_patience: 6
+  learning_rate: 0.00002
+  minimum_learning_rate: 0.000002
+  gate_learning_rate_multiplier: 0.25
+  warmup_fraction: 0.05
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  precision: bf16
+  num_workers: 2
+  report_every_steps: 100
+  math_loss_weight: 1.0
+  gpt_loss_weight: 1.0
+  answer_head_weight: 0.0
+  preservation_weight: 2.0
+  contrastive_weight: 0.5
+  contrastive_margin: 0.25
+  redundant_gate_weight: 0.05
+
+validation:
+  generation_examples_per_view: 128
+  generation_batch_size: 16
+  max_math_new_tokens: 128
+  max_gpt_new_tokens: 32
+  shared_maximum_examples_per_split: 2000
+  complementary_maximum_pairs_per_split: 1000
+
+acceptance:
+  minimum_required_synergy_gain: 0.10
+  minimum_required_gpt_to_math_gain: 0.10
+  minimum_required_correct_vs_shuffled_gap: 0.02
+  minimum_required_math_to_gpt_gain: 0.10
+  maximum_redundant_math_regression: 0.02
+  minimum_gate_separation: 0.05
+
+monitoring:
+  status_interval_minutes: 30
+  detailed_report_every_epochs: 1
+  keep_latest_checkpoints: 3
+
+wandb:
+  project: ${WANDB_PROJECT:-cftn-text}
+  group: ${WANDB_GROUP:-v1-2-conditional-bridge}
+  mode: online
+  require_api_key_environment: true

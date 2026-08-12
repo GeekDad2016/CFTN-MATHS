@@ -6,6 +6,7 @@ from pathlib import Path
 
 from cftn_text.config import load_config
 from cftn_text.evaluation import evaluate_model_checkpoint
+from cftn_text.wandb_support import add_wandb_arguments, wandb_options_from_args
 
 
 def main() -> None:
@@ -17,6 +18,7 @@ def main() -> None:
     parser.add_argument("--maximum-examples", type=int)
     parser.add_argument("--output-root")
     parser.add_argument("--view-mode", choices=("shared", "complementary"))
+    add_wandb_arguments(parser)
     args = parser.parse_args()
     config = load_config(args.config)
     checkpoint = args.checkpoint
@@ -34,6 +36,10 @@ def main() -> None:
         maximum_examples=args.maximum_examples,
         output_root=args.output_root,
         view_mode=args.view_mode,
+        wandb_options=wandb_options_from_args(
+            args,
+            default_run_name=f"{config['project']['name']}-evaluation-shared",
+        ),
     )
     print(json.dumps(result, indent=2))
 

@@ -28,10 +28,11 @@ def main() -> None:
         / "bridge_bidirectional_contextual_complementary"
         / "bridge_bidirectional.best.pth"
     )
+    benchmark_name = str(protocol["benchmark"].get("artifact_name", "synergy_v1"))
     benchmark_manifest = args.benchmark_manifest or (
         Path(config["project"]["data_root"]).parents[1]
         / "benchmarks"
-        / "synergy_v1"
+        / benchmark_name
         / "manifest.json"
     )
     report = evaluate_synergy_checkpoint(

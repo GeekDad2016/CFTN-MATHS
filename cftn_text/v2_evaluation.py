@@ -77,6 +77,15 @@ def evaluate_v2_math_checkpoint(
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "config_sha256": config_sha256(config),
         "manifest_sha256": manifest["manifest_sha256"],
+        "generation_contract": {
+            "policy": str(settings.get("generation_policy", "configured")),
+            "max_new_tokens": int(settings["max_math_new_tokens"]),
+            "model_context_tokens": int(model.max_sequence_length),
+            "answer_head_enabled": bool(model.answer_head_enabled),
+            "checkpoint_selection_split": str(
+                config.get("checkpoint_selection", {}).get("split", "validation")
+            ),
+        },
         "splits": {},
     }
     try:
@@ -159,6 +168,8 @@ def evaluate_v2_math_checkpoint(
             split_report = {
                 **metrics,
                 "excluded_over_context": excluded_over_context,
+                "excluded_over_context_rate": excluded_over_context
+                / max(1, excluded_over_context + len(records)),
                 "integer_answer_head_examples": len(integer_rows),
                 "integer_answer_head_accuracy": answer_head_accuracy,
                 "generation_rows": str(rows_path.resolve()),

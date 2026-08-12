@@ -1,0 +1,217 @@
+format: cftn_text_multi_specialist_revision_v1_3
+
+revision:
+  name: cftn_text_v1_3_wake_gated_multi_specialist
+  seed: 719
+  intent: conditional_multi_specialist_compute_without_routing
+
+prerequisite:
+  v1_2_revision_sha256: 7277a53ee55aa3605f8da4b6278d2b0291825562cde3965c6647187557c8f556
+  require_all_v1_2_gates: true
+  required_completed_stages:
+    - audit_v1_1_prerequisites
+    - train_conditional_gpt_to_math
+    - evaluate_shared_no_harm
+    - evaluate_complementary_causality
+    - assemble_v1_2_evidence
+
+paths:
+  base_config: config/v1_1_algorithmic_linear_equations.yaml
+  v1_2_artifact_root: ${CFTN_V1_2_ARTIFACT_ROOT:-artifacts/v1_2_conditional_bridge}
+  v1_2_report: ${CFTN_V1_2_ARTIFACT_ROOT:-artifacts/v1_2_conditional_bridge}/v1_2_final_report.json
+  v1_2_pipeline_status: ${CFTN_V1_2_ARTIFACT_ROOT:-artifacts/v1_2_conditional_bridge}/pipeline_status.json
+  math_checkpoint: ${CFTN_V1_1_ARTIFACT_ROOT:-artifacts/v1_1_algorithmic_linear_equations}/math/math.best.pth
+  data_root: ${CFTN_V1_3_DATA_ROOT:-data/manifests/v1_3_multi_specialist}
+  artifact_root: ${CFTN_V1_3_ARTIFACT_ROOT:-artifacts/v1_3_multi_specialist}
+
+data:
+  ascii_only: true
+  string_train_examples: 100000
+  string_validation_examples: 10000
+  string_test_examples: 10000
+  string_heldout_paraphrase_examples: 10000
+  string_extrapolation_examples: 10000
+  string_compositional_examples: 10000
+  joint_train_examples: 100000
+  joint_validation_examples: 5000
+  joint_test_examples: 10000
+  joint_heldout_paraphrase_examples: 10000
+  joint_extrapolation_examples: 10000
+  joint_counterfactual_examples: 10000
+  joint_unseen_composition_examples: 10000
+  maximum_string_length_train: 24
+  maximum_string_length_extrapolation: 48
+  maximum_gpt_length: 256
+  maximum_specialist_length: 256
+  task_shares:
+    pure_language: 0.20
+    explicit_math: 0.20
+    exact_string: 0.20
+    language_dependent_math: 0.20
+    multi_specialist: 0.20
+
+gpt_interface:
+  answer_protocol: first_nonempty_completion_line_v1
+  generic_answer_cue: "Exact result:"
+  pure_language_prompt_style: archival_key_value_v1
+  completion_terminator: "\n"
+  calibration_max_new_tokens: 16
+
+string_tower:
+  layers: 6
+  hidden_size: 256
+  attention_heads: 8
+  feed_forward_size: 1024
+  dropout: 0.1
+  max_sequence_length: 256
+  receiver_layers: [1, 4]
+  answer_min: -512
+  answer_max: 512
+  answer_head_mode: disabled
+
+bridge:
+  message_tokens: 8
+  message_width: 256
+  attention_heads: 8
+  dropout: 0.1
+  gate_hidden_size: 256
+  gate_init: -2.0
+  zero_init_output: true
+
+runtime:
+  specialist_names: [math, string]
+  maximum_callosal_rounds: 3
+  wake_threshold: 0.50
+  hard_wake_straight_through: true
+  neutral_workspaces:
+    math: "<workspace:math><latent-request>"
+    string: "<workspace:string><latent-request>"
+
+string_training:
+  batch_size: 128
+  eval_batch_size: 256
+  max_epochs: 60
+  minimum_epochs: 25
+  early_stop_patience: 10
+  learning_rate: 0.0003
+  minimum_learning_rate: 0.00001
+  warmup_fraction: 0.03
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  precision: bf16
+  num_workers: 2
+  report_every_steps: 100
+
+integration_training:
+  phases:
+    - name: single_specialist_capacity
+      max_epochs: 10
+      wake_mode: oracle_dense
+      maximum_rounds: 1
+      include_task_classes: [explicit_math, exact_string]
+    - name: dense_mixed_messages
+      max_epochs: 20
+      wake_mode: dense
+      maximum_rounds: 1
+      include_task_classes: [pure_language, explicit_math, exact_string, language_dependent_math, multi_parallel]
+    - name: dense_recurrent
+      max_epochs: 20
+      wake_mode: dense
+      maximum_rounds: 3
+      include_task_classes: [pure_language, explicit_math, exact_string, language_dependent_math, multi_parallel, multi_sequential]
+    - name: supervised_soft_wake
+      max_epochs: 15
+      wake_mode: soft
+      maximum_rounds: 3
+      include_task_classes: [pure_language, explicit_math, exact_string, language_dependent_math, multi_parallel, multi_sequential]
+    - name: hardened_wake
+      max_epochs: 10
+      wake_mode: hard_straight_through
+      maximum_rounds: 3
+      include_task_classes: [pure_language, explicit_math, exact_string, language_dependent_math, multi_parallel, multi_sequential]
+  batch_size: 12
+  eval_batch_size: 16
+  learning_rate: 0.00002
+  gate_learning_rate_multiplier: 0.25
+  minimum_learning_rate: 0.000002
+  warmup_fraction: 0.05
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  precision: bf16
+  num_workers: 2
+  report_every_steps: 100
+  keep_latest_checkpoints: 3
+  auxiliary_every_steps: 4
+  validation_causal_examples: 512
+  losses:
+    task: 1.0
+    specialist: 1.0
+    causal_message: 0.5
+    causal_message_margin: 0.25
+    no_harm: 2.0
+    wake_required_set: 1.0
+    causal_wake_utility: 0.5
+    causal_wake_margin: 0.25
+    halt: 0.25
+    active_compute_initial: 0.0
+    active_compute_hardening: 0.02
+
+evaluation:
+  primary_split: joint_test
+  diagnostic_splits:
+    - joint_heldout_paraphrase
+    - joint_extrapolation
+    - joint_counterfactual
+    - joint_unseen_composition
+  competence_conditioning:
+    enabled: true
+    oracle_native_inputs: true
+    diagnostics_are_non_gating: true
+  generation_batch_size: 16
+  maximum_examples_per_split: 10000
+  max_specialist_new_tokens: 96
+  max_gpt_new_tokens: 48
+  bootstrap_samples: 10000
+  arms:
+    - gpt_alone
+    - math_alone
+    - string_alone
+    - dense_cftn
+    - learned_wake_cftn
+    - oracle_wake_cftn
+    - all_closed
+    - each_specialist_disabled
+    - each_direction_disabled
+    - messages_shuffled
+    - wrong_specialist_forced
+    - fixed_open
+    - one_round
+    - serial_pipeline
+
+acceptance:
+  minimum_gpt_language_calibration_accuracy: 0.90
+  minimum_native_familiar_exact_accuracy: 0.95
+  minimum_task_matched_oracle_exact_accuracy: 0.95
+  minimum_primary_competence_coverage: 0.95
+  maximum_pure_language_regression: 0.02
+  maximum_pure_language_false_wake_rate: 0.05
+  minimum_wake_recall: 0.95
+  minimum_wake_precision: 0.90
+  minimum_exact_required_set_accuracy: 0.90
+  minimum_joint_synergy_gain: 0.10
+  minimum_required_bridge_ablation_loss: 0.10
+  maximum_irrelevant_bridge_effect: 0.02
+  maximum_hard_vs_dense_regression: 0.02
+  minimum_compute_reduction: 0.30
+  minimum_sequential_accuracy: 0.80
+  minimum_multiround_gain: 0.10
+
+monitoring:
+  poll_seconds: 1800
+  detailed_report_every_epochs: 1
+
+wandb:
+  project: ${WANDB_PROJECT:-cftn-text}
+  group: ${WANDB_GROUP:-v1-3-multi-specialist}
+  mode: online
+  require_api_key_environment: true

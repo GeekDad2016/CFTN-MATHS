@@ -33,6 +33,10 @@ class EquationDataset(Dataset[dict[str, Any]]):
                 from .v2_data import load_v2_records
 
                 self.records = load_v2_records(path)
+            elif first and first.get("schema_version") == "cftn_linear_equation_v1_1":
+                from .algorithmic_data_generator import load_algorithmic_records
+
+                self.records = load_algorithmic_records(path)
             else:
                 self.records = load_records(path)
         else:

@@ -1,0 +1,170 @@
+{
+  "complementary_view": {
+    "causal_collaboration_gate": {
+      "correct_vs_shuffled": true,
+      "counterfactual_pair_accuracy": false,
+      "gpt_to_math_causal_gain": true,
+      "joint_not_worse_than_serial": true,
+      "math_to_gpt_causal_gain": true,
+      "message_swap_follows_donor": false,
+      "pass": false,
+      "synergy_gain": true
+    },
+    "report": "G:\\ctfn-text\\artifacts\\v1_2_conditional_bridge\\evaluation_complementary\\report.json",
+    "splits": {
+      "answer_extrapolation": {
+        "joint_accuracy_change": 0.0005000000000000004,
+        "v1_1_joint_accuracy": 0.013,
+        "v1_2_correct_vs_shuffled": 0.0135,
+        "v1_2_gpt_to_math_gain": 0.0145,
+        "v1_2_joint_accuracy": 0.0135
+      },
+      "compositional": {
+        "joint_accuracy_change": -0.00649999999999995,
+        "v1_1_joint_accuracy": 0.87,
+        "v1_2_correct_vs_shuffled": 0.8575,
+        "v1_2_gpt_to_math_gain": 0.8585,
+        "v1_2_joint_accuracy": 0.8635
+      },
+      "extrapolation": {
+        "joint_accuracy_change": 0.022000000000000006,
+        "v1_1_joint_accuracy": 0.1025,
+        "v1_2_correct_vs_shuffled": 0.1225,
+        "v1_2_gpt_to_math_gain": 0.1235,
+        "v1_2_joint_accuracy": 0.1245
+      },
+      "heldout_language": {
+        "joint_accuracy_change": -0.032000000000000015,
+        "v1_1_joint_accuracy": 0.1355,
+        "v1_2_correct_vs_shuffled": 0.0985,
+        "v1_2_gpt_to_math_gain": 0.099,
+        "v1_2_joint_accuracy": 0.1035
+      },
+      "test": {
+        "joint_accuracy_change": 0.0030000000000000027,
+        "v1_1_joint_accuracy": 0.9865,
+        "v1_2_correct_vs_shuffled": 0.986,
+        "v1_2_gpt_to_math_gain": 0.9865,
+        "v1_2_joint_accuracy": 0.9895
+      }
+    }
+  },
+  "final_gates": {
+    "complementary_correct_vs_shuffled": true,
+    "complementary_gpt_to_math_gain": true,
+    "complementary_math_to_gpt_gain": true,
+    "complementary_synergy_gain": true,
+    "pass": true,
+    "preserves_v1_1_familiar_and_compositional": true,
+    "shared_specialist_no_harm": true,
+    "training_mixed_necessity_gate": true
+  },
+  "findings": {
+    "diagnostic_hypotheses": [],
+    "failed": [],
+    "passed": [
+      "The selected training checkpoint passed the fixed mixed-necessity generation panel.",
+      "GPT-to-math stayed within the preregistered shared-view specialist regression limit.",
+      "Full CFTN exceeded the strongest isolated arm on complementary tasks.",
+      "Correct bridge messages outperformed shuffled-message controls.",
+      "GPT-to-math made a positive causal contribution.",
+      "Math-to-GPT made a positive causal contribution.",
+      "The revision retained V1.1 familiar and compositional capability."
+    ],
+    "recommendations": [
+      "Proceed to the preregistered V1.3 wake-gated recurrent multi-specialist experiment."
+    ]
+  },
+  "format": "cftn_text_v1_2_revision_report_v1",
+  "generated_utc": "2026-08-10T21:10:48.431352+00:00",
+  "interpretation": {
+    "communication_revision": "Tests when GPT-to-math information should cross; it does not test wake-gate conditional compute or multi-specialist routing.",
+    "generalization": "V1.2 reuses frozen V1.1 towers, so broad specialist capability remains a separate V2 question."
+  },
+  "provenance": {
+    "base_config_sha256": "6beeecb14596720700d1e4865f996116896753ee37366f2a754e3e95b15d37c6",
+    "format": "cftn_text_v1_2_prerequisite_audit_v1",
+    "manifest_sha256": "66d5243c6af2f33e745d3cfc5eeb86b90b3c735c41cafe120627b3d14e1a8e33",
+    "math_checkpoint": "G:\\ctfn-text\\artifacts\\v1_1_algorithmic_linear_equations\\math\\math.best.pth",
+    "math_checkpoint_epoch": 98,
+    "math_checkpoint_sha256": "97a48a484157f10e9ce41a8d9fef8ea8b168180d26ebee00d50f549bc506eb27",
+    "revision_sha256": "7277a53ee55aa3605f8da4b6278d2b0291825562cde3965c6647187557c8f556",
+    "source_bridge_checkpoint": "G:\\ctfn-text\\artifacts\\v1_1_algorithmic_linear_equations\\bridge_bidirectional_contextual_complementary\\bridge_bidirectional.best.pth",
+    "source_bridge_checkpoint_sha256": "97884cf1697ca97f2d4c2ffcb569b0d2e993a883c1ace51910ff487ffb99d85b",
+    "source_bridge_epoch": 52,
+    "state": "passed",
+    "v1_1_pipeline_status": "G:\\ctfn-text\\artifacts\\v1_1_algorithmic_linear_equations\\pipeline_status.json"
+  },
+  "result_documents": {
+    "artifact": "G:\\ctfn-text\\artifacts\\v1_2_conditional_bridge\\V1_2_EXPERIMENT_RESULTS.md",
+    "repository": "G:\\ctfn-text\\V1_2_EXPERIMENT_RESULTS.md"
+  },
+  "revision_sha256": "7277a53ee55aa3605f8da4b6278d2b0291825562cde3965c6647187557c8f556",
+  "shared_view": {
+    "maximum_redundant_math_regression": 0.0005000000000000004,
+    "report": "G:\\ctfn-text\\artifacts\\v1_2_conditional_bridge\\evaluation_shared\\report.json",
+    "splits": {
+      "answer_extrapolation": {
+        "regression_improvement": 0.0026,
+        "v1_1_redundant_math_regression": 0.0026,
+        "v1_2_full_math_accuracy": 0.007,
+        "v1_2_gpt_to_math_disabled_math_accuracy": 0.007,
+        "v1_2_redundant_math_regression": 0.0
+      },
+      "compositional": {
+        "regression_improvement": -8.673617379884035e-19,
+        "v1_1_redundant_math_regression": 0.0004999999999999996,
+        "v1_2_full_math_accuracy": 0.0065,
+        "v1_2_gpt_to_math_disabled_math_accuracy": 0.007,
+        "v1_2_redundant_math_regression": 0.0005000000000000004
+      },
+      "extrapolation": {
+        "regression_improvement": 0.08759999999999998,
+        "v1_1_redundant_math_regression": 0.0806,
+        "v1_2_full_math_accuracy": 0.2065,
+        "v1_2_gpt_to_math_disabled_math_accuracy": 0.1995,
+        "v1_2_redundant_math_regression": -0.0069999999999999785
+      },
+      "heldout_language": {
+        "regression_improvement": 0.0017000000000000001,
+        "v1_1_redundant_math_regression": 0.0017000000000000001,
+        "v1_2_full_math_accuracy": 0.007,
+        "v1_2_gpt_to_math_disabled_math_accuracy": 0.007,
+        "v1_2_redundant_math_regression": 0.0
+      },
+      "test": {
+        "regression_improvement": 0.20289999999999997,
+        "v1_1_redundant_math_regression": 0.20289999999999997,
+        "v1_2_full_math_accuracy": 1.0,
+        "v1_2_gpt_to_math_disabled_math_accuracy": 1.0,
+        "v1_2_redundant_math_regression": 0.0
+      }
+    }
+  },
+  "training": {
+    "best_checkpoint": "G:\\ctfn-text\\artifacts\\v1_2_conditional_bridge\\bridge_conditional_contextual\\bridge_bidirectional.best.pth",
+    "best_checkpoint_sha256": "6d3d13eefdcb17f6c848c11baf69f4f60040a8b16f0da34c4882fa2dd3235082",
+    "best_epoch": 11,
+    "best_generation_acceptance": {
+      "gates": {
+        "contextual_gate_separation": true,
+        "pass": true,
+        "redundant_no_harm": true,
+        "required_content_specific_gpt_to_math": true,
+        "required_gpt_to_math": true,
+        "required_math_to_gpt": true,
+        "required_synergy": true
+      },
+      "metrics": {
+        "gate_separation": 0.4194417415917542,
+        "redundant_math_regression": 0.0,
+        "required_correct_vs_shuffled_gap": 0.7734375,
+        "required_gpt_to_math_gain": 0.9921875,
+        "required_math_to_gpt_gain": 1.0,
+        "required_synergy_gain": 0.9921875
+      }
+    },
+    "summary": "G:\\ctfn-text\\artifacts\\v1_2_conditional_bridge\\bridge_conditional_contextual\\summary.json",
+    "wandb_url": "https://wandb.ai/kaipo/cftn-text/runs/nxzftegn"
+  }
+}

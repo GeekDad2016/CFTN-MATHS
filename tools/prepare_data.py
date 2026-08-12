@@ -15,8 +15,17 @@ def main() -> None:
     args = parser.parse_args()
     config = load_config(args.config)
     root = args.output_root or config["project"]["data_root"]
-    manifest = prepare_manifests(config, root, force=args.force)
-    audit = audit_manifest(manifest, root)
+    if config["data"].get("format") == "cftn_text_linear_equations_v1_1":
+        from cftn_text.algorithmic_data_generator import (
+            audit_algorithmic_manifest,
+            prepare_algorithmic_manifests,
+        )
+
+        manifest = prepare_algorithmic_manifests(config, root, force=args.force)
+        audit = audit_algorithmic_manifest(manifest, root)
+    else:
+        manifest = prepare_manifests(config, root, force=args.force)
+        audit = audit_manifest(manifest, root)
     print(json.dumps({"manifest": manifest, "audit": audit}, indent=2))
 
 

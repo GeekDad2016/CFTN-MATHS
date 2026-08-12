@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from cftn_text.checkpoint import atomic_json_dump
+from cftn_text.conditional_training import load_revision_config
 from cftn_text.config import load_config
+from cftn_text.data_generator import file_sha256
 from cftn_text.v2_data import audit_v2_manifest
 
 
@@ -21,6 +23,7 @@ class Stage:
     command: list[str]
     completion_path: Path
     resumable_artifact: Path | None = None
+    epoch_limit: int | None = None
 
 
 def _wandb_arguments(
@@ -63,12 +66,36 @@ def command_plan(
 ) -> list[Stage]:
     root = Path(config["project"]["artifact_root"])
     data_root = Path(config["project"]["data_root"])
-    math_checkpoint = root / "math" / "math.best.pth"
-    m2g_root = root / "bridge_m2g_contextual_complementary"
-    m2g_checkpoint = m2g_root / "bridge_m2g.best.pth"
-    bidirectional_root = root / "bridge_bidirectional_contextual_complementary"
-    bidirectional_checkpoint = bidirectional_root / "bridge_bidirectional.best.pth"
+    math_checkpoint = root / "math_selected" / "math.selected.pth"
+    m2g_root = root / "bridge_m2g_contextual"
+    conditional_root = root / "bridge_conditional_contextual"
+    conditional_checkpoint = conditional_root / "bridge_bidirectional.best.pth"
+    repository_root = Path(config_path).resolve().parent.parent
+    revision_path = Path(
+        config.get("conditional_bridge", {}).get(
+            "revision_config", "config/v2_conditional_bridge.yaml"
+        )
+    )
+    if not revision_path.is_absolute():
+        revision_path = repository_root / revision_path
+    revision = load_revision_config(revision_path)
+    if Path(revision["paths"]["base_config"]) != Path(config_path).resolve():
+        raise ValueError("V2 conditional revision points to a different base config")
+    resolved_root = (root if root.is_absolute() else repository_root / root).resolve()
+    if Path(revision["paths"]["artifact_root"]).resolve() != resolved_root:
+        raise ValueError("V2 conditional revision and base config use different artifact roots")
     return [
+        Stage(
+            "audit_mechanism_prerequisites",
+            [
+                sys.executable,
+                "-m",
+                "tools.audit_v2_prerequisites",
+                "--config",
+                config_path,
+            ],
+            root / "mechanism_prerequisites.json",
+        ),
         Stage(
             "prepare_data",
             [
@@ -91,12 +118,35 @@ def command_plan(
                 "--device",
                 device,
                 "--skip-calibration",
+                *(
+                    ["--disable-early-stopping"]
+                    if not bool(
+                        config.get("math_training", {}).get(
+                            "early_stopping_enabled", True
+                        )
+                    )
+                    else []
+                ),
                 *_wandb_arguments(
                     wandb, config, suffix="math", tags=["math-tower", "curriculum"]
                 ),
             ],
             root / "math" / "summary.json",
             root / "math",
+            int(config["math_training"]["max_epochs"]),
+        ),
+        Stage(
+            "select_math_checkpoint",
+            [
+                sys.executable,
+                "-m",
+                "tools.select_v2_math_checkpoint",
+                "--config",
+                config_path,
+                "--device",
+                device,
+            ],
+            root / "math_checkpoint_selection" / "report.json",
         ),
         Stage(
             "evaluate_math",
@@ -132,46 +182,65 @@ def command_plan(
                 "--stage",
                 "m2g",
                 "--view-mode",
-                "complementary",
+                "shared",
                 "--math-checkpoint",
                 str(math_checkpoint),
                 *_wandb_arguments(
                     wandb,
                     config,
                     suffix="m2g",
-                    tags=["bridge", "math-to-gpt", "complementary"],
+                    tags=["bridge", "math-to-gpt", "shared"],
                 ),
             ],
             m2g_root / "summary.json",
             m2g_root,
+            int(config["bridge_training"]["max_epochs"]),
         ),
         Stage(
-            "train_bidirectional",
+            "train_conditional_gpt_to_math",
             [
                 sys.executable,
                 "-m",
-                "tools.train_bridges",
+                "tools.train_conditional_bridge",
+                "--revision-config",
+                str(revision_path.resolve()),
+                "--device",
+                device,
+                *_wandb_arguments(
+                    wandb,
+                    config,
+                    suffix="conditional-gpt-to-math",
+                    tags=["bridge", "conditional", "mixed-necessity", "no-harm"],
+                ),
+            ],
+            conditional_root / "summary.json",
+            conditional_root,
+            int(revision["training"]["max_epochs"]),
+        ),
+        Stage(
+            "evaluate_shared_no_harm",
+            [
+                sys.executable,
+                "-m",
+                "tools.evaluate_v2_collaboration",
                 "--config",
                 config_path,
                 "--device",
                 device,
-                "--stage",
-                "bidirectional",
                 "--view-mode",
-                "complementary",
+                "shared",
+                "--checkpoint",
+                str(conditional_checkpoint),
                 "--math-checkpoint",
                 str(math_checkpoint),
-                "--initialize-from",
-                str(m2g_checkpoint),
                 *_wandb_arguments(
                     wandb,
                     config,
-                    suffix="bidirectional",
-                    tags=["bridge", "bidirectional", "complementary"],
+                    suffix="shared-no-harm-evaluation",
+                    tags=["evaluation", "shared", "no-harm"],
                 ),
             ],
-            bidirectional_root / "summary.json",
-            bidirectional_root,
+            root / "evaluation_shared_no_harm_v2" / "report.json",
         ),
         Stage(
             "evaluate_collaboration",
@@ -184,7 +253,7 @@ def command_plan(
                 "--device",
                 device,
                 "--checkpoint",
-                str(bidirectional_checkpoint),
+                str(conditional_checkpoint),
                 "--math-checkpoint",
                 str(math_checkpoint),
                 *_wandb_arguments(
@@ -235,9 +304,40 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
     if stage.completion_path.name == "summary.json":
         try:
             with stage.completion_path.open("r", encoding="utf-8") as handle:
-                return json.load(handle).get("state") == "completed"
+                summary = json.load(handle)
+            if summary.get("state") != "completed":
+                return False
+            if stage.name == "train_conditional_gpt_to_math":
+                return (
+                    summary.get("best_acceptance", {}).get("gates", {}).get("pass")
+                    is True
+                )
+            return True
         except (OSError, json.JSONDecodeError):
             return False
+    try:
+        with stage.completion_path.open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if stage.name == "audit_mechanism_prerequisites":
+        return report.get("state") == "passed" and report.get("pass") is True
+    if stage.name == "select_math_checkpoint":
+        selected = report.get("selected", {})
+        path = Path(str(selected.get("path", "")))
+        return (
+            report.get("state") == "completed"
+            and path.is_file()
+            and file_sha256(path) == selected.get("sha256")
+        )
+    if stage.name == "evaluate_math":
+        return report.get("specialist_gate", {}).get("pass") is True
+    if stage.name == "evaluate_shared_no_harm":
+        return report.get("shared_no_harm_gate", {}).get("pass") is True
+    if stage.name == "evaluate_collaboration":
+        return report.get("collaboration_gate", {}).get("pass") is True
+    if stage.name == "assemble_report":
+        return report.get("overall_pass") is True
     return True
 
 
@@ -289,13 +389,17 @@ def main() -> None:
         "wandb": args.wandb,
         "wandb_api_key_source": "WANDB_API_KEY environment variable",
         "train_examples": config["data"]["train_examples"],
-        "math_epochs": config["math_training"]["max_epochs"],
-        "bridge_epochs_per_stage": config["bridge_training"]["max_epochs"],
+        "training_epoch_limits": {
+            stage.name: stage.epoch_limit
+            for stage in stages
+            if stage.epoch_limit is not None
+        },
         "stages": [
             {
                 "name": stage.name,
                 "complete": _is_complete(stage, config),
                 "command": subprocess.list2cmdline(stage.command),
+                "epoch_limit": stage.epoch_limit,
             }
             for stage in stages
         ],

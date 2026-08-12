@@ -4,6 +4,42 @@ V2 is one resumable end-to-end experiment. It keeps GPT-2 frozen, retains the
 successful contextual message bridges and gated cross-receivers, and trains the
 scratch math tower on 400,000 unique mixed examples before training the bridges.
 
+## Architecture sequencing after V1.1
+
+The V2 runner now enforces the completed V1.1/V1.2 lessons in code. It does not
+launch the old unrestricted bidirectional objective. Conditional GPT-to-math
+training freezes the math-to-GPT path and carries forward specialist
+preservation, the required-message causal margin, paired required/redundant
+views, generation-led checkpoint selection, and a shared-view no-harm gate.
+
+The prerequisite stage verifies a passing V1.2 report, a passing V1.3 report,
+and the hash chain connecting them. The sealed V1.2 report is included in
+`evidence/`. V1.3 is still active, so its report is intentionally absent and
+V2 currently fails closed. Supply the final immutable report through
+`evidence/v1_3_final_report.json` or `CFTN_V1_3_REPORT`; there is no bypass for
+a failed report.
+
+The intended division of labour is asymmetric and complementary:
+
+- GPT owns the untouched natural-language problem, discourse context, and final
+  response;
+- the math specialist owns exact execution in a narrow native workspace and is
+  not expected to become a second general-language model;
+- GPT-to-math messages provide the operation, semantic roles, constraints, or
+  relevant span that the specialist's local input does not contain;
+- math-to-GPT messages return the exact result and compact supporting state.
+
+The V2 generated records implement a controlled private-view test:
+code prepares a semantic `gpt_problem` and an opaque numeric `math_problem`
+before inference. This is appropriate for proving causal bridge cooperation,
+but it is not yet autonomous expert use. A later natural-interface arm must
+give only GPT the raw prompt, initialize the specialist from neutral workspace
+tokens, and test whether GPT forms a sufficient expert request through the
+bridge. The final report explicitly does not treat this as a new proof that
+V1.3's natural-prompt wake runtime works with the broad specialist. That
+checkpoint transfer and matched re-evaluation is the next integration revision
+after both V1.3 and this broad specialist pass.
+
 ## Data boundary
 
 The 400,000-example training split is fixed before optimization:
@@ -53,18 +89,20 @@ python -m tools.run_v2_experiment --config config/v2_broad_math.yaml --wandb
 
 ## Ordered stages
 
-1. Generate and hash the immutable manifests.
-2. Train the math tower through three difficulty phases for at most 12 epochs.
-3. Evaluate standalone exact generation on local, DeepMind, GSM8K, and
-   GSM-Symbolic held-out data.
-4. Train math-to-GPT communication on complementary private views.
-5. Initialize from that checkpoint and train bidirectional communication.
-6. Run closed-bridge, directional, shuffled-message, and fixed-open causal arms.
-7. Decide whether a later one-million-example run is justified by the recent
-   held-out learning curve. Scaling is never started automatically.
-8. Assemble `v2_final_report.json`.
+1. Audit passed and hash-chained V1.2/V1.3 evidence.
+2. Generate and hash the immutable manifests.
+3. Train the math tower through all three curriculum phases for 12 epochs.
+4. Select among retained checkpoints using validation-only greedy generation.
+5. Evaluate standalone exact generation and stop on a failed specialist gate.
+6. Train math-to-GPT communication on shared complete prompts.
+7. Train conditional GPT-to-math while freezing the return path.
+8. Evaluate shared-view specialist no-harm and stop on failure.
+9. Run complementary closed, directional, shuffled, and fixed-open causal arms.
+10. Assess a later one-million-example run from generated held-out trends;
+    scaling is never started automatically.
+11. Assemble `v2_final_report.json` and require every preceding gate.
 
-The default batch sizes target a 24 GB RunPod GPU. If the selected GPU has less
-memory, lower both training batch sizes in the YAML; this changes the experiment
-hash and therefore creates a distinct run rather than silently resuming an
-incompatible checkpoint.
+The conservative batches fit smaller development GPUs; a B200 has substantial
+headroom and should first run the same hashed baseline. Any throughput-tuned
+batch-size profile changes optimization and therefore receives a new config
+hash rather than silently resuming this experiment.

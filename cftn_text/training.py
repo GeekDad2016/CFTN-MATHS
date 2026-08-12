@@ -85,10 +85,15 @@ def load_data_contract(config: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     root = Path(config["project"]["data_root"]).expanduser().resolve()
     manifest_path = root / "manifest.json"
     if not manifest_path.exists():
-        if config["data"].get("format") == "cftn_text_broad_math_v2":
+        data_format = config["data"].get("format")
+        if data_format == "cftn_text_broad_math_v2":
             from .v2_data import prepare_v2_manifests
 
             prepare_v2_manifests(config, root)
+        elif data_format == "cftn_text_linear_equations_v1_1":
+            from .algorithmic_data_generator import prepare_algorithmic_manifests
+
+            prepare_algorithmic_manifests(config, root)
         else:
             prepare_manifests(config, root)
     with manifest_path.open("r", encoding="utf-8") as handle:
@@ -99,6 +104,10 @@ def load_data_contract(config: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         from .v2_data import audit_v2_manifest
 
         audit_v2_manifest(manifest, root)
+    elif manifest.get("format") == "cftn_text_linear_equations_v1_1":
+        from .algorithmic_data_generator import audit_algorithmic_manifest
+
+        audit_algorithmic_manifest(manifest, root)
     else:
         audit_manifest(manifest, root)
     return root, manifest
@@ -140,9 +149,13 @@ def math_epoch_dataset(
     epoch: int,
     seed: int,
 ) -> tuple[EquationDataset, dict[str, Any]]:
-    if config["data"].get("format") != "cftn_text_broad_math_v2":
+    data_format = config["data"].get("format")
+    if data_format == "cftn_text_broad_math_v2":
+        from .v2_data import curriculum_records
+    elif data_format == "cftn_text_linear_equations_v1_1":
+        from .algorithmic_data_generator import curriculum_records
+    else:
         return dataset, {"enabled": False, "phase": "all"}
-    from .v2_data import curriculum_records
 
     selected, metadata = curriculum_records(dataset.records, config, epoch)
     target = int(
@@ -263,6 +276,124 @@ def _should_stop_early(
     )
 
 
+def _bridge_stability_policy(settings: dict[str, Any]) -> dict[str, Any]:
+    """Resolve conservative bridge defaults without changing the data contract.
+
+    Bridge settings are part of the immutable experiment configuration hash.  The
+    effective cap therefore lives in the trainer and is recorded in every metric
+    row/checkpoint, allowing an already-running prerequisite stage to finish while
+    later bridge subprocesses pick up the stability fix.
+    """
+
+    requested_learning_rate = float(settings["learning_rate"])
+    maximum_learning_rate = float(
+        settings.get("stability_maximum_learning_rate", 5e-5)
+    )
+    effective_learning_rate = min(requested_learning_rate, maximum_learning_rate)
+    minimum_learning_rate = min(
+        float(settings["minimum_learning_rate"]), effective_learning_rate
+    )
+    policy = {
+        "enabled": bool(settings.get("stability_guard_enabled", True)),
+        "requested_learning_rate": requested_learning_rate,
+        "maximum_learning_rate": maximum_learning_rate,
+        "effective_learning_rate": effective_learning_rate,
+        "minimum_learning_rate": minimum_learning_rate,
+        "gate_learning_rate_multiplier": float(
+            settings.get("gate_learning_rate_multiplier", 0.5)
+        ),
+        "sequence_accuracy_drop": float(
+            settings.get("collapse_sequence_accuracy_drop", 0.25)
+        ),
+        "loss_multiplier": float(settings.get("collapse_loss_multiplier", 10.0)),
+        "absolute_loss_increase": float(
+            settings.get("collapse_absolute_loss_increase", 1.0)
+        ),
+        "minimum_reference_shuffled_gap": float(
+            settings.get("collapse_minimum_reference_shuffled_gap", 0.1)
+        ),
+        "maximum_shuffled_gap_retention": float(
+            settings.get("collapse_maximum_shuffled_gap_retention", 0.1)
+        ),
+    }
+    if policy["maximum_learning_rate"] <= 0 or policy["effective_learning_rate"] <= 0:
+        raise ValueError("bridge stability learning rates must be positive")
+    if not 0 < policy["gate_learning_rate_multiplier"] <= 1:
+        raise ValueError("gate learning-rate multiplier must be within (0, 1]")
+    if policy["minimum_learning_rate"] <= 0:
+        raise ValueError("bridge minimum learning rate must be positive")
+    if policy["loss_multiplier"] <= 1:
+        raise ValueError("bridge collapse loss multiplier must exceed one")
+    if not 0 <= policy["maximum_shuffled_gap_retention"] <= 1:
+        raise ValueError("bridge shuffled-gap retention must be within [0, 1]")
+    return policy
+
+
+def _bridge_collapse_diagnostics(
+    validation: dict[str, Any],
+    best_validation: dict[str, Any] | None,
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    """Detect the abrupt accuracy/loss/dependence failure seen in V1."""
+
+    diagnostics: dict[str, Any] = {
+        "triggered": False,
+        "reasons": [],
+    }
+    if not policy["enabled"] or best_validation is None:
+        return diagnostics
+
+    sequence_keys = (
+        "gpt_teacher_forced_sequence_accuracy",
+        "math_teacher_forced_sequence_accuracy",
+    )
+    sequence_drops = {
+        key: float(best_validation[key]) - float(validation[key])
+        for key in sequence_keys
+    }
+    largest_sequence_drop = max(sequence_drops.values())
+    best_loss = float(best_validation["loss"])
+    current_loss = float(validation["loss"])
+    required_loss = max(
+        best_loss * float(policy["loss_multiplier"]),
+        best_loss + float(policy["absolute_loss_increase"]),
+    )
+    best_gap = max(0.0, float(best_validation["shuffled_loss_gap"]))
+    current_gap = max(0.0, float(validation["shuffled_loss_gap"]))
+    gap_retention = current_gap / best_gap if best_gap > 0 else 1.0
+
+    loss_collapse = (
+        largest_sequence_drop >= float(policy["sequence_accuracy_drop"])
+        and current_loss >= required_loss
+    )
+    dependence_collapse = (
+        best_gap >= float(policy["minimum_reference_shuffled_gap"])
+        and gap_retention <= float(policy["maximum_shuffled_gap_retention"])
+        and largest_sequence_drop
+        >= 0.5 * float(policy["sequence_accuracy_drop"])
+    )
+    reasons: list[str] = []
+    if loss_collapse:
+        reasons.append("sequence_accuracy_and_validation_loss")
+    if dependence_collapse:
+        reasons.append("bridge_message_dependence")
+    diagnostics.update(
+        {
+            "triggered": bool(reasons),
+            "reasons": reasons,
+            "sequence_accuracy_drops": sequence_drops,
+            "largest_sequence_accuracy_drop": largest_sequence_drop,
+            "best_loss": best_loss,
+            "current_loss": current_loss,
+            "required_loss": required_loss,
+            "best_shuffled_loss_gap": best_gap,
+            "current_shuffled_loss_gap": current_gap,
+            "shuffled_gap_retention": gap_retention,
+        }
+    )
+    return diagnostics
+
+
 def _training_progress_metrics(
     *,
     epoch: int,
@@ -348,6 +479,7 @@ def evaluate_math_tower(
         "examples": examples,
         "loss": loss_sum / examples,
         "language_loss": lm_loss_sum / examples,
+        "answer_head_enabled": bool(model.answer_head_enabled),
         "answer_head_accuracy": answer_correct / max(1, answer_valid),
         "answer_head_examples": answer_valid,
         "teacher_forced_token_accuracy": token_correct / max(1, token_total),
@@ -568,7 +700,10 @@ def train_math_tower(
                 float(settings["answer_head_weight"]),
                 max_batches=max_batches,
             )
-            if manifest.get("format") == "cftn_text_broad_math_v2":
+            if (
+                manifest.get("format") == "cftn_text_broad_math_v2"
+                or not model.answer_head_enabled
+            ):
                 selection_metric = float(
                     validation["teacher_forced_sequence_accuracy"]
                 ) - 1e-6 * float(validation["loss"])
@@ -638,7 +773,15 @@ def train_math_tower(
             )
             checkpoint_path = artifact_dir / f"checkpoint_epoch_{epoch:04d}.pth"
             atomic_torch_save(payload, checkpoint_path)
-            rotate_latest(artifact_dir, int(config["monitoring"]["keep_latest_checkpoints"]))
+            rotate_latest(
+                artifact_dir,
+                int(
+                    settings.get(
+                        "keep_latest_checkpoints",
+                        config["monitoring"]["keep_latest_checkpoints"],
+                    )
+                ),
+            )
             if improved:
                 atomic_torch_save(payload, best_path)
             atomic_json_dump(
@@ -899,13 +1042,51 @@ def train_bridges(
     metrics_path = artifact_dir / "metrics.jsonl"
     status_path = artifact_dir / "status.json"
     started_at = time.time()
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    named_parameters = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    parameters = [parameter for _, parameter in named_parameters]
     if not parameters:
         raise RuntimeError("bridge stage has no trainable parameters")
+    stability_policy = _bridge_stability_policy(settings)
+    gate_parameters = [
+        parameter
+        for name, parameter in named_parameters
+        if ".gate_network." in name
+    ]
+    non_gate_parameters = [
+        parameter
+        for name, parameter in named_parameters
+        if ".gate_network." not in name
+    ]
+    optimizer_groups: list[dict[str, Any]] = []
+    if non_gate_parameters:
+        optimizer_groups.append(
+            {
+                "params": non_gate_parameters,
+                "lr": float(stability_policy["effective_learning_rate"]),
+                "weight_decay": float(settings["weight_decay"]),
+                "group_name": "bridge",
+            }
+        )
+    if gate_parameters:
+        optimizer_groups.append(
+            {
+                "params": gate_parameters,
+                "lr": float(stability_policy["effective_learning_rate"])
+                * float(stability_policy["gate_learning_rate_multiplier"]),
+                # Decoupled weight decay moves the negative gate bias toward
+                # zero and therefore toward an always-open gate.  Do not apply
+                # it to contextual gate parameters.
+                "weight_decay": 0.0,
+                "group_name": "contextual_gates",
+            }
+        )
     optimizer = AdamW(
-        parameters,
-        lr=float(settings["learning_rate"]),
-        weight_decay=float(settings["weight_decay"]),
+        optimizer_groups,
+        lr=float(stability_policy["effective_learning_rate"]),
     )
     steps_per_epoch = max(1, math.ceil(len(train_dataset) / int(settings["batch_size"])))
     total_steps = int(settings["max_epochs"]) * steps_per_epoch
@@ -913,14 +1094,15 @@ def train_bridges(
         optimizer,
         total_steps=total_steps,
         warmup_fraction=float(settings["warmup_fraction"]),
-        minimum_ratio=float(settings["minimum_learning_rate"])
-        / float(settings["learning_rate"]),
+        minimum_ratio=float(stability_policy["minimum_learning_rate"])
+        / float(stability_policy["effective_learning_rate"]),
     )
     dtype = precision_dtype(settings["precision"], device)
     scaler = make_scaler(device, dtype)
     start_epoch = 1
     global_step = 0
     best_metric = float("-inf")
+    best_validation: dict[str, Any] | None = None
     patience = 0
     if resume:
         checkpoint_path = latest_checkpoint(artifact_dir)
@@ -946,6 +1128,7 @@ def train_bridges(
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint["global_step"])
         best_metric = float(checkpoint["best_metric"])
+        best_validation = checkpoint["extra"].get("best_validation")
         patience = int(checkpoint["patience"])
     atomic_json_dump(
         _status_payload(
@@ -973,6 +1156,7 @@ def train_bridges(
             "view_mode": view_mode,
             "bridge": config["bridge"],
             "training": settings,
+            "stability_policy": stability_policy,
             "config_sha256": config_sha256(config),
             "manifest_sha256": manifest["manifest_sha256"],
             "math_checkpoint": str(math_checkpoint_path.resolve()),
@@ -1086,9 +1270,13 @@ def train_bridges(
                 + 0.01 * max(0.0, float(validation["shuffled_loss_gap"]))
                 - 1e-6 * float(validation["loss"])
             )
-            improved = selection_metric > best_metric
+            collapse_guard = _bridge_collapse_diagnostics(
+                validation, best_validation, stability_policy
+            )
+            improved = not collapse_guard["triggered"] and selection_metric > best_metric
             if improved:
                 best_metric = selection_metric
+                best_validation = validation
                 patience = 0
             else:
                 patience += 1
@@ -1097,10 +1285,16 @@ def train_bridges(
                 "global_step": global_step,
                 "train_loss": train_loss / max(1, trained_examples),
                 "learning_rate": optimizer.param_groups[0]["lr"],
+                "optimizer_learning_rates": {
+                    str(group.get("group_name", index)): float(group["lr"])
+                    for index, group in enumerate(optimizer.param_groups)
+                },
                 "validation": validation,
                 "selection_metric": selection_metric,
                 "best_metric": best_metric,
                 "patience": patience,
+                "stability_policy": stability_policy,
+                "collapse_guard": collapse_guard,
                 "gate_mode": gate_mode,
                 "view_mode": view_mode,
                 "trainable_parameters": model.trainable_parameter_count(),
@@ -1145,6 +1339,9 @@ def train_bridges(
                 patience=patience,
                 extra={
                     "metrics": final_metrics,
+                    "best_validation": best_validation,
+                    "stability_policy": stability_policy,
+                    "collapse_guard": collapse_guard,
                     "gate_mode": gate_mode,
                     "view_mode": view_mode,
                     "math_checkpoint": str(math_checkpoint_path.resolve()),
@@ -1153,7 +1350,15 @@ def train_bridges(
             )
             checkpoint_path = artifact_dir / f"checkpoint_epoch_{epoch:04d}.pth"
             atomic_torch_save(payload, checkpoint_path)
-            rotate_latest(artifact_dir, int(config["monitoring"]["keep_latest_checkpoints"]))
+            rotate_latest(
+                artifact_dir,
+                int(
+                    settings.get(
+                        "keep_latest_checkpoints",
+                        config["monitoring"]["keep_latest_checkpoints"],
+                    )
+                ),
+            )
             if improved:
                 atomic_torch_save(payload, best_path)
             atomic_json_dump(
@@ -1167,6 +1372,9 @@ def train_bridges(
                 ),
                 status_path,
             )
+            if collapse_guard["triggered"]:
+                stop_reason = "validation_collapse_guard_best_checkpoint_preserved"
+                break
             if (
                 epoch >= int(settings["minimum_epochs"])
                 and patience >= int(settings["early_stop_patience"])
@@ -1200,6 +1408,8 @@ def train_bridges(
         "best_checkpoint": str(best_path.resolve()),
         "best_checkpoint_sha256": file_sha256(best_path),
         "math_checkpoint": str(math_checkpoint_path.resolve()),
+        "stability_policy": stability_policy,
+        "collapse_guard": final_metrics.get("collapse_guard", {}),
         "final_metrics": final_metrics,
     }
     atomic_json_dump(result, artifact_dir / "summary.json")
