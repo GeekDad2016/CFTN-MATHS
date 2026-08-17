@@ -175,7 +175,10 @@ python run_v2.py --preview
 ## Ordered stages
 
 1. Generate and hash the broad-math manifests.
-2. Train the math tower through all three curriculum phases for 12 epochs.
+2. Train the math tower through all three curriculum phases for up to 100
+   epochs. The run cannot stop before epoch 60 and thereafter stops only after
+   10 validation epochs without improvement; the former 12-epoch fixed cap was
+   removed because the specialist was still improving when it ended.
 3. Select among retained checkpoints using validation-only greedy generation.
 4. Evaluate standalone exact generation and stop on a failed specialist gate.
 5. Assess whether later math-data scaling is justified; never auto-scale.

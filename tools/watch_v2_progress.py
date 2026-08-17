@@ -29,7 +29,7 @@ STAGE_DIRECTORIES = {
 }
 
 EPOCH_LIMITS = {
-    "train_math": 12,
+    "train_math": 100,
     "train_exact_string_specialist": 30,
     "train_single_specialist_capacity": 8,
     "train_dense_mixed_messages": 12,
@@ -502,15 +502,15 @@ def watch_v2_progress(
 ) -> dict[str, Any]:
     artifact = artifact_root or os.environ.get(
         "CFTN_ARTIFACT_ROOT",
-        "/workspace/volume/cftn-text/artifacts/v2_broad_math_400k_r2",
+        "/workspace/volume/cftn-text/artifacts/v2_broad_math_400k_r3",
     )
     data = data_root or os.environ.get(
         "CFTN_DATA_ROOT",
-        "/workspace/volume/cftn-text/data/v2_broad_math_400k_r2",
+        "/workspace/volume/cftn-text/data/v2_broad_math_400k_r3",
     )
     multi_data = multi_data_root or os.environ.get(
         "CFTN_V2_MULTI_DATA_ROOT",
-        "/workspace/volume/cftn-text/data/v2_multi_specialist_r1",
+        "/workspace/volume/cftn-text/data/v2_multi_specialist_r2",
     )
     previous: dict[str, Any] | None = None
     notebook = False

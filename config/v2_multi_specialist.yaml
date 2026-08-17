@@ -13,10 +13,10 @@ paths:
   base_config: config/v2_broad_math.yaml
   prior_v1_2_report: evidence/v1_2_final_report.json
   prior_v1_3_report: evidence/v1_3_final_report.json
-  math_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}/math_selected/math.selected.pth
-  math_evaluation_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}/evaluation_math_v2/report.json
-  data_root: ${CFTN_V2_MULTI_DATA_ROOT:-data/manifests/v2_multi_specialist_r1}
-  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}
+  math_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}/math_selected/math.selected.pth
+  math_evaluation_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}/evaluation_math_v2/report.json
+  data_root: ${CFTN_V2_MULTI_DATA_ROOT:-data/manifests/v2_multi_specialist_r2}
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}
 
 specialist_registry:
   maximum_slots: 3
@@ -244,6 +244,6 @@ monitoring:
 
 wandb:
   project: ${WANDB_PROJECT:-cftn-text-v2}
-  group: ${WANDB_GROUP:-scaled-multi-specialist}
+  group: ${WANDB_GROUP:-scaled-multi-specialist-r3}
   mode: online
   require_api_key_environment: true

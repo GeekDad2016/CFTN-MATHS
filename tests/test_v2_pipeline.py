@@ -40,8 +40,15 @@ def test_v2_plan_is_ordered_resumable_end_to_end():
     ]
     math_command = stages[1].command
     assert "--skip-calibration" in math_command
-    assert "--disable-early-stopping" in math_command
+    assert "--disable-early-stopping" not in math_command
     assert "--wandb" in math_command
+    assert stages[1].epoch_limit == 100
+    assert config["math_training"]["minimum_epochs"] == 60
+    assert config["math_training"]["early_stop_patience"] == 10
+    assert config["math_training"]["early_stopping_enabled"] is True
+    assert [
+        phase["through_epoch"] for phase in config["data"]["curriculum"]["phases"]
+    ] == [10, 30, 100]
     assert "tools.prepare_v1_3_data" in stages[5].command
     assert "tools.train_v1_3_string" in stages[7].command
     assert "tools.evaluate_hard_transition_baseline" in stages[13].command

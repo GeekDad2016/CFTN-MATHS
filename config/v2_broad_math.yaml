@@ -1,8 +1,8 @@
 project:
-  name: cftn_text_v2_broad_math_400k_trace_curriculum
+  name: cftn_text_v2_broad_math_400k_convergence_curriculum_r3
   seed: 719
-  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}
-  data_root: ${CFTN_DATA_ROOT:-data/manifests/v2_broad_math_400k_r2}
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}
+  data_root: ${CFTN_DATA_ROOT:-data/manifests/v2_broad_math_400k_r3}
 
 prior_evidence:
   role: informational_provenance_only
@@ -176,13 +176,13 @@ data:
     examples_per_epoch: 400000
     phases:
       - name: foundations
-        through_epoch: 2
+        through_epoch: 10
         max_difficulty: 1
       - name: rational_and_nested
-        through_epoch: 6
+        through_epoch: 30
         max_difficulty: 2
       - name: systems_and_language
-        through_epoch: 12
+        through_epoch: 100
         max_difficulty: 3
 
 gpt:
@@ -214,10 +214,10 @@ bridge:
 math_training:
   batch_size: 32
   eval_batch_size: 64
-  max_epochs: 12
-  minimum_epochs: 12
-  early_stop_patience: 4
-  early_stopping_enabled: false
+  max_epochs: 100
+  minimum_epochs: 60
+  early_stop_patience: 10
+  early_stopping_enabled: true
   learning_rate: 0.0003
   minimum_learning_rate: 0.000015
   warmup_fraction: 0.03
@@ -312,7 +312,7 @@ gpt_calibration:
 
 wandb:
   project: ${WANDB_PROJECT:-cftn-text-v2}
-  group: ${WANDB_GROUP:-scaled-multi-specialist}
+  group: ${WANDB_GROUP:-scaled-multi-specialist-r3}
   entity: ${WANDB_ENTITY:-}
   mode: online
   require_api_key_environment: true
