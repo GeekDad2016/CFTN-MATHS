@@ -25,6 +25,7 @@ from cftn_text.v1_3_evaluation import (
     resolve_specialist_generation_budget,
 )
 from cftn_text.v1_3_model import V13MultiTowerModel
+from cftn_text.v1_3_training import v1_3_objective
 from cftn_text.v1_3_reporting import _weighted_accuracy
 from tools.run_v1_3_experiment import Stage, _completion_is_valid, command_plan
 from tools.wait_then_run_v1_3 import pipeline_command
@@ -285,18 +286,16 @@ def test_v1_3_multi_tower_forward_backward_and_independent_wakes():
     )
 
 
-def test_hardened_wake_freezes_bridges_receivers_and_specialists():
-    model, _ = _tiny_model_and_batch()
+def test_hardened_wake_trains_only_wake_gates():
+    model, batch = _tiny_model_and_batch()
     model.set_trainable_phase("hardened_wake")
     model.train()
     trainable = {
         name for name, parameter in model.named_parameters() if parameter.requires_grad
     }
     assert trainable
-    assert all(
-        name.startswith("wake_gates.") or name.startswith("halt_gate.")
-        for name in trainable
-    )
+    assert all(name.startswith("wake_gates.") for name in trainable)
+    assert not any(name.startswith("halt_gate.") for name in trainable)
     assert not any(
         parameter.requires_grad for parameter in model.request_bridges.parameters()
     )
@@ -304,11 +303,22 @@ def test_hardened_wake_freezes_bridges_receivers_and_specialists():
         parameter.requires_grad for parameter in model.return_bridges.parameters()
     )
     assert model.wake_gates.training is True
-    assert model.halt_gate.training is True
     assert model.request_bridges.training is False
     assert model.return_bridges.training is False
     assert model.specialist_receivers.training is False
     assert model.gpt_tower.receivers.training is False
+
+    output, loss, components = v1_3_objective(
+        model,
+        batch,
+        wake_mode="hard_straight_through",
+        maximum_rounds=2,
+        settings=_config()["integration_training"],
+        global_step=0,
+    )
+    assert torch.allclose(loss, output.wake_loss)
+    assert components["routing_calibration_only"] == 1.0
+    assert components["auxiliary_step"] == 0.0
 
 
 def test_configured_hard_mode_physically_skips_closed_specialists():
@@ -322,6 +332,50 @@ def test_configured_hard_mode_physically_skips_closed_specialists():
         tower.reset_execution_count()
     model(batch, wake_mode="hard", maximum_rounds=1)
     assert all(tower.execution_count == 0 for tower in model.specialists.values())
+
+
+def test_hard_halt_is_separate_and_disabled_by_default():
+    model, batch = _tiny_model_and_batch()
+    model.eval()
+    with torch.no_grad():
+        model.wake_gates.network[-1].weight.zero_()
+        model.wake_gates.network[-1].bias.fill_(10.0)
+        model.halt_gate.network[-1].weight.zero_()
+        model.halt_gate.network[-1].bias.fill_(10.0)
+        default_output = model(batch, wake_mode="hard", maximum_rounds=2)
+        halted_output = model(
+            batch, wake_mode="hard", maximum_rounds=2, apply_halt=True
+        )
+    assert default_output.rounds[1].wake_activations.eq(1).all()
+    assert halted_output.rounds[0].wake_activations.eq(1).all()
+    assert halted_output.rounds[1].wake_activations.eq(0).all()
+
+
+def test_conditional_execution_preserves_autocast_output_dtype():
+    model, batch = _tiny_model_and_batch()
+    specialist_batch = batch["specialists"]["math"][0]
+    activation = torch.tensor([1.0, 0.0])
+    request = torch.zeros(2, 2, model.request_bridges["math"].message_width)
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        direct = model.specialists["math"](
+            specialist_batch["input_ids"][:1],
+            specialist_batch["attention_mask"][:1],
+            specialist_batch["prefix_lengths"][:1],
+            message=request[:1],
+            receivers=model.specialist_receivers["math"],
+            receive_enabled=True,
+            gate_mode=model.gate_mode,
+        )
+        output = model._run_specialist(
+            "math",
+            specialist_batch,
+            request,
+            activation,
+            conditional_execution=True,
+        )
+    assert output.logits.dtype == direct.logits.dtype
+    assert output.hidden_states.dtype == direct.hidden_states.dtype
+    assert output.answer_logits.dtype == direct.answer_logits.dtype
 
 
 def test_v1_3_pipeline_is_ordered_and_guarded():

@@ -387,6 +387,8 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
                 return (
                     contract.get("group_names") == ["gates"]
                     and contract.get("gate_only") is True
+                    and contract.get("trainable_components") == ["wake_gates"]
+                    and contract.get("halt_gate_frozen") is True
                     and selected_metrics
                     .get("hardening_acceptance", {})
                     .get("gates", {})
@@ -577,6 +579,9 @@ def _runtime_preflight(
             "hardening_trainable_components": revision["integration_training"][
                 "phases"
             ][-1]["trainable_components"],
+            "hardening_objective": "wake_required_set_only",
+            "conditional_specialist_execution": True,
+            "hard_halt_enabled": False,
         },
     }
     atomic_json_dump(report, artifact_root / "startup_preflight.json")
@@ -738,6 +743,10 @@ def main(argv: list[str] | None = None) -> None:
             "maximum_gate_learning_rate": revision["integration_training"]["phases"][-1][
                 "learning_rate"
             ],
+            "objective": "wake_required_set_only",
+            "halt_gate_frozen": True,
+            "hard_halt_enabled": False,
+            "conditional_specialist_execution": True,
         },
         "train_examples": config["data"]["train_examples"],
         "training_epoch_limits": {

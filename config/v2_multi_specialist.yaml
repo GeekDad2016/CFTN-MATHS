@@ -95,6 +95,7 @@ runtime:
   wake_threshold: 0.50
   hard_wake_straight_through: true
   conditional_execution_in_hard_mode: true
+  hard_halt_enabled: false
   neutral_workspaces:
     math: "<workspace:math><latent-request>"
     string: "<workspace:string><latent-request>"
@@ -141,7 +142,7 @@ integration_training:
       wake_mode: hard_straight_through
       maximum_rounds: 3
       include_task_classes: [pure_language, explicit_math, exact_string, language_dependent_math, multi_parallel, multi_sequential]
-      trainable_components: [wake_gates, halt_gate]
+      trainable_components: [wake_gates]
       learning_rate: 0.0000005
       minimum_learning_rate: 0.00000025
       warmup_fraction: 0.0
@@ -185,7 +186,7 @@ integration_training:
     causal_wake_margin: 0.25
     halt: 0.25
     active_compute_initial: 0.0
-    active_compute_hardening: 0.02
+    active_compute_hardening: 0.0
 
 evaluation:
   primary_split: joint_test

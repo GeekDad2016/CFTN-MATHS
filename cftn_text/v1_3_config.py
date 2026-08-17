@@ -145,11 +145,12 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("V1.3 integration phases differ from the preregistration")
     if raw.get("format") == V2_REVISION_FORMAT:
         hard = phases[-1]
-        if list(hard.get("trainable_components", [])) != [
-            "wake_gates",
-            "halt_gate",
-        ]:
-            raise ValueError("V2 hardened_wake must be gate-only")
+        if list(hard.get("trainable_components", [])) != ["wake_gates"]:
+            raise ValueError("V2 hardened_wake must train only the wake gates")
+        if config["runtime"].get("conditional_execution_in_hard_mode") is not True:
+            raise ValueError("V2 hard wake must physically skip closed specialists")
+        if config["runtime"].get("hard_halt_enabled", False) is not False:
+            raise ValueError("V2 hard halt must remain disabled until separately calibrated")
         hard_lr = float(hard.get("learning_rate", 0.0))
         if not 0.0 < hard_lr <= 5.0e-7:
             raise ValueError("V2 hardened_wake learning rate must be within (0, 5e-7]")

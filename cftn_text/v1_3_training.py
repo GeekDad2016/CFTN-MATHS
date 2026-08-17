@@ -498,9 +498,10 @@ def v1_3_objective(
     global_step: int,
 ) -> tuple[V13ModelOutput, torch.Tensor, dict[str, float]]:
     configured = settings["losses"]
+    routing_calibration_only = wake_mode == "hard_straight_through"
     compute_weight = (
-        float(configured["active_compute_hardening"])
-        if wake_mode == "hard_straight_through"
+        0.0
+        if routing_calibration_only
         else float(configured["active_compute_initial"])
     )
     output = model(
@@ -508,10 +509,12 @@ def v1_3_objective(
         wake_mode=wake_mode,
         maximum_rounds=maximum_rounds,
         loss_weights={
-            "task": float(configured["task"]),
-            "specialist": float(configured["specialist"]),
+            "task": 0.0 if routing_calibration_only else float(configured["task"]),
+            "specialist": (
+                0.0 if routing_calibration_only else float(configured["specialist"])
+            ),
             "wake_required_set": float(configured["wake_required_set"]),
-            "halt": float(configured["halt"]),
+            "halt": 0.0 if routing_calibration_only else float(configured["halt"]),
             "active_compute": compute_weight,
         },
     )
@@ -519,7 +522,10 @@ def v1_3_objective(
     preservation = output.loss.detach() * 0.0
     causal_message = output.loss.detach() * 0.0
     causal_wake = output.loss.detach() * 0.0
-    auxiliary = global_step % int(settings.get("auxiliary_every_steps", 4)) == 0
+    auxiliary = (
+        not routing_calibration_only
+        and global_step % int(settings.get("auxiliary_every_steps", 4)) == 0
+    )
     classes = batch["task_classes"]
     pure_rows = torch.tensor(
         [value == "pure_language" for value in classes],
@@ -588,6 +594,7 @@ def v1_3_objective(
         "causal_message_loss": float(causal_message.detach()),
         "causal_wake_loss": float(causal_wake.detach()),
         "auxiliary_step": float(auxiliary),
+        "routing_calibration_only": float(routing_calibration_only),
     }
 
 
@@ -602,11 +609,14 @@ def evaluate_joint_teacher_forcing(
     maximum_rounds: int,
     causal_batches: int,
     max_batches: int | None = None,
+    conditional_execution: bool | None = None,
+    apply_halt: bool | None = None,
 ) -> dict[str, Any]:
     model.eval()
     examples = token_correct = token_total = sequence_correct = 0
     loss_sum = 0.0
     wake_tp = wake_fp = wake_fn = exact_sets = wake_labels = 0
+    pre_halt_tp = pre_halt_fp = pre_halt_fn = pre_halt_exact_sets = 0
     wake_predictions = wake_target_positives = all_open_sets = all_closed_sets = 0
     pure_examples = pure_false_wakes = 0
     causal_correct = causal_shuffled = causal_examples = 0.0
@@ -616,7 +626,11 @@ def evaluate_joint_teacher_forcing(
         batch = move_v1_3_batch(raw, device)
         with autocast_context(device, dtype):
             output = model(
-                batch, wake_mode=wake_mode, maximum_rounds=maximum_rounds
+                batch,
+                wake_mode=wake_mode,
+                maximum_rounds=maximum_rounds,
+                conditional_execution=conditional_execution,
+                apply_halt=apply_halt,
             )
         count = int(batch["gpt_input_ids"].shape[0])
         examples += count
@@ -628,8 +642,21 @@ def evaluate_joint_teacher_forcing(
         token_total += total
         sequence_correct += sequences
         logits = torch.stack([item.wake_logits for item in output.rounds], dim=1)
-        predicted = torch.sigmoid(logits).ge(model.wake_threshold)
+        pre_halt_predicted = torch.sigmoid(logits).ge(model.wake_threshold)
+        predicted = (
+            torch.stack(
+                [item.wake_activations for item in output.rounds], dim=1
+            ).ge(model.wake_threshold)
+            if wake_mode in {"hard", "hard_straight_through"}
+            else pre_halt_predicted
+        )
         targets = batch["wake_targets"][:, :maximum_rounds].bool()
+        pre_halt_tp += int((pre_halt_predicted & targets).sum())
+        pre_halt_fp += int((pre_halt_predicted & ~targets).sum())
+        pre_halt_fn += int((~pre_halt_predicted & targets).sum())
+        pre_halt_exact_sets += int(
+            pre_halt_predicted.eq(targets).all(dim=(1, 2)).sum()
+        )
         wake_tp += int((predicted & targets).sum())
         wake_fp += int((predicted & ~targets).sum())
         wake_fn += int((~predicted & targets).sum())
@@ -655,6 +682,8 @@ def evaluate_joint_teacher_forcing(
                         batch,
                         wake_mode=wake_mode,
                         maximum_rounds=maximum_rounds,
+                        conditional_execution=conditional_execution,
+                        apply_halt=apply_halt,
                         shuffled_requests=set(SPECIALISTS),
                         shuffled_returns=set(SPECIALISTS),
                     )
@@ -667,6 +696,8 @@ def evaluate_joint_teacher_forcing(
         raise RuntimeError("V1.3 validation produced no examples")
     precision = wake_tp / max(1, wake_tp + wake_fp)
     recall = wake_tp / max(1, wake_tp + wake_fn)
+    pre_halt_precision = pre_halt_tp / max(1, pre_halt_tp + pre_halt_fp)
+    pre_halt_recall = pre_halt_tp / max(1, pre_halt_tp + pre_halt_fn)
     return {
         "examples": examples,
         "loss": loss_sum / examples,
@@ -676,6 +707,15 @@ def evaluate_joint_teacher_forcing(
         "wake_recall": recall,
         "wake_f1": 2 * precision * recall / max(1e-12, precision + recall),
         "exact_required_set_accuracy": exact_sets / examples,
+        "pre_halt_wake_precision": pre_halt_precision,
+        "pre_halt_wake_recall": pre_halt_recall,
+        "pre_halt_wake_f1": (
+            2
+            * pre_halt_precision
+            * pre_halt_recall
+            / max(1e-12, pre_halt_precision + pre_halt_recall)
+        ),
+        "pre_halt_exact_required_set_accuracy": pre_halt_exact_sets / examples,
         "pure_language_false_wake_rate": pure_false_wakes / max(1, pure_examples),
         "wake_positive_rate": wake_predictions / max(1, wake_labels),
         "wake_target_positive_rate": wake_target_positives / max(1, wake_labels),
@@ -880,6 +920,8 @@ def evaluate_hard_transition_baseline(
         maximum_rounds=int(source_definition["maximum_rounds"]),
         causal_batches=causal_batches,
         max_batches=max_batches,
+        conditional_execution=False,
+        apply_halt=False,
     )
     hard_metrics = evaluate_joint_teacher_forcing(
         model,
@@ -890,6 +932,8 @@ def evaluate_hard_transition_baseline(
         maximum_rounds=int(hard_definition["maximum_rounds"]),
         causal_batches=causal_batches,
         max_batches=max_batches,
+        conditional_execution=True,
+        apply_halt=False,
     )
     if file_sha256(source_checkpoint) != source_sha256:
         raise RuntimeError("zero-update baseline modified its source checkpoint")
@@ -910,6 +954,11 @@ def evaluate_hard_transition_baseline(
         "source_checkpoint_sha256": source_sha256,
         "soft_metrics": soft_metrics,
         "hard_metrics": hard_metrics,
+        "hard_runtime_policy": {
+            "conditional_specialist_execution": True,
+            "apply_halt": False,
+            "halt_gate_role": "diagnostic_only_until_separately_calibrated",
+        },
         "thresholding_delta": {
             "sequence_accuracy": float(
                 hard_metrics["gpt_teacher_forced_sequence_accuracy"]
@@ -1019,13 +1068,15 @@ def train_integration_phase(
         unexpected = sorted(
             name
             for name, _ in named
-            if not (name.startswith("wake_gates.") or name.startswith("halt_gate."))
+            if not name.startswith("wake_gates.")
         )
         if unexpected:
             raise RuntimeError(
-                "hardened_wake must be gate-only; unexpected trainable parameters: "
+                "hardened_wake must be wake-gate-only; unexpected trainable parameters: "
                 f"{unexpected}"
             )
+        if any(name.startswith("halt_gate.") for name, _ in named):
+            raise RuntimeError("hardened_wake must keep the halt gate frozen")
     gate_parameters = [
         value
         for name, value in named
@@ -1063,6 +1114,17 @@ def train_integration_phase(
         group["group_name"] for group in optimizer_groups
     ] != ["gates"]:
         raise RuntimeError("hardened_wake optimizer must contain only the gates group")
+    hardening_policy = (
+        {
+            "objective": "wake_required_set_only",
+            "trainable_components": ["wake_gates"],
+            "halt_gate_trainable": False,
+            "hard_halt_enabled": False,
+            "conditional_specialist_execution": True,
+        }
+        if phase_name == "hardened_wake"
+        else None
+    )
     optimizer = AdamW(
         optimizer_groups,
         weight_decay=float(phase.get("weight_decay", settings["weight_decay"])),
@@ -1119,6 +1181,7 @@ def train_integration_phase(
                     str(group.get("group_name")) for group in optimizer.param_groups
                 ],
                 "candidate_source": "zero_update_hard_baseline",
+                "hardening_policy": hardening_policy,
             }
             baseline_payload = build_checkpoint(
                 stage=f"v1_3_{phase_name}",
@@ -1228,6 +1291,7 @@ def train_integration_phase(
                             str(group.get("group_name", index)): float(group["lr"])
                             for index, group in enumerate(optimizer.param_groups)
                         },
+                        "hardening_policy": hardening_policy,
                     }
                     atomic_json_dump(
                         _status(
@@ -1263,6 +1327,10 @@ def train_integration_phase(
                 maximum_rounds=maximum_rounds,
                 causal_batches=causal_batches,
                 max_batches=max_batches,
+                conditional_execution=(
+                    True if phase_name == "hardened_wake" else None
+                ),
+                apply_halt=False if phase_name == "hardened_wake" else None,
             )
             hardening = (
                 hardening_acceptance(validation, hardening_baseline, settings)
@@ -1302,6 +1370,7 @@ def train_integration_phase(
                 "optimizer_group_names": [
                     str(group.get("group_name")) for group in optimizer.param_groups
                 ],
+                "hardening_policy": hardening_policy,
                 "timing": {
                     "epoch_seconds": time.time() - epoch_started,
                     "eta_seconds_to_phase_end": (
@@ -1381,7 +1450,14 @@ def train_integration_phase(
                 for group in optimizer.param_groups
             },
             "gate_only": phase_name == "hardened_wake",
+            "trainable_components": (
+                ["wake_gates"] if phase_name == "hardened_wake" else None
+            ),
+            "halt_gate_frozen": (
+                True if phase_name == "hardened_wake" else None
+            ),
         },
+        "hardening_policy": hardening_policy,
         "hard_transition_baseline": (
             str(_hard_transition_baseline_path(config).resolve())
             if hardening_baseline is not None

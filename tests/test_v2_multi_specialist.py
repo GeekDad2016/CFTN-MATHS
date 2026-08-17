@@ -55,6 +55,10 @@ def test_v2_uses_fresh_training_and_reserves_one_inactive_specialist(tmp_path):
         }
     ]
     assert config["runtime"]["conditional_execution_in_hard_mode"] is True
+    assert config["runtime"]["hard_halt_enabled"] is False
+    assert config["integration_training"]["phases"][-1][
+        "trainable_components"
+    ] == ["wake_gates"]
 
 
 def test_v2_gpt_receivers_use_the_multi_specialist_bridge_dimensions():
@@ -93,7 +97,12 @@ def test_v2_hard_checkpoint_completion_requires_gate_only_contract(tmp_path):
     path = tmp_path / "summary.json"
     summary = {
         "state": "completed",
-        "optimizer_contract": {"group_names": ["gates"], "gate_only": True},
+        "optimizer_contract": {
+            "group_names": ["gates"],
+            "gate_only": True,
+            "trainable_components": ["wake_gates"],
+            "halt_gate_frozen": True,
+        },
         "final_metrics": {"hardening_acceptance": {"gates": {"pass": True}}},
     }
     path.write_text(json.dumps(summary), encoding="utf-8")

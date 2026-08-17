@@ -195,10 +195,16 @@ class V13MultiTowerModel(nn.Module):
             ):
                 for parameter in modules.parameters():
                     parameter.requires_grad_(True)
-        if phase in {"supervised_soft_wake", "hardened_wake"}:
+        if phase == "supervised_soft_wake":
             for modules in (self.wake_gates, self.halt_gate):
                 for parameter in modules.parameters():
                     parameter.requires_grad_(True)
+        elif phase == "hardened_wake":
+            # Harden only the specialist routing decision.  V1.3 showed that
+            # jointly updating the halt gate at the hard threshold can erase a
+            # useful soft-wake policy even when the bridges stay frozen.
+            for parameter in self.wake_gates.parameters():
+                parameter.requires_grad_(True)
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -324,23 +330,49 @@ class V13MultiTowerModel(nn.Module):
         return probabilities, activation
 
     def _zero_specialist_output(
-        self, tower: MathTower, batch: dict[str, torch.Tensor]
+        self,
+        tower: MathTower,
+        batch: dict[str, torch.Tensor],
+        *,
+        reference: MathTowerOutput | None = None,
     ) -> MathTowerOutput:
         batch_size, length = batch["input_ids"].shape
         device = batch["input_ids"].device
-        dtype = tower.token_embedding.weight.dtype
+        logits_dtype = (
+            reference.logits.dtype
+            if reference is not None
+            else tower.token_embedding.weight.dtype
+        )
+        hidden_dtype = (
+            reference.hidden_states.dtype
+            if reference is not None
+            else tower.token_embedding.weight.dtype
+        )
+        answer_dtype = (
+            reference.answer_logits.dtype
+            if reference is not None
+            else tower.token_embedding.weight.dtype
+        )
         return MathTowerOutput(
             logits=torch.zeros(
-                batch_size, length, tower.vocabulary_size, device=device, dtype=dtype
+                batch_size,
+                length,
+                tower.vocabulary_size,
+                device=device,
+                dtype=logits_dtype,
             ),
             hidden_states=torch.zeros(
-                batch_size, length, tower.hidden_size, device=device, dtype=dtype
+                batch_size,
+                length,
+                tower.hidden_size,
+                device=device,
+                dtype=hidden_dtype,
             ),
             answer_logits=torch.zeros(
                 batch_size,
                 tower.answer_max - tower.answer_min + 1,
                 device=device,
-                dtype=dtype,
+                dtype=answer_dtype,
             ),
         )
 
@@ -383,7 +415,11 @@ class V13MultiTowerModel(nn.Module):
             receive_enabled=True,
             gate_mode=self.gate_mode,
         )
-        output = self._zero_specialist_output(tower, batch)
+        # Autocast can make the selected output BF16 while the frozen tower's
+        # parameters remain FP32.  Match the produced tensors before scatter.
+        output = self._zero_specialist_output(
+            tower, batch, reference=selected_output
+        )
         output.logits.index_copy_(0, indices, selected_output.logits)
         output.hidden_states.index_copy_(0, indices, selected_output.hidden_states)
         output.answer_logits.index_copy_(0, indices, selected_output.answer_logits)
@@ -396,6 +432,7 @@ class V13MultiTowerModel(nn.Module):
         wake_mode: str,
         maximum_rounds: int | None = None,
         conditional_execution: bool | None = None,
+        apply_halt: bool | None = None,
         loss_weights: Mapping[str, float] | None = None,
         disabled_specialists: set[str] | None = None,
         shuffled_requests: set[str] | None = None,
@@ -411,6 +448,10 @@ class V13MultiTowerModel(nn.Module):
                     "conditional_execution_in_hard_mode", False
                 )
             ) and wake_mode in {"hard", "hard_straight_through"}
+        if apply_halt is None:
+            # Hard wake and hard halt are separate transitions.  The halt gate
+            # remains diagnostic until a later, explicitly calibrated phase.
+            apply_halt = bool(self.config["runtime"].get("hard_halt_enabled", False))
         gpt_hidden = self.gpt_tower.prepass(
             batch["gpt_prepass_input_ids"], batch["gpt_prepass_attention_mask"]
         )
@@ -428,6 +469,14 @@ class V13MultiTowerModel(nn.Module):
         wake_logits_all: list[torch.Tensor] = []
         halt_logits_all: list[torch.Tensor] = []
         activations_all: list[torch.Tensor] = []
+        halted = torch.zeros(
+            batch["gpt_prepass_input_ids"].shape[0],
+            dtype=torch.bool,
+            device=gpt_hidden.device,
+        )
+        halt_runtime = (
+            wake_mode in {"hard", "hard_straight_through"} and bool(apply_halt)
+        )
         for round_index in range(rounds_to_run):
             pooled = _masked_mean(gpt_hidden, batch["gpt_prepass_attention_mask"])
             wake_logits = self.wake_gates(pooled)
@@ -437,6 +486,10 @@ class V13MultiTowerModel(nn.Module):
             )
             if disable_all_communication:
                 wake_activations = torch.zeros_like(wake_activations)
+            if halt_runtime:
+                wake_activations = wake_activations * (
+                    ~halted
+                ).to(wake_activations.dtype).unsqueeze(1)
             requests: dict[str, BridgeOutput] = {}
             specialist_outputs: dict[str, MathTowerOutput] = {}
             returns: dict[str, BridgeOutput] = {}
@@ -503,6 +556,8 @@ class V13MultiTowerModel(nn.Module):
             halt_logits = self.halt_gate(
                 _masked_mean(gpt_hidden, batch["gpt_prepass_attention_mask"])
             )
+            if halt_runtime:
+                halted |= torch.sigmoid(halt_logits.detach()).ge(0.5)
             round_outputs.append(
                 V13RoundOutput(
                     wake_logits=wake_logits,

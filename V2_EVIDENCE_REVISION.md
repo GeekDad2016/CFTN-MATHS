@@ -37,8 +37,9 @@ separate transition with these executable safeguards:
 1. select the best supervised-soft-wake checkpoint;
 2. evaluate that exact checkpoint in hard mode with zero optimizer updates;
 3. record soft and hard metrics on the same validation panel;
-4. freeze GPT, specialists, bridges, and receivers;
-5. train only wake and halt gates;
+4. freeze GPT, specialists, bridges, receivers, and the halt gate;
+5. train only wake gates with required-set BCE, while hard halt remains
+   disabled until a separate calibration experiment;
 6. use no warmup and cap gate LR at `5e-7` (floor `2.5e-7`);
 7. reject checkpoints that violate false-wake, exact-set, precision, recall,
    baseline-regression, always-open, or always-closed guards;
@@ -66,7 +67,8 @@ run. Activating it requires a new sealed config that defines:
 ## Ordered pipeline
 
 1. prepare and hash broad-math data;
-2. train broad math for 12 fixed epochs;
+2. train broad math for at least 60 and at most 100 epochs, stopping only after
+   10 validation epochs without improvement once the minimum is reached;
 3. select the math checkpoint by validation greedy generation;
 4. evaluate sealed standalone math generation;
 5. record whether later math-data scaling is justified (never auto-scale);
@@ -79,7 +81,7 @@ run. Activating it requires a new sealed config that defines:
 12. train dense recurrent cooperation for 12 epochs;
 13. train supervised soft wakes for 10 epochs;
 14. evaluate the selected soft checkpoint in hard mode with zero updates;
-15. harden only wake/halt gates for at most 10 epochs;
+15. harden only wake gates for at most 10 epochs, with the halt gate frozen;
 16. run the sealed causal, no-harm, recurrence, routing, and compute suite;
 17. assemble `v2_final_report.json` and `V2_EXPERIMENT_RESULTS.md`.
 

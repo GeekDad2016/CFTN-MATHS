@@ -290,11 +290,17 @@ def collect_snapshot(
         epoch_eta = max(0, int(batch_total) - int(batch_completed)) / float(batch_rate)
 
     stderr_path = root / "pipeline_logs" / f"{stage}.stderr.log" if stage else None
+    stderr_tail = _tail_text(stderr_path, 50) if stderr_path else ""
+    stderr_mtime = (
+        stderr_path.stat().st_mtime
+        if stderr_path is not None and stderr_path.is_file()
+        else None
+    )
     error_text = ""
     if pipeline.get("state") == "error" or (
         status_fresh and (status or {}).get("state") == "error"
     ):
-        error_text = _tail_text(stderr_path, 35) if stderr_path else ""
+        error_text = stderr_tail
 
     pipeline_pid = pipeline.get("pid")
     stage_pid = (status or {}).get("pid") if status_fresh else None
@@ -329,6 +335,8 @@ def collect_snapshot(
         "checkpoint_count": len(checkpoints),
         "process_lines": _process_lines(),
         "gpu": _gpu_status(),
+        "stderr_tail": stderr_tail,
+        "stderr_mtime": stderr_mtime,
         "error_text": error_text,
     }
 

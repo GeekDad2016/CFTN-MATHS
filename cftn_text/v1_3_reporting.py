@@ -385,7 +385,9 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
                 "zero_update_hard_baseline": bool(hard_transition_baseline)
                 and hard_transition_baseline.get("optimizer_updates") == 0,
                 "hardening_gate_only": hard_contract.get("group_names")
-                == ["gates"],
+                == ["gates"]
+                and hard_contract.get("trainable_components") == ["wake_gates"]
+                and hard_contract.get("halt_gate_frozen") is True,
                 "hardening_collapse_guard_clear": hard_acceptance.get("gates", {}).get(
                     "pass"
                 )
@@ -431,7 +433,7 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
                     "Hard thresholding was measured before any hard-phase update."
                 ),
                 "hardening_gate_only": (
-                    "Only wake and halt gates were trainable during hardening."
+                    "Only wake gates were trainable; halt remained frozen and diagnostic."
                 ),
                 "hardening_collapse_guard_clear": (
                     "The selected hard checkpoint passed no-harm and exact-routing guards."
@@ -573,7 +575,15 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
             "hardening_gate_only": phases["hardened_wake"][
                 "optimizer_contract"
             ].get("group_names")
-            == ["gates"],
+            == ["gates"]
+            and phases["hardened_wake"]["optimizer_contract"].get(
+                "trainable_components"
+            )
+            == ["wake_gates"]
+            and phases["hardened_wake"]["optimizer_contract"].get(
+                "halt_gate_frozen"
+            )
+            is True,
             "reserved_extension_is_inactive": True,
         }
     result_filename = "V2_EXPERIMENT_RESULTS.md" if is_v2 else "V1_3_EXPERIMENT_RESULTS.md"

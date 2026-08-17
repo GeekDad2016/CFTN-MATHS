@@ -17,8 +17,9 @@ recurrence, supervised soft wakes, and finally hard conditional execution.
 
 The soft-to-hard transition incorporates the V1.3 collapse diagnosis directly:
 the selected soft checkpoint is first evaluated in hard mode without any
-updates; hardening then freezes every bridge and receiver, trains only wake and
-halt gates, uses no LR warmup, and caps the gate LR at `5e-7`. Checkpoints with
+updates and with the uncalibrated hard halt disabled; hardening then freezes
+every bridge, receiver, and halt gate, trains only the wake gates using
+required-set BCE, uses no LR warmup, and caps the gate LR at `5e-7`. Checkpoints with
 false-wake, exact-routing, always-open, always-closed, or baseline-regression
 failures cannot be selected.
 
@@ -131,6 +132,23 @@ completion artifact and separate logs under
 `${CFTN_ARTIFACT_ROOT}/pipeline_logs`; training metrics, validation curves,
 learning rate, throughput, gates, and run summaries are also sent to W&B.
 
+For event-only SSH monitoring from the development machine, prime the state
+once and then run the same checker from a heartbeat or scheduler. It emits
+`DONT_NOTIFY` while healthy and unchanged, and a full Jupyter-style report only
+for a stage transition, first/10-epoch validation milestone, terminal state,
+stalled/dead process, non-finite loss, CUDA traceback, or hardening-contract
+violation:
+
+```powershell
+python tools/check_v2_heartbeat.py --prime --pretty
+python tools/check_v2_heartbeat.py --pretty
+```
+
+Connection parameters and the state-file path can be overridden with
+`CFTN_RUNPOD_HOST`, `CFTN_RUNPOD_PORT`, `CFTN_RUNPOD_USER`,
+`CFTN_RUNPOD_IDENTITY_FILE`, and `CFTN_V2_HEARTBEAT_STATE`. The checker is
+read-only and never starts, stops, restarts, or modifies the remote pipeline.
+
 ## Authenticated monitoring and safe updates
 
 The API exposes no shell and cannot push to Git. Its mutation surface is
@@ -191,7 +209,8 @@ python run_v2.py --preview
 12. Train dense three-round recurrence for 12 epochs.
 13. Train supervised soft wake/halt behavior for 10 epochs.
 14. Evaluate the selected soft checkpoint in hard mode with zero updates.
-15. Harden only wake/halt gates for at most 10 epochs at no more than `5e-7`.
+15. Harden only wake gates with required-set BCE for at most 10 epochs at no
+    more than `5e-7`; keep the halt gate frozen and hard halt disabled.
 16. Run closed, directional, shuffled, fixed-open, one-round, serial,
     recurrence, no-harm, routing, synergy, and compute controls.
 17. Assemble `v2_final_report.json` and `V2_EXPERIMENT_RESULTS.md`.

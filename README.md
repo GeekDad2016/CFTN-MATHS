@@ -216,10 +216,12 @@ remain sealed generalization benchmarks.
 The math answer head is disabled and checkpoint selection is based first on
 validation greedy-generation accuracy. Both native towers are frozen during
 integration. V2 trains fresh request/return bridges and receivers, then learns
-independent wake and halt gates. Before hardening, the best soft checkpoint is
-evaluated in hard mode with zero optimizer updates. Hardening permits only
-wake/halt parameters, caps their learning rate at `5e-7`, and refuses to
-select routing-collapse checkpoints. A third slot named `extension_1` is
+soft wake and halt gates. Before hardening, the best soft checkpoint is
+evaluated in hard mode with zero optimizer updates and with hard halt disabled.
+The first hard transition calibrates only the wake gates with required-set BCE,
+caps their learning rate at `5e-7`, and refuses to select routing-collapse
+checkpoints. Hard halt remains frozen and diagnostic until a separate later
+experiment calibrates it. A third slot named `extension_1` is
 reserved but inactive and contributes no targets, optimization, checkpoints,
 or compute until its capability and dataset are specified. See
 [V2_EVIDENCE_REVISION.md](V2_EVIDENCE_REVISION.md).

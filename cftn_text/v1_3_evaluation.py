@@ -376,6 +376,9 @@ def generate_joint_batch(
     halted = torch.zeros(
         batch["gpt_prepass_input_ids"].shape[0], dtype=torch.bool, device=gpt_hidden.device
     )
+    apply_hard_halt = bool(
+        model.config["runtime"].get("hard_halt_enabled", False)
+    )
     active_executions = torch.zeros_like(halted, dtype=torch.long)
     active_by_specialist = {
         name: torch.zeros_like(halted, dtype=torch.long) for name in SPECIALISTS
@@ -393,7 +396,8 @@ def generate_joint_batch(
             probabilities, activations = model._wake_activation(
                 wake_logits, targets, effective_mode
             )
-            activations = activations * (~halted).to(activations.dtype).unsqueeze(1)
+            if apply_hard_halt:
+                activations = activations * (~halted).to(activations.dtype).unsqueeze(1)
             if all_closed:
                 activations = torch.zeros_like(activations)
             round_returns: list[torch.Tensor] = []
@@ -446,7 +450,7 @@ def generate_joint_batch(
             halt_probabilities = torch.sigmoid(
                 model.halt_gate(_masked_mean(gpt_hidden, batch["gpt_prepass_attention_mask"]))
             )
-            if wake_mode == "hard":
+            if wake_mode == "hard" and apply_hard_halt:
                 halted |= halt_probabilities.ge(0.5)
             for row in range(len(wake_rows)):
                 wake_rows[row]["probabilities"].append(probabilities[row].tolist())
