@@ -79,7 +79,8 @@ def test_one_command_launcher_is_resumable_and_wandb_enabled_by_default():
 
 
 def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
-    script = (Path(__file__).parents[1] / "start_v2_runpod.sh").read_text(
+    repository = Path(__file__).parents[1]
+    script = (repository / "start_v2_runpod.sh").read_text(
         encoding="utf-8"
     )
     assert "pip install -e" in script
@@ -87,6 +88,7 @@ def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
     assert 'exec "${python_bin}" run_v2.py "$@"' in script
     assert "read -r -s" in script
     assert "CFTN_V2_MULTI_DATA_ROOT" in script
+    assert "*.egg-info/" in (repository / ".gitignore").read_text(encoding="utf-8")
 
 
 def test_pipeline_lock_rejects_a_duplicate_and_releases_after_exit(tmp_path):
