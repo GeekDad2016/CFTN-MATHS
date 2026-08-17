@@ -1,0 +1,112 @@
+# V1.3 Stage 10 hard-wake findings
+
+Status: recovery attempt 2 stopped by user on 2026-08-17; recovery attempt 3
+launched from the sealed Stage 9 checkpoint and has not yet produced a full
+validation result.
+
+## Preserved evidence
+
+- Stage 9 soft checkpoint:
+  `supervised_soft_wake/supervised_soft_wake.best.pth`
+  (`71e1bf670097f494b722576f051908f27568446e4b4dc5b8b5e291558f4fb2c8`).
+- Stage 9 soft validation: 84.22% GPT sequence accuracy, 86.115% token
+  accuracy, 99.48% exact required-set accuracy, 100% wake precision, 99.48%
+  wake recall, and 0% pure-language false wake.
+- Zero-update hard threshold baseline: 59.10% sequence accuracy, 88.84%
+  exact required-set accuracy, 85.56% precision, 99.46% recall, and 0%
+  pure-language false wake.
+- Failed attempt 1 is preserved as
+  `hardened_wake_attempt1_always_open_collapse`. Its epoch-3 checkpoint reached
+  77.86% sequence accuracy while routing collapsed to 18.94% exact set, 49.54%
+  precision, and 100% pure-language false wake.
+- Failed attempt 2 is preserved as
+  `hardened_wake_attempt2_task_gradient_drift_stopped_epoch3`. Epoch 1 retained
+  88.74% exact routing, but epoch 2 fell to 56.40% exact routing and 71.40%
+  pure-language false wake. It was stopped during epoch 3 before another
+  checkpoint was written.
+
+No checkpoint from either failed attempt is eligible for Stage 11.
+
+## What was wrong
+
+1. Stage 10 made only gate parameters trainable, but the straight-through wake
+   activations still received gradients from GPT answer loss, specialist loss,
+   causal-utility loss, preservation loss, and compute loss. Correct answers
+   often became easier when extra specialists opened, so answer utility fought
+   the supervised required-set target.
+2. The original hard path did not skip sleeping specialists during training.
+   Enabling true conditional execution exposed a BF16/FP32 scatter mismatch in
+   mixed active/asleep batches. The previous run therefore had not tested the
+   runtime mechanism it intended to deploy.
+3. Wake hardening and halt hardening were coupled. On a fixed 128-example
+   Stage-9 panel, applying the uncalibrated hard halt reduced required-wake
+   recall to 90.48% and GPT sequence accuracy to 42.97%. On the same panel with
+   hard halt disabled, recall recovered to 100% and sequence accuracy to
+   54.69%. Specialist skipping itself did not change token or sequence accuracy;
+   the regression came from early halting.
+4. Checkpoint selection originally rewarded answer accuracy and causal message
+   dependence without making routing thresholds mandatory. Attempt 1 could
+   therefore select a checkpoint with 100% pure-language false wake.
+
+## Minimal recovery change
+
+Recovery attempt 3 changes only the hard-transition control policy:
+
+- freeze GPT, specialists, bridges, receivers, and the halt gate;
+- train only `wake_gates` at the inherited Stage-9 tail LR (peak 5e-7, no LR
+  restart);
+- optimize only supervised wake required-set BCE in Stage 10;
+- disable answer/specialist/causal/preservation/compute gradients through wake
+  decisions during this calibration phase;
+- execute only specialists whose hard wake is active;
+- keep hard halting disabled until a separate zero-update and calibration test;
+- fail checkpoint promotion unless exact routing >=90%, precision >=90%, recall
+  >=95%, and pure-language false wake <=5%; and
+- report pre-halt routing separately when hard halt is explicitly diagnosed.
+
+The corrected actual-checkpoint BF16 backward probe produced finite gradients
+for exactly six `wake_gates` tensors (198,914 trainable parameters). Its total
+loss equaled wake BCE (0.19536); answer, specialist, halt, causal, preservation,
+and compute terms were diagnostic only and contributed no gradient.
+
+The implementation regression suite passed 17/17 tests. At live step 100,
+Stage 10 reported one optimizer group at LR 4.99998e-7, routing calibration
+enabled on 100% of steps, auxiliary work on 0%, and exact equality between
+total loss, model loss, and wake loss (0.13760 rolling average). GPU memory was
+about 4.1/12.3 GiB because sleeping specialists are now actually skipped.
+
+The 1,024-example zero-update panel with true specialist skipping and hard halt
+disabled scored 57.81% sequence accuracy, 90.63% exact routing, 87.69%
+precision, 99.71% recall, and 0% pure-language false wake. This confirms that
+the remaining Stage-10 job is narrow: remove extra wakes without sacrificing
+required wakes.
+
+## Required V2 safeguards
+
+Before V2 reaches its own hard transition:
+
+1. Separate wake-gate calibration from halt-gate calibration in the stage
+   contract and optimizer groups.
+2. During wake calibration, detach or zero all answer-utility gradients into
+   discrete wake decisions; use supervised routing targets first.
+3. Test true conditional execution before training, including mixed active and
+   sleeping rows under BF16.
+4. Require sleeping paths to be behaviorally harmless and test zero-message
+   versus receiver-disabled output.
+5. Evaluate a zero-update hard baseline for each discrete control independently:
+   wake threshold, specialist skipping, and halt threshold.
+6. Make checkpoint eligibility fail closed on exact routing, precision, recall,
+   false wake, no-harm, and causal dependence before ranking eligible models by
+   answer quality.
+7. Report routing by specialist, task class, and round, and distinguish raw
+   pre-halt predictions from runtime-reachable predictions.
+8. Do not claim conditional-compute success from message masking alone; record
+   actual specialist executions and compute saved.
+
+## Remaining tests
+
+- Full 5,000-example validation after one routing-only Stage-10 epoch.
+- Gate-probability margin distribution around the 0.5 threshold.
+- Zero-message receiver versus receiver-disabled numerical identity.
+- Separate hard-halt zero-update panel after wake routing passes.
+- Final autoregressive Stage-11 causal suite with actual execution counts.

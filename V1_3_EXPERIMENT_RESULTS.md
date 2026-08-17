@@ -19,7 +19,13 @@ Preregistered design: `V1_3_EXPERIMENT_PLAN.md`
 
 ## Executive conclusion
 
-Pending.
+Stage 9 established strong soft routing and useful multi-specialist
+communication. Stage 10 has not yet passed: two preserved attempts showed that
+jointly optimizing answer utility through straight-through wake gates can make
+the system open irrelevant specialists, and that hard halting is a distinct
+transition that can suppress required later-round work. A minimal third
+recovery now isolates wake calibration from answer utility and halt behavior.
+See `docs/V1_3_STAGE10_HARDENING_FINDINGS.md`.
 
 ## Immutable provenance
 
@@ -97,6 +103,21 @@ first-line completion parser as exact correctness. Native specialist validity
 continues to require its own tagged-output contract. A regression test includes
 both raw first-line and legacy tagged generations.
 
+Stage 10 attempt 1 then collapsed toward always-open routing. At epoch 3 it
+reached 77.86% teacher-forced GPT sequence accuracy but only 18.94% exact
+required-set accuracy, 49.54% wake precision, and 100% pure-language false
+wake. Attempt 2 froze bridges/receivers and reduced gate LR to 5e-7. It retained
+88.74% exact routing after epoch 1, then degraded to 56.40% exact routing and
+71.40% pure-language false wake after epoch 2. The user stopped it during epoch
+3. Both attempts are archived and barred from Stage 11 promotion.
+
+Follow-up isolation showed that specialist skipping was not the answer-quality
+failure. The uncalibrated hard halt was: on the same 128-example panel, enabling
+hard halt reduced sequence accuracy to 42.97% and required-wake recall to
+90.48%; disabling halt recovered sequence accuracy to 54.69% and wake recall to
+100%. True conditional execution also exposed and fixed a BF16/FP32 scatter
+contract that the previous dense-compute hard run could not exercise.
+
 ## Zero-, one-, several-, and all-specialist results
 
 Pending.
@@ -128,4 +149,12 @@ input.
 
 ## Recommended fixes or next experiment
 
-Pending.
+Run the prepared Stage 10 recovery from the untouched Stage 9 best checkpoint.
+Train only wake-gate classification at the inherited 5e-7 tail LR; freeze the
+halt gate and all communication/model weights; do not backpropagate answer,
+specialist, causal-utility, preservation, or compute losses into hard wake
+decisions. Keep hard halt disabled. Promote a checkpoint only after the
+registered exact-routing, precision, recall, and false-wake gates pass. Once
+wake routing passes, test and calibrate hard halt separately before enabling it
+in inference. Port the safeguards listed in
+`docs/V1_3_STAGE10_HARDENING_FINDINGS.md` to V2 before its hard transition.
