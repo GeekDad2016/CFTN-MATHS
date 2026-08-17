@@ -96,6 +96,8 @@ def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
     assert 'run_v2.py --preflight-only "$@"' in script
     assert 'exec "${python_bin}" run_v2.py "$@"' in script
     assert "read -r -s" in script
+    assert "tr -d '[:space:]'" in script
+    assert "WANDB_API_KEY contained only whitespace" in script
     assert "CFTN_V2_MULTI_DATA_ROOT" in script
     assert "*.egg-info/" in (repository / ".gitignore").read_text(encoding="utf-8")
 

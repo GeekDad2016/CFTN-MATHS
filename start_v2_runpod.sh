@@ -89,6 +89,16 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
   fi
 fi
 
+# Credentials copied through notebooks, PowerShell pipes, or secret editors can
+# carry a trailing CR/LF even when the visible key looks correct. W&B rejects
+# leading or trailing whitespace, so normalize it once at the process boundary.
+WANDB_API_KEY="$(printf '%s' "${WANDB_API_KEY}" | tr -d '[:space:]')"
+if [[ -z "${WANDB_API_KEY}" ]]; then
+  echo "WANDB_API_KEY contained only whitespace." >&2
+  exit 1
+fi
+export WANDB_API_KEY
+
 echo "Installing CFTN-Text and all declared dependencies..."
 pip_install_args=()
 externally_managed="$("${python_bin}" -c \
