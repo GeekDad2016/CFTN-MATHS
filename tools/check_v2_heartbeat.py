@@ -511,19 +511,20 @@ def build_result(
     snapshot: dict[str, Any], events: Iterable[dict[str, str]]
 ) -> dict[str, Any]:
     event_list = list(events)
+    snapshot_summary = {
+        "state": snapshot.get("pipeline_state"),
+        "stage": snapshot.get("stage"),
+        "stage_index": snapshot.get("stage_index"),
+        "stage_count": snapshot.get("stage_count"),
+        "epoch": snapshot.get("epoch"),
+        "global_step": snapshot.get("global_step"),
+    }
     if not event_list:
         return {
             "decision": "DONT_NOTIFY",
             "message": "V2 is healthy and no new reportable event occurred.",
             "events": [],
-            "snapshot_summary": {
-                "state": snapshot.get("pipeline_state"),
-                "stage": snapshot.get("stage"),
-                "stage_index": snapshot.get("stage_index"),
-                "stage_count": snapshot.get("stage_count"),
-                "epoch": snapshot.get("epoch"),
-                "global_step": snapshot.get("global_step"),
-            },
+            "snapshot_summary": snapshot_summary,
         }
     reasons = "\n".join(
         f"- [{event['level'].upper()}] {event['text']}" for event in event_list
@@ -535,6 +536,7 @@ def build_result(
         + "\n\n"
         + render_markdown(snapshot),
         "events": event_list,
+        "snapshot_summary": snapshot_summary,
     }
 
 

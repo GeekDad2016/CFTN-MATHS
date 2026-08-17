@@ -43,6 +43,14 @@ def test_heartbeat_prime_and_unchanged_snapshot_are_quiet():
     assert events == []
     result = build_result(snapshot, events)
     assert result["decision"] == "DONT_NOTIFY"
+    assert result["snapshot_summary"] == {
+        "state": "running",
+        "stage": "train_math",
+        "stage_index": 2,
+        "stage_count": 17,
+        "epoch": 4,
+        "global_step": 400,
+    }
 
 
 def test_heartbeat_reports_stage_transition_and_epoch_milestone_once():
@@ -58,6 +66,10 @@ def test_heartbeat_reports_stage_transition_and_epoch_milestone_once():
     identifiers = {event["id"] for event in events}
     assert any(value.startswith("stage-transition-") for value in identifiers)
     assert "epoch-milestone-train_exact_string_specialist-10" in identifiers
+    result = build_result(next_snapshot, events)
+    assert result["decision"] == "NOTIFY"
+    assert result["snapshot_summary"]["state"] == "running"
+    assert result["snapshot_summary"]["stage"] == "train_exact_string_specialist"
     repeated, _ = classify_snapshot(next_snapshot, next_state, now=1110.0)
     assert repeated == []
 

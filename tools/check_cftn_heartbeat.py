@@ -451,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         v13_result = {
             "decision": "NOTIFY" if v13_events else "DONT_NOTIFY",
             "message": render_v1_3(v13_snapshot, v13_events) if v13_events else "",
+            "state": v13_snapshot.get("pipeline_state"),
         }
     except BaseException as exc:
         fingerprint = _v13_identifier(type(exc).__name__, str(exc))
@@ -462,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         v13_result = {
             "decision": "DONT_NOTIFY" if repeated else "NOTIFY",
             "message": f"V1.3 checker failed: {type(exc).__name__}: {exc}",
+            "state": "monitor_error",
         }
 
     notifications = [
@@ -477,10 +479,20 @@ def main(argv: list[str] | None = None) -> int:
             else "V1.3 and V2 are healthy with no new reportable event."
         ),
         "components": {
-            "v1_3": v13_result.get("decision"),
-            "v2": v2_result.get("decision"),
+            "v1_3": {
+                "decision": v13_result.get("decision"),
+                "state": v13_result.get("state"),
+            },
+            "v2": {
+                "decision": v2_result.get("decision"),
+                "state": (v2_result.get("snapshot_summary") or {}).get("state"),
+            },
         },
     }
+    result["all_complete"] = (
+        result["components"]["v1_3"]["state"] == "completed"
+        and result["components"]["v2"]["state"] == "completed"
+    )
     print(json.dumps(result, indent=2 if args.pretty else None, sort_keys=True))
     return 0
 
