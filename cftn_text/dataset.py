@@ -10,6 +10,22 @@ from .data_generator import load_records
 from .tokenizer import ByteMathTokenizer, SequenceTooLongError, pad_1d
 
 
+_ANSWER_VALUE_SENTINEL = -2_000_000_000
+_MIN_SIGNED_INT64 = -(1 << 63)
+_MAX_SIGNED_INT64 = (1 << 63) - 1
+
+
+def _tensor_safe_answer_value(record: dict[str, Any]) -> int:
+    value = record.get("answer_value")
+    if value is None:
+        value = record.get("x", _ANSWER_VALUE_SENTINEL)
+    if not isinstance(value, int) or isinstance(value, bool):
+        return _ANSWER_VALUE_SENTINEL
+    if value < _MIN_SIGNED_INT64 or value > _MAX_SIGNED_INT64:
+        return _ANSWER_VALUE_SENTINEL
+    return value
+
+
 class ExternalTokenizer(Protocol):
     pad_token_id: int | None
     eos_token_id: int | None
@@ -88,14 +104,7 @@ class MathCollator:
                 [item.prefix_length for item in encoded], dtype=torch.long
             ),
             "answer_values": torch.tensor(
-                [
-                    (
-                        record.get("answer_value")
-                        if record.get("answer_value") is not None
-                        else record.get("x", -2_000_000_000)
-                    )
-                    for record in records
-                ],
+                [_tensor_safe_answer_value(record) for record in records],
                 dtype=torch.long,
             ),
             "records": records,
