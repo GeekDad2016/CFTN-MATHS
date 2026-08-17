@@ -90,8 +90,15 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
 fi
 
 echo "Installing CFTN-Text and all declared dependencies..."
-"${python_bin}" -m pip install --upgrade pip setuptools wheel
-"${python_bin}" -m pip install -e "${script_dir}"
+pip_install_args=()
+externally_managed="$("${python_bin}" -c \
+  'from pathlib import Path; import sysconfig; print(int((Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").is_file()))')"
+if [[ "${externally_managed}" == "1" ]]; then
+  echo "Python is externally managed; enabling pip's container-safe override."
+  pip_install_args+=(--break-system-packages)
+fi
+"${python_bin}" -m pip install "${pip_install_args[@]}" --upgrade pip setuptools wheel
+"${python_bin}" -m pip install "${pip_install_args[@]}" -e "${script_dir}"
 
 revision="not-a-git-checkout"
 if [[ -d .git ]]; then

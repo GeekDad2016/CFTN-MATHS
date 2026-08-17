@@ -90,7 +90,9 @@ def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
     script = (repository / "start_v2_runpod.sh").read_text(
         encoding="utf-8"
     )
-    assert "pip install -e" in script
+    assert '-e "${script_dir}"' in script
+    assert "EXTERNALLY-MANAGED" in script
+    assert "--break-system-packages" in script
     assert 'run_v2.py --preflight-only "$@"' in script
     assert 'exec "${python_bin}" run_v2.py "$@"' in script
     assert "read -r -s" in script
