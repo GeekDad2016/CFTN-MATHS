@@ -24,27 +24,31 @@ def test_v2_plan_is_ordered_resumable_end_to_end():
         "train_math",
         "select_math_checkpoint",
         "evaluate_math",
-        "audit_mechanism_prerequisites",
-        "train_m2g",
-        "train_conditional_gpt_to_math",
-        "evaluate_shared_no_harm",
-        "evaluate_collaboration",
-        "assess_scale",
-        "assemble_report",
+        "assess_math_scale",
+        "prepare_multi_specialist_data",
+        "calibrate_frozen_gpt_language",
+        "train_exact_string_specialist",
+        "seal_native_specialists",
+        "train_single_specialist_capacity",
+        "train_dense_mixed_messages",
+        "train_dense_recurrent",
+        "train_supervised_soft_wake",
+        "evaluate_zero_update_hard_baseline",
+        "train_hardened_wake",
+        "evaluate_sealed_causal_suite",
+        "assemble_v2_evidence",
     ]
     math_command = stages[1].command
     assert "--skip-calibration" in math_command
     assert "--disable-early-stopping" in math_command
     assert "--wandb" in math_command
-    assert "--view-mode" in stages[5].command
-    assert "shared" in stages[5].command
-    assert "tools.train_conditional_bridge" in stages[6].command
-    assert "--revision-config" in stages[6].command
-    assert "shared" in stages[7].command
+    assert "tools.prepare_v1_3_data" in stages[5].command
+    assert "tools.train_v1_3_string" in stages[7].command
+    assert "tools.evaluate_hard_transition_baseline" in stages[13].command
+    assert "hardened_wake" in stages[14].command
     assert stages[1].resumable_artifact is not None
-    assert stages[6].resumable_artifact is not None
-    assert stages[4].name == "audit_mechanism_prerequisites"
-    assert stages[5].name == "train_m2g"
+    assert stages[7].resumable_artifact is not None
+    assert stages[14].resumable_artifact is not None
 
 
 def test_v2_evaluation_completion_fails_closed_on_failed_gate(tmp_path):

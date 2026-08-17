@@ -194,11 +194,14 @@ audit, so bypassing the continuation cannot start the experiment early.
 
 ## Broad-math V2
 
-V2 expands the proof to 400,000 unique examples while keeping GPT-2 frozen and
-retaining the same bridge classes. The executable pipeline now incorporates
-the V1.1/V1.2 lessons rather than merely documenting them: it is fail-closed on
-sealed V1.2/V1.3 mechanism evidence, generative specialist quality,
-conditional-message utility, shared-view no-harm, and causal collaboration.
+V2 expands the proof to 400,000 unique math examples while keeping GPT-2
+frozen and retaining the same bridge classes. It repeats and scales the full
+V1.3 capability sequence rather than inheriting V1.3 as a prerequisite: a
+larger math specialist, a larger exact-string specialist, one-round capacity,
+dense recurrent communication, supervised soft wakes, a zero-update hard
+baseline, gate-only hardening, and real conditional specialist execution.
+Earlier V1.2/V1.3 reports are informational provenance only; they neither
+initialize nor block V2 collaboration training.
 Its curriculum includes variables on both
 sides, nested parentheses, signed fractions, two-variable systems, 2–4-step
 word problems, distractors, held-out paraphrases, and numerical extrapolation.
@@ -211,12 +214,15 @@ with a symbolic solver. GSM8K-test, MathQA validation/test, and GSM-Symbolic
 remain sealed generalization benchmarks.
 
 The math answer head is disabled and checkpoint selection is based first on
-validation greedy-generation accuracy. GPT-to-math training freezes the
-successful math-to-GPT path and uses paired required/redundant views,
-specialist preservation, a shuffled-message margin, and generation-led model
-selection. See [V2_EVIDENCE_REVISION.md](V2_EVIDENCE_REVISION.md) for the
-evidence mapping, exact stage gates, and explicit natural-interface claim
-boundary.
+validation greedy-generation accuracy. Both native towers are frozen during
+integration. V2 trains fresh request/return bridges and receivers, then learns
+independent wake and halt gates. Before hardening, the best soft checkpoint is
+evaluated in hard mode with zero optimizer updates. Hardening permits only
+wake/halt parameters, caps their learning rate at `5e-7`, and refuses to
+select routing-collapse checkpoints. A third slot named `extension_1` is
+reserved but inactive and contributes no targets, optimization, checkpoints,
+or compute until its capability and dataset are specified. See
+[V2_EVIDENCE_REVISION.md](V2_EVIDENCE_REVISION.md).
 
 Preview or execute the complete resumable experiment. The top-level launcher
 enables W&B and safe resume by default:
@@ -227,13 +233,10 @@ py -3.11 run_v2.py --preflight-only
 py -3.11 run_v2.py
 ```
 
-The independent data, math-training, checkpoint-selection, and standalone-math
-stages can run while V1.3 is finishing. Immediately before the first bridge
-stage, execution requires `evidence/v1_3_final_report.json` (or
-`CFTN_V1_3_REPORT`) to contain the passing, hash-chained concrete V1.3 gates.
-If it is not ready, the pipeline stops there without promoting or training a
-bridge; supplying the immutable report and running `python run_v2.py` again
-resumes from that boundary.
+The launcher executes 17 resumable stages from broad-math data preparation
+through the sealed multi-specialist causal report. It requires neither a V1.3
+checkpoint nor a V1.3 report because all V2 collaboration modules are trained
+afresh under the V2 revision.
 
 For online V2 logging, the runner requires `WANDB_API_KEY` in the process
 environment and never stores its value. `WANDB_PROJECT`, `WANDB_GROUP`, and

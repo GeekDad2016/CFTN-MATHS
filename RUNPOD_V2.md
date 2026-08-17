@@ -1,25 +1,26 @@
 # CFTN-Text V2 on RunPod
 
 V2 is one resumable end-to-end experiment. It keeps GPT-2 frozen, retains the
-successful contextual message bridges and gated cross-receivers, and trains the
-scratch math tower on 400,000 unique mixed examples before training the bridges.
+contextual message bridges and gated cross-receivers, trains the scratch math
+tower on 400,000 unique mixed examples, trains a larger exact-string tower,
+and then repeats the complete recurrent/wake-gated V1.3 curriculum with fresh
+collaboration modules.
 
 ## Architecture sequencing after V1.1
 
-The V2 runner now enforces the completed V1.1/V1.2 lessons in code. It does not
-launch the old unrestricted bidirectional objective. Conditional GPT-to-math
-training freezes the math-to-GPT path and carries forward specialist
-preservation, the required-message causal margin, paired required/redundant
-views, generation-led checkpoint selection, and a shared-view no-harm gate.
+The V2 runner does not launch the old unrestricted bidirectional objective and
+does not require a sealed V1.3 report. V2 trains every collaboration component
+from scratch, so V1.2/V1.3 reports are informational provenance only. Both
+native towers remain frozen during integration. The curriculum establishes
+single-specialist message capacity, dense mixed communication, three-round
+recurrence, supervised soft wakes, and finally hard conditional execution.
 
-The prerequisite stage verifies a passing V1.2 report, a passing V1.3 report,
-their concrete wake/no-harm/causality gates, and the hash chain connecting
-them. It runs after the standalone broad-math evaluation but before any bridge
-training. The sealed V1.2 report is included in `evidence/`. V1.3 is still
-active, so its report is intentionally absent. This does not block independent
-math training; it fails closed at the communication boundary. Supply the final
-immutable report through `evidence/v1_3_final_report.json` or
-`CFTN_V1_3_REPORT`; there is no bypass for a failed report.
+The soft-to-hard transition incorporates the V1.3 collapse diagnosis directly:
+the selected soft checkpoint is first evaluated in hard mode without any
+updates; hardening then freezes every bridge and receiver, trains only wake and
+halt gates, uses no LR warmup, and caps the gate LR at `5e-7`. Checkpoints with
+false-wake, exact-routing, always-open, always-closed, or baseline-regression
+failures cannot be selected.
 
 The intended division of labour is asymmetric and complementary:
 
@@ -31,16 +32,12 @@ The intended division of labour is asymmetric and complementary:
   relevant span that the specialist's local input does not contain;
 - math-to-GPT messages return the exact result and compact supporting state.
 
-The V2 generated records implement a controlled private-view test:
-code prepares a semantic `gpt_problem` and an opaque numeric `math_problem`
-before inference. This is appropriate for proving causal bridge cooperation,
-but it is not yet autonomous expert use. A later natural-interface arm must
-give only GPT the raw prompt, initialize the specialist from neutral workspace
-tokens, and test whether GPT forms a sufficient expert request through the
-bridge. The final report explicitly does not treat this as a new proof that
-V1.3's natural-prompt wake runtime works with the broad specialist. That
-checkpoint transfer and matched re-evaluation is the next integration revision
-after both V1.3 and this broad specialist pass.
+During joint training GPT receives the natural prompt while each specialist is
+initialized from neutral workspace tokens. Pure language requires no tower;
+math or exact string tasks require one; language-dependent and composed tasks
+require directional or recurrent cooperation. A third `extension_1` slot is
+reserved but inactive until its dataset and capability contract are selected;
+it consumes no parameters or compute in this run.
 
 ## Data boundary
 
@@ -89,14 +86,14 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 
 export CFTN_DATA_ROOT=/workspace/volume/cftn-text/data/v2_broad_math_400k_r2
+export CFTN_V2_MULTI_DATA_ROOT=/workspace/volume/cftn-text/data/v2_multi_specialist_r1
 export CFTN_ARTIFACT_ROOT=/workspace/volume/cftn-text/artifacts/v2_broad_math_400k_r2
 export HF_HOME=/workspace/volume/cftn-text/cache/huggingface
 export WANDB_DIR=$CFTN_ARTIFACT_ROOT/wandb
-export CFTN_V1_3_REPORT=/workspace/volume/cftn-text/evidence/v1_3_final_report.json
 
 export WANDB_API_KEY='your-runpod-secret'
 export WANDB_PROJECT=cftn-text-v2
-export WANDB_GROUP=broad-math-400k
+export WANDB_GROUP=scaled-multi-specialist
 # Optional when the API key's default W&B entity is not the desired one:
 # export WANDB_ENTITY=your-team-or-user
 
@@ -112,10 +109,8 @@ if the process or pod dies; running the same command resumes retained stages
 and checkpoints. Use `python run_v2.py --no-wandb` only when logging is
 intentionally disabled.
 
-If V1.3 has not sealed when standalone math evaluation completes, Stage 5 will
-stop before bridge training. Place the immutable report at
-`$CFTN_V1_3_REPORT` and run `python run_v2.py` again; Stages 1-4 are validated
-and skipped.
+No V1.2 or V1.3 report variable is required. Existing reports in `evidence/`
+are recorded when present but never gate this fresh V2 run.
 
 ### Container plus authenticated monitoring API
 
@@ -188,20 +183,25 @@ python run_v2.py --preview
 
 ## Ordered stages
 
-1. Generate and hash the immutable manifests.
+1. Generate and hash the broad-math manifests.
 2. Train the math tower through all three curriculum phases for 12 epochs.
 3. Select among retained checkpoints using validation-only greedy generation.
 4. Evaluate standalone exact generation and stop on a failed specialist gate.
-5. Audit passed, concrete, hash-chained V1.2/V1.3 evidence before bridges.
-6. Train math-to-GPT communication on shared complete prompts.
-7. Train conditional GPT-to-math while freezing the return path.
-8. Evaluate shared-view specialist no-harm and stop on failure.
-9. Run complementary closed, directional, shuffled, and fixed-open causal arms.
-10. Assess a later one-million-example run from generated held-out trends;
-    scaling is never started automatically.
-11. Assemble `v2_final_report.json` and require every preceding gate.
+5. Assess whether later math-data scaling is justified; never auto-scale.
+6. Generate and hash exact-string and joint multi-specialist manifests.
+7. Calibrate frozen GPT on pure-language prompts.
+8. Train the larger exact-string specialist for at most 30 epochs.
+9. Seal familiar and task-matched native specialist competence.
+10. Train one-round single-specialist capacity for 8 epochs.
+11. Train dense mixed communication for 12 epochs.
+12. Train dense three-round recurrence for 12 epochs.
+13. Train supervised soft wake/halt behavior for 10 epochs.
+14. Evaluate the selected soft checkpoint in hard mode with zero updates.
+15. Harden only wake/halt gates for at most 10 epochs at no more than `5e-7`.
+16. Run closed, directional, shuffled, fixed-open, one-round, serial,
+    recurrence, no-harm, routing, synergy, and compute controls.
+17. Assemble `v2_final_report.json` and `V2_EXPERIMENT_RESULTS.md`.
 
-The conservative batches fit smaller development GPUs; a B200 has substantial
-headroom and should first run the same hashed baseline. Any throughput-tuned
-batch-size profile changes optimization and therefore receives a new config
+The registered batch sizes target a high-memory RTX PRO 6000-class RunPod.
+Changing batch size changes optimization and therefore requires a new config
 hash rather than silently resuming this experiment.

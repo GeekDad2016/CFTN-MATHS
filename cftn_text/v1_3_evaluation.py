@@ -775,9 +775,16 @@ def evaluate_native_specialists(
             "generations": str(rows_path.resolve()),
         }
     base = load_config(config["paths"]["base_config"])
-    math_report_path = Path(base["project"]["artifact_root"]) / "evaluation_math" / "report.json"
+    configured_math_report = config["paths"].get("math_evaluation_report")
+    math_report_path = (
+        Path(configured_math_report)
+        if configured_math_report
+        else Path(base["project"]["artifact_root"]) / "evaluation_math" / "report.json"
+    )
     if not math_report_path.is_file():
-        raise FileNotFoundError(f"sealed V1.1 math evaluation is missing: {math_report_path}")
+        raise FileNotFoundError(
+            f"sealed base math evaluation is missing: {math_report_path}"
+        )
     math_report = json.loads(math_report_path.read_text(encoding="utf-8"))
     _, math_manifest = load_data_contract(base)
     math_checkpoint = load_checkpoint(
@@ -850,8 +857,23 @@ def evaluate_native_specialists(
             while progress["overall_progress"] >= next_boundary:
                 next_boundary += 0.10
     oracle_summary = _oracle_capability_summary(oracle_rows)
-    math_familiar = float(math_report["splits"]["test"]["generation"]["exact_accuracy"])
+    math_test = math_report["splits"]["test"]
+    math_familiar = float(
+        math_test["accuracy"]
+        if "accuracy" in math_test
+        else math_test["generation"]["exact_accuracy"]
+    )
     threshold = float(config["acceptance"]["minimum_native_familiar_exact_accuracy"])
+    math_threshold = float(
+        config["acceptance"].get(
+            "minimum_math_familiar_exact_accuracy", threshold
+        )
+    )
+    string_threshold = float(
+        config["acceptance"].get(
+            "minimum_string_familiar_exact_accuracy", threshold
+        )
+    )
     oracle_threshold = float(
         config["acceptance"]["minimum_task_matched_oracle_exact_accuracy"]
     )
@@ -860,8 +882,9 @@ def evaluate_native_specialists(
     )
     oracle_cells = oracle_summary["by_specialist_and_task_class"]
     gates = {
-        "math_familiar": math_familiar >= threshold,
-        "string_familiar": splits["string_test"]["exact_accuracy"] >= threshold,
+        "math_familiar": math_familiar >= math_threshold,
+        "string_familiar": splits["string_test"]["exact_accuracy"]
+        >= string_threshold,
         "task_matched_math": all(
             int(item["examples"]) > 0
             and float(item["exact_accuracy"]) >= oracle_threshold
@@ -886,6 +909,8 @@ def evaluate_native_specialists(
         "math_report_sha256": file_sha256(math_report_path),
         "math_splits": math_report["splits"],
         "threshold": threshold,
+        "math_familiar_threshold": math_threshold,
+        "string_familiar_threshold": string_threshold,
         "task_matched_oracle_threshold": oracle_threshold,
         "minimum_primary_competence_coverage": minimum_coverage,
         "generation_contract": {

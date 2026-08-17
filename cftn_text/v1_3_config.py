@@ -12,6 +12,8 @@ from .data_generator import file_sha256
 
 
 REVISION_FORMAT = "cftn_text_multi_specialist_revision_v1_3"
+V2_REVISION_FORMAT = "cftn_text_multi_specialist_revision_v2"
+SUPPORTED_REVISION_FORMATS = {REVISION_FORMAT, V2_REVISION_FORMAT}
 V1_2_REPORT_FORMAT = "cftn_text_v1_2_revision_report_v1"
 
 
@@ -33,8 +35,8 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path).expanduser().resolve()
     with config_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
-    if not isinstance(raw, dict) or raw.get("format") != REVISION_FORMAT:
-        raise ValueError("unsupported V1.3 revision configuration")
+    if not isinstance(raw, dict) or raw.get("format") not in SUPPORTED_REVISION_FORMATS:
+        raise ValueError("unsupported multi-specialist revision configuration")
     config = _expand_environment(raw)
     for section in (
         "revision",
@@ -53,19 +55,65 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
         if not isinstance(config.get(section), dict):
             raise ValueError(f"V1.3 configuration requires {section}")
     repository_root = config_path.parent.parent.resolve()
-    for key in (
+    prerequisite_mode = str(
+        config["prerequisite"].get("mode", "sealed_v1_2_transfer")
+    )
+    common_paths = (
         "base_config",
-        "v1_2_artifact_root",
-        "v1_2_report",
-        "v1_2_pipeline_status",
         "math_checkpoint",
         "data_root",
         "artifact_root",
-    ):
+    )
+    strict_paths = (
+        "v1_2_artifact_root",
+        "v1_2_report",
+        "v1_2_pipeline_status",
+    )
+    for key in common_paths:
+        if key not in config["paths"]:
+            raise ValueError(f"multi-specialist configuration requires paths.{key}")
         config["paths"][key] = str(_resolve(config["paths"][key], repository_root))
+    if prerequisite_mode == "sealed_v1_2_transfer":
+        for key in strict_paths:
+            if key not in config["paths"]:
+                raise ValueError(f"sealed V1.2 transfer requires paths.{key}")
+            config["paths"][key] = str(
+                _resolve(config["paths"][key], repository_root)
+            )
+    elif prerequisite_mode == "fresh_multi_specialist":
+        for key in (
+            "prior_v1_2_report",
+            "prior_v1_3_report",
+            "math_evaluation_report",
+        ):
+            if key in config["paths"]:
+                config["paths"][key] = str(
+                    _resolve(config["paths"][key], repository_root)
+                )
+    else:
+        raise ValueError(f"unsupported prerequisite mode: {prerequisite_mode}")
     specialists = list(config["runtime"].get("specialist_names", []))
     if specialists != ["math", "string"]:
-        raise ValueError("V1.3 preregistration requires specialists [math, string]")
+        raise ValueError("this revision requires active specialists [math, string]")
+    if raw.get("format") == V2_REVISION_FORMAT:
+        registry = config.get("specialist_registry")
+        if not isinstance(registry, dict):
+            raise ValueError("V2 requires a specialist_registry contract")
+        maximum_slots = int(registry.get("maximum_slots", 0))
+        active = [str(item.get("name")) for item in registry.get("active", [])]
+        reserved = registry.get("reserved", [])
+        if maximum_slots != 3:
+            raise ValueError("V2 must reserve exactly three specialist slots")
+        if active != specialists:
+            raise ValueError("V2 active specialist registry differs from runtime order")
+        if len(reserved) != 1 or reserved[0].get("name") != "extension_1":
+            raise ValueError("V2 must retain one reserved extension_1 specialist slot")
+        if reserved[0].get("state") != "reserved_inactive":
+            raise ValueError("the extension_1 slot must remain reserved_inactive")
+        if reserved[0].get("train") is not False:
+            raise ValueError("the reserved specialist must not be trained")
+        if any(name in specialists for name in (item.get("name") for item in reserved)):
+            raise ValueError("active and reserved specialist slots overlap")
     rounds = int(config["runtime"].get("maximum_callosal_rounds", 0))
     if rounds < 2 or rounds > 3:
         raise ValueError("V1.3 maximum_callosal_rounds must be 2 or 3")
@@ -95,6 +143,21 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
         "hardened_wake",
     ]:
         raise ValueError("V1.3 integration phases differ from the preregistration")
+    if raw.get("format") == V2_REVISION_FORMAT:
+        hard = phases[-1]
+        if list(hard.get("trainable_components", [])) != [
+            "wake_gates",
+            "halt_gate",
+        ]:
+            raise ValueError("V2 hardened_wake must be gate-only")
+        hard_lr = float(hard.get("learning_rate", 0.0))
+        if not 0.0 < hard_lr <= 5.0e-7:
+            raise ValueError("V2 hardened_wake learning rate must be within (0, 5e-7]")
+        if float(hard.get("warmup_fraction", -1.0)) != 0.0:
+            raise ValueError("V2 hardened_wake must not restart with warmup")
+        transition = config["integration_training"].get("hard_transition_baseline")
+        if not isinstance(transition, dict) or transition.get("required") is not True:
+            raise ValueError("V2 requires a zero-update hard-transition baseline")
     evaluation = config["evaluation"]
     if evaluation.get("primary_split") != "joint_test":
         raise ValueError("V1.3 primary acceptance split must remain joint_test")
@@ -133,7 +196,37 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
 
 
 def audit_v1_2_pass(config: dict[str, Any]) -> dict[str, Any]:
-    """Verify the sealed V1.2 result before any V1.3 task is allowed to run."""
+    """Verify strict transfer evidence or seal a fresh-training initialization."""
+
+    mode = str(config["prerequisite"].get("mode", "sealed_v1_2_transfer"))
+    if mode == "fresh_multi_specialist":
+        evidence: dict[str, Any] = {}
+        for label, key in (
+            ("v1_2", "prior_v1_2_report"),
+            ("v1_3", "prior_v1_3_report"),
+        ):
+            value = config["paths"].get(key)
+            if not value:
+                continue
+            path = Path(value)
+            evidence[label] = {
+                "path": str(path.resolve()),
+                "present": path.is_file(),
+                "sha256": file_sha256(path) if path.is_file() else None,
+                "role": "informational_provenance_only",
+            }
+        return {
+            "format": "cftn_text_multi_specialist_initialization_audit_v1",
+            "state": "passed",
+            "mode": mode,
+            "bridge_initialization": "fresh_contextual_bridges_zero_initialized_receivers",
+            "prior_reports_required": False,
+            "prior_reports_gate_training": False,
+            "prior_evidence": evidence,
+            "revision_sha256": config["_meta"]["sha256"],
+        }
+    if mode != "sealed_v1_2_transfer":
+        raise V13PrerequisiteError(f"unsupported prerequisite mode: {mode}")
 
     paths = config["paths"]
     report_path = Path(paths["v1_2_report"])

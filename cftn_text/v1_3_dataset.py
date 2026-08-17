@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .tokenizer import ByteMathTokenizer, SequenceTooLongError, pad_1d
-from .v1_3_data import JOINT_SCHEMA, SPECIALISTS, STRING_SCHEMA, load_v1_3_records
+from .v1_3_data import JOINT_SCHEMA, STRING_SCHEMA, load_v1_3_records
 
 
 class ExternalTokenizer(Protocol):
@@ -87,6 +87,7 @@ class V13JointCollator:
         self.maximum_specialist_length = int(maximum_specialist_length)
         self.maximum_rounds = int(maximum_rounds)
         self.neutral_workspaces = dict(neutral_workspaces)
+        self.specialist_names = tuple(self.neutral_workspaces)
         self.gpt_pad_id = (
             gpt_tokenizer.pad_token_id
             if gpt_tokenizer.pad_token_id is not None
@@ -94,8 +95,10 @@ class V13JointCollator:
         )
         if self.gpt_pad_id is None or gpt_tokenizer.eos_token_id is None:
             raise ValueError("GPT tokenizer must expose EOS and pad/EOS IDs")
-        if set(self.neutral_workspaces) != set(SPECIALISTS):
-            raise ValueError("neutral workspaces must be defined for math and string")
+        if not self.specialist_names or len(set(self.specialist_names)) != len(
+            self.specialist_names
+        ):
+            raise ValueError("neutral workspaces must define ordered unique specialists")
 
     @staticmethod
     def gpt_prompt(record: Mapping[str, Any] | str) -> str:
@@ -160,7 +163,8 @@ class V13JointCollator:
         gpt_sequences: list[list[int]] = []
         gpt_labels: list[list[int]] = []
         wake_targets = torch.zeros(
-            (len(records), self.maximum_rounds, len(SPECIALISTS)), dtype=torch.float32
+            (len(records), self.maximum_rounds, len(self.specialist_names)),
+            dtype=torch.float32,
         )
         halt_targets = torch.full(
             (len(records), self.maximum_rounds), -100.0, dtype=torch.float32
@@ -185,11 +189,15 @@ class V13JointCollator:
             if len(required_by_round) != self.maximum_rounds:
                 raise ValueError("required-specialist rounds differ from configuration")
             for round_index, required in enumerate(required_by_round):
-                if len(set(required)) != len(required) or not set(required).issubset(SPECIALISTS):
+                if len(set(required)) != len(required) or not set(required).issubset(
+                    self.specialist_names
+                ):
                     raise ValueError("record contains an invalid required-specialist set")
                 for name in required:
-                    wake_targets[row, round_index, SPECIALISTS.index(name)] = 1.0
-                for name in SPECIALISTS:
+                    wake_targets[
+                        row, round_index, self.specialist_names.index(name)
+                    ] = 1.0
+                for name in self.specialist_names:
                     has_target = (
                         record["specialist_targets_by_round"][name][round_index]
                         is not None
@@ -215,7 +223,7 @@ class V13JointCollator:
                 self._specialist_batch(records, name, round_index)
                 for round_index in range(self.maximum_rounds)
             ]
-            for name in SPECIALISTS
+            for name in self.specialist_names
         }
         return {
             "gpt_prepass_input_ids": gpt_prepass_ids,

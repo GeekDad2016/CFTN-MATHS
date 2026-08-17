@@ -1,101 +1,99 @@
-# CFTN-Text V2 evidence-integrated revision
+# CFTN-Text V2 scaled multi-specialist revision
 
-Status: implemented and tested locally. Independent broad-math preparation,
-training, generation-led checkpoint selection, and standalone evaluation may
-run while V1.3 finishes. Every communication stage remains deliberately
-blocked until the sealed V1.3 report exists and passes. The sealed V1.2 report
-is versioned under `evidence/`; no V1.3 result is claimed here.
+V2 now trains the same mechanism claims as V1.3 with larger specialists and
+larger datasets. It does not import a V1.3 collaboration checkpoint and does
+not require V1.2 or V1.3 to pass before training. Earlier reports are retained
+only as historical provenance.
 
-## Why V2 was revised
+## What V2 trains
 
-V1.1 established a real one-way result: answer-specific math-to-GPT messages
-causally changed GPT's output. It also exposed two failures. GPT-to-math
-messages damaged an already-capable specialist in shared-view evaluation, and
-the standalone math tower generalized poorly beyond its narrow training
-distribution.
+- Frozen GPT-2 remains the general-language workspace and final responder.
+- A broad byte-level math tower is trained from scratch on the fixed 400,000
+  example curriculum and selected by validation-only greedy generation.
+- A larger byte-level exact-string tower is trained from scratch on 200,000
+  examples.
+- Fresh GPT-to-specialist and specialist-to-GPT bridges and receivers are
+  trained while both native towers remain frozen.
+- Independent sigmoid wake gates can activate no specialist, either
+  specialist, or both. They are not softmax, top-k, or winner-take-all routing.
+- Three callosal rounds permit sequential cooperation and a learned halt gate.
+- Hard mode physically skips inactive specialist execution in the sealed
+  evaluation.
 
-V1.2 then passed the targeted repair. It froze the successful return path,
-trained only GPT-to-math and its receivers on paired required/redundant views,
-used specialist-preservation and correct-versus-shuffled losses, and selected
-the checkpoint using greedy causal generation. That mechanism is now a hard V2
-dependency rather than a suggestion in documentation.
+The native specialists see neutral workspaces during joint training. GPT must
+communicate task-relevant information to a required specialist, and return
+messages must carry information that GPT can use in its answer. Pure-language
+examples require no specialist; explicit math and exact-string examples
+require one; language-dependent and multi-specialist examples exercise
+directional and recurrent cooperation.
 
-V1.3 tests the next, different claim: GPT owns the natural prompt while zero,
-one, or several specialists receive bounded latent requests, return results,
-and can be conditionally skipped. V2 may not inherit that claim merely because
-the code exists. The V2 prerequisite audit requires V1.3's sealed final gates
-and verifies that its report chains to the exact sealed V1.2 report.
+## Evidence incorporated from V1.3
 
-## Executable corrections
+The first V1.3 hardening attempt demonstrated that a high learning-rate restart
+and continued bridge/receiver updates could destroy excellent soft routing,
+producing an always-open gate collapse. V2 therefore treats hardening as a
+separate transition with these executable safeguards:
 
-The V2 runner now performs these checks and stages in order:
+1. select the best supervised-soft-wake checkpoint;
+2. evaluate that exact checkpoint in hard mode with zero optimizer updates;
+3. record soft and hard metrics on the same validation panel;
+4. freeze GPT, specialists, bridges, and receivers;
+5. train only wake and halt gates;
+6. use no warmup and cap gate LR at `5e-7` (floor `2.5e-7`);
+7. reject checkpoints that violate false-wake, exact-set, precision, recall,
+   baseline-regression, always-open, or always-closed guards;
+8. prevent any ineligible checkpoint from becoming the selected Stage 15
+   checkpoint or entering the final causal evaluation.
 
-1. generate and hash the immutable 400K data contract: 150,000 exact
-   project-generated problems, 212,690 balanced DeepMind problems, 29,837
-   MathQA training programs, and 7,473 GSM8K training problems;
-2. train the scratch byte-level math transformer for all 12 curriculum epochs;
-3. compare the teacher-forced best and retained epoch checkpoints on a
-   validation-only greedy-generation panel, then copy the winner by hash;
-4. evaluate that selected checkpoint on sealed generalization splits and stop
-   unless the generative specialist gate passes;
-5. verify passed, hash-chained V1.2 and V1.3 mechanism reports immediately
-   before any bridge optimization;
-6. train the math-to-GPT return bridge on shared complete prompts, where the
-   frozen specialist can already solve and GPT learns to consume its result;
-7. freeze that successful return path and train GPT-to-math with V1.2's paired
-   required/redundant objective, preservation loss, causal shuffled margin,
-   gate separation, and generation-led checkpoint selection;
-8. stop unless shared-view evaluation shows no more than two points of
-   specialist regression;
-9. run complementary directional, closed, shuffled, and fixed-open causal
-   collaboration arms and require positive synergy;
-10. allow a later 1M-data proposal only when validation greedy-generation
-    accuracy is still improving and the specialist gate passed;
-11. assemble one report whose overall result is the conjunction of every gate.
+The soft-to-hard baseline is diagnostic rather than a training gate inherited
+from V1.3. V2 measures its own thresholding loss because its towers, bridges,
+receivers, and gates are newly trained.
 
-The categorical integer answer head is disabled. It cannot mask failure of
-autoregressive sign-and-digit or symbolic generation. Training remains
-next-byte teacher forcing over complete traces; no external solver is placed in
-the model path. The V2.1 record contract preserves raw prompts and available
-source-native programs/execution traces so future failures can be separated
-into interpretation, procedure, and final-answer errors. Generation is allowed
-to use the model's full 1,536-token context rather than the old fixed 160-token
-ceiling. Data preparation rejects over-context records before optimization, and
-evaluation reports exclusions rather than silently truncating them.
+## Reserved third specialist
 
-## Fail-closed behavior
+The registry has capacity for three specialist roles. `math` and `string` are
+active. `extension_1` is explicitly `reserved_inactive` while its capability
+and dataset are being chosen. It is absent from wake targets, model modules,
+optimizers, checkpoints, and compute, so a placeholder cannot distort this
+run. Activating it requires a new sealed config that defines:
 
-The runner no longer equates “a report file exists” with “the experiment
-passed.” Failed specialist, conditional-communication, shared no-harm,
-collaboration, or final gates are terminal. A resumed run cannot silently skip
-one of those failures.
+- native inputs, targets, tokenizer, tower builder, and checkpoint contract;
+- standalone familiar and task-matched competence gates;
+- zero-, one-, two-, and three-specialist joint examples;
+- direction-disabled, shuffled-message, no-harm, recurrence, and compute arms;
+- backward-regression tests for math and exact-string behavior.
 
-`evidence/v1_3_final_report.json` is intentionally absent while V1.3 is active.
-Its absence does not invalidate or block the independent broad specialist run.
-It does block Stage 5 and every bridge stage. After V1.3 finishes, copy its
-sealed report there or set `CFTN_V1_3_REPORT` to the immutable report path, then
-rerun the same resumable launcher. A failed V1.3 report remains a hard stop; do
-not replace it with an override.
+## Ordered pipeline
 
-The prerequisite audit now checks the concrete V1.3 transition evidence,
-including pure-language false wake, wake precision and recall, exact required
-sets, hard-vs-dense regression, no-harm, causal message content, and compute
-reduction. A lone top-level `pass: true` is insufficient. This incorporates the
-Stage-10 lesson that perfect recall can coexist with an always-open collapse.
+1. prepare and hash broad-math data;
+2. train broad math for 12 fixed epochs;
+3. select the math checkpoint by validation greedy generation;
+4. evaluate sealed standalone math generation;
+5. record whether later math-data scaling is justified (never auto-scale);
+6. prepare and hash multi-specialist/string data;
+7. calibrate frozen GPT on pure-language prompts;
+8. train the larger exact-string specialist for at most 30 epochs;
+9. seal native specialist competence and task-matched coverage;
+10. train one-round single-specialist capacity for 8 epochs;
+11. train dense mixed messages for 12 epochs;
+12. train dense recurrent cooperation for 12 epochs;
+13. train supervised soft wakes for 10 epochs;
+14. evaluate the selected soft checkpoint in hard mode with zero updates;
+15. harden only wake/halt gates for at most 10 epochs;
+16. run the sealed causal, no-harm, recurrence, routing, and compute suite;
+17. assemble `v2_final_report.json` and `V2_EXPERIMENT_RESULTS.md`.
 
-V2 itself does not contain a soft-to-hard wake phase. If that phase is added in
-a later natural-interface transfer, it must first evaluate the source
-checkpoint in hard mode with zero updates, preserve the proven bridge paths,
-continue at the terminal learning-rate scale rather than restarting upward,
-and forbid checkpoint promotion on false-wake or exact-routing collapse.
+## Acceptance and claim boundary
 
-## Claim boundary
+The final claim requires native competence, pure-language no-harm, low false
+wake, wake precision/recall, exact per-round required sets, positive
+multi-specialist synergy, causal loss under required direction/message
+ablations, low irrelevant-specialist effect, hard-vs-dense preservation,
+conditional-compute reduction, sequential accuracy, and multi-round gain.
 
-This V2 runner re-tests broad specialist generation and safe communication on
-controlled private views. It does not yet claim that the broad math specialist
-has been integrated into V1.3's autonomous natural-prompt wake runtime. The
-final V2 report states that boundary explicitly. If V1.3 passes, porting the
-broad selected math checkpoint into that runtime and re-running natural-prompt
-wake, causality, no-harm, and compute controls is the next integration revision.
-If V1.3 fails, repair its failed mechanism first instead of hiding the result
-inside a larger B200 run.
+Competence-conditioned scores prevent missing specialist knowledge from being
+misreported as a bridge failure. Diagnostic paraphrase, extrapolation,
+counterfactual, and unseen-composition splits remain non-gating. A pass would
+support controlled two-specialist cooperation with conditional execution; it
+would not establish broad intelligence, arbitrary plug-and-play experts, or a
+completed three-specialist system.

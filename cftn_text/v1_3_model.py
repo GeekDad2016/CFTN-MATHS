@@ -11,7 +11,6 @@ from .bridges import BridgeOutput, ContextualMessageBridge, GatedCrossReceiver
 from .gpt_receiver import FrozenGPT2Tower
 from .math_tower import MathTower, MathTowerOutput
 from .model import causal_language_loss
-from .v1_3_data import SPECIALISTS
 
 
 WAKE_MODES = {
@@ -100,8 +99,12 @@ class V13MultiTowerModel(nn.Module):
         config: dict[str, Any],
     ) -> None:
         super().__init__()
-        if tuple(specialists) != SPECIALISTS:
-            raise ValueError(f"specialists must be ordered as {SPECIALISTS}")
+        configured_specialists = tuple(config["runtime"]["specialist_names"])
+        if tuple(specialists) != configured_specialists:
+            raise ValueError(
+                f"specialists must be ordered as {configured_specialists}"
+            )
+        self.specialist_names = configured_specialists
         self.gpt_tower = gpt_tower
         self.specialists = nn.ModuleDict(dict(specialists))
         self.config = config
@@ -119,7 +122,7 @@ class V13MultiTowerModel(nn.Module):
                     gate_init=float(bridge["gate_init"]),
                     zero_init_output=False,
                 )
-                for name in SPECIALISTS
+                for name in self.specialist_names
             }
         )
         self.return_bridges = nn.ModuleDict(
@@ -134,11 +137,11 @@ class V13MultiTowerModel(nn.Module):
                     gate_init=float(bridge["gate_init"]),
                     zero_init_output=False,
                 )
-                for name in SPECIALISTS
+                for name in self.specialist_names
             }
         )
         self.specialist_receivers = nn.ModuleDict()
-        for name in SPECIALISTS:
+        for name in self.specialist_names:
             tower = self.specialists[name]
             layers = [int(value) for value in tower.config.get("receiver_layers", [])]
             self.specialist_receivers[name] = nn.ModuleDict(
@@ -157,12 +160,13 @@ class V13MultiTowerModel(nn.Module):
             )
         gate_hidden = int(bridge["gate_hidden_size"])
         self.wake_gates = IndependentWakeGates(
-            gpt_tower.hidden_size, len(SPECIALISTS), gate_hidden
+            gpt_tower.hidden_size, len(self.specialist_names), gate_hidden
         )
         self.halt_gate = HaltGate(gpt_tower.hidden_size, gate_hidden)
         self.maximum_rounds = int(config["runtime"]["maximum_callosal_rounds"])
         self.wake_threshold = float(config["runtime"]["wake_threshold"])
         self.gate_mode = "contextual"
+        self.trainable_phase: str | None = None
 
     def set_gate_mode(self, mode: str) -> None:
         if mode not in {"contextual", "fixed_open"}:
@@ -179,16 +183,18 @@ class V13MultiTowerModel(nn.Module):
         }
         if phase not in allowed:
             raise ValueError(f"unknown V1.3 phase: {phase}")
+        self.trainable_phase = phase
         for parameter in self.parameters():
             parameter.requires_grad_(False)
-        for modules in (
-            self.request_bridges,
-            self.return_bridges,
-            self.specialist_receivers,
-            self.gpt_tower.receivers,
-        ):
-            for parameter in modules.parameters():
-                parameter.requires_grad_(True)
+        if phase != "hardened_wake":
+            for modules in (
+                self.request_bridges,
+                self.return_bridges,
+                self.specialist_receivers,
+                self.gpt_tower.receivers,
+            ):
+                for parameter in modules.parameters():
+                    parameter.requires_grad_(True)
         if phase in {"supervised_soft_wake", "hardened_wake"}:
             for modules in (self.wake_gates, self.halt_gate):
                 for parameter in modules.parameters():
@@ -199,6 +205,14 @@ class V13MultiTowerModel(nn.Module):
         self.gpt_tower.model.eval()
         for tower in self.specialists.values():
             tower.eval()
+        if self.trainable_phase == "hardened_wake":
+            for modules in (
+                self.request_bridges,
+                self.return_bridges,
+                self.specialist_receivers,
+                self.gpt_tower.receivers,
+            ):
+                modules.eval()
         return self
 
     def trainable_parameter_count(self) -> int:
@@ -381,7 +395,7 @@ class V13MultiTowerModel(nn.Module):
         *,
         wake_mode: str,
         maximum_rounds: int | None = None,
-        conditional_execution: bool = False,
+        conditional_execution: bool | None = None,
         loss_weights: Mapping[str, float] | None = None,
         disabled_specialists: set[str] | None = None,
         shuffled_requests: set[str] | None = None,
@@ -391,13 +405,21 @@ class V13MultiTowerModel(nn.Module):
         rounds_to_run = int(maximum_rounds or self.maximum_rounds)
         if rounds_to_run < 1 or rounds_to_run > self.maximum_rounds:
             raise ValueError("requested callosal rounds are outside the model runtime")
+        if conditional_execution is None:
+            conditional_execution = bool(
+                self.config["runtime"].get(
+                    "conditional_execution_in_hard_mode", False
+                )
+            ) and wake_mode in {"hard", "hard_straight_through"}
         gpt_hidden = self.gpt_tower.prepass(
             batch["gpt_prepass_input_ids"], batch["gpt_prepass_attention_mask"]
         )
         disabled = set(disabled_specialists or ())
         request_shuffle = set(shuffled_requests or ())
         return_shuffle = set(shuffled_returns or ())
-        unknown = (disabled | request_shuffle | return_shuffle).difference(SPECIALISTS)
+        unknown = (disabled | request_shuffle | return_shuffle).difference(
+            self.specialist_names
+        )
         if unknown:
             raise ValueError(f"unknown specialists in ablation: {sorted(unknown)}")
         accumulated_returns: list[torch.Tensor] = []
@@ -419,7 +441,7 @@ class V13MultiTowerModel(nn.Module):
             specialist_outputs: dict[str, MathTowerOutput] = {}
             returns: dict[str, BridgeOutput] = {}
             round_return_messages: list[torch.Tensor] = []
-            for specialist_index, name in enumerate(SPECIALISTS):
+            for specialist_index, name in enumerate(self.specialist_names):
                 activation = wake_activations[:, specialist_index]
                 if name in disabled:
                     activation = torch.zeros_like(activation)

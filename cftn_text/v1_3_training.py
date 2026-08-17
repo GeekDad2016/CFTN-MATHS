@@ -102,6 +102,14 @@ def build_string_tower(config: dict[str, Any]) -> MathTower:
     return MathTower(config["string_tower"], ByteMathTokenizer.vocab_size)
 
 
+def gpt_interface_config(
+    base_config: dict[str, Any], integration_config: dict[str, Any]
+) -> dict[str, Any]:
+    """Build GPT receivers against the integration bridge, not the math-only bridge."""
+
+    return {**base_config, "bridge": dict(integration_config["bridge"])}
+
+
 @torch.no_grad()
 def evaluate_string_teacher_forcing(
     model: MathTower,
@@ -417,20 +425,25 @@ def build_v1_3_model(
     )
     string_tower = build_string_tower(config)
     string_tower.load_state_dict(string_checkpoint["model_state"], strict=True)
-    gpt_tokenizer, gpt_tower = load_gpt_components(base)
+    gpt_tokenizer, gpt_tower = load_gpt_components(
+        gpt_interface_config(base, config)
+    )
     model = V13MultiTowerModel(
         gpt_tower=gpt_tower,
         specialists={"math": math_tower, "string": string_tower},
         config=config,
     ).to(device)
-    v1_2_checkpoint = load_checkpoint(
-        prerequisite["v1_2_checkpoint"],
-        expected_stage="bidirectional",
-        expected_config_sha256=config_sha256(base),
-        expected_manifest_sha256=math_manifest["manifest_sha256"],
-        map_location=device,
-    )
-    model.load_v1_2_bridge_state(v1_2_checkpoint["model_state"])
+    if prerequisite.get("bridge_initialization") != (
+        "fresh_contextual_bridges_zero_initialized_receivers"
+    ):
+        v1_2_checkpoint = load_checkpoint(
+            prerequisite["v1_2_checkpoint"],
+            expected_stage="bidirectional",
+            expected_config_sha256=config_sha256(base),
+            expected_manifest_sha256=math_manifest["manifest_sha256"],
+            map_location=device,
+        )
+        model.load_v1_2_bridge_state(v1_2_checkpoint["model_state"])
     if collaboration_checkpoint is not None:
         state = load_checkpoint(
             collaboration_checkpoint,
@@ -440,7 +453,7 @@ def build_v1_3_model(
         )
         model.load_collaboration_state_dict(state["model_state"], strict=True)
     return model, gpt_tokenizer, {
-        "v1_2": prerequisite,
+        "initialization": prerequisite,
         "math_checkpoint_sha256": file_sha256(config["paths"]["math_checkpoint"]),
         "string_checkpoint_sha256": file_sha256(string_checkpoint_path),
         "manifest_sha256": manifest["manifest_sha256"],
@@ -594,6 +607,7 @@ def evaluate_joint_teacher_forcing(
     examples = token_correct = token_total = sequence_correct = 0
     loss_sum = 0.0
     wake_tp = wake_fp = wake_fn = exact_sets = wake_labels = 0
+    wake_predictions = wake_target_positives = all_open_sets = all_closed_sets = 0
     pure_examples = pure_false_wakes = 0
     causal_correct = causal_shuffled = causal_examples = 0.0
     for batch_index, raw in enumerate(loader):
@@ -619,7 +633,11 @@ def evaluate_joint_teacher_forcing(
         wake_tp += int((predicted & targets).sum())
         wake_fp += int((predicted & ~targets).sum())
         wake_fn += int((~predicted & targets).sum())
+        wake_predictions += int(predicted.sum())
+        wake_target_positives += int(targets.sum())
         exact_sets += int(predicted.eq(targets).all(dim=(1, 2)).sum())
+        all_open_sets += int(predicted.all(dim=(1, 2)).sum())
+        all_closed_sets += int((~predicted).all(dim=(1, 2)).sum())
         wake_labels += int(targets.numel())
         pure_mask = torch.tensor(
             [value == "pure_language" for value in batch["task_classes"]],
@@ -659,6 +677,10 @@ def evaluate_joint_teacher_forcing(
         "wake_f1": 2 * precision * recall / max(1e-12, precision + recall),
         "exact_required_set_accuracy": exact_sets / examples,
         "pure_language_false_wake_rate": pure_false_wakes / max(1, pure_examples),
+        "wake_positive_rate": wake_predictions / max(1, wake_labels),
+        "wake_target_positive_rate": wake_target_positives / max(1, wake_labels),
+        "all_open_rate": all_open_sets / examples,
+        "all_closed_rate": all_closed_sets / examples,
         "causal_message_loss_gap": (
             (causal_shuffled - causal_correct) / max(1, causal_examples)
         ),
@@ -687,6 +709,238 @@ def _previous_phase_checkpoint(config: dict[str, Any], phase_index: int) -> Path
     return Path(value["best_checkpoint"])
 
 
+def _hard_transition_baseline_path(config: dict[str, Any]) -> Path:
+    return Path(config["paths"]["artifact_root"]) / "hard_transition_baseline" / "report.json"
+
+
+def _load_hard_transition_baseline(config: dict[str, Any]) -> dict[str, Any]:
+    path = _hard_transition_baseline_path(config)
+    if not path.is_file():
+        raise FileNotFoundError(f"zero-update hard-transition baseline is missing: {path}")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if value.get("state") != "completed" or int(value.get("optimizer_updates", -1)) != 0:
+        raise RuntimeError("hard-transition baseline is incomplete or contains updates")
+    if value.get("full_validation") is not True:
+        raise RuntimeError("hard-transition baseline used only a partial validation panel")
+    if value.get("revision_sha256") != config["_meta"]["sha256"]:
+        raise RuntimeError("hard-transition baseline revision hash mismatch")
+    source = Path(str(value.get("source_checkpoint", "")))
+    if not source.is_file() or file_sha256(source) != value.get(
+        "source_checkpoint_sha256"
+    ):
+        raise RuntimeError("hard-transition baseline source checkpoint changed")
+    return value
+
+
+def hardening_acceptance(
+    validation: dict[str, Any],
+    baseline: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Fail closed on the routing collapse observed in the first V1.3 hard run."""
+
+    guard = settings["hardening_guard"]
+    baseline_metrics = baseline["hard_metrics"]
+    gates = {
+        "pure_language_false_wake": float(
+            validation["pure_language_false_wake_rate"]
+        )
+        <= float(guard["maximum_pure_language_false_wake_rate"]),
+        "exact_required_set": float(validation["exact_required_set_accuracy"])
+        >= float(guard["minimum_exact_required_set_accuracy"]),
+        "wake_precision": float(validation["wake_precision"])
+        >= float(guard["minimum_wake_precision"]),
+        "wake_recall": float(validation["wake_recall"])
+        >= float(guard["minimum_wake_recall"]),
+        "sequence_no_regression": float(
+            validation["gpt_teacher_forced_sequence_accuracy"]
+        )
+        >= float(baseline_metrics["gpt_teacher_forced_sequence_accuracy"])
+        - float(guard["maximum_sequence_accuracy_drop_from_zero_update_baseline"]),
+        "exact_set_no_regression": float(validation["exact_required_set_accuracy"])
+        >= float(baseline_metrics["exact_required_set_accuracy"])
+        - float(guard["maximum_exact_set_drop_from_zero_update_baseline"]),
+        "not_always_open": float(validation["all_open_rate"])
+        <= float(guard["maximum_all_open_rate"]),
+        "not_always_closed": float(validation["all_closed_rate"])
+        <= float(guard["maximum_all_closed_rate"]),
+    }
+    gates["pass"] = all(gates.values())
+    return {
+        "gates": gates,
+        "collapse_guard": {
+            "triggered": not gates["pass"],
+            "failed": sorted(name for name, passed in gates.items() if not passed),
+            "zero_update_baseline": baseline_metrics,
+        },
+    }
+
+
+def integration_selection_score(
+    validation: dict[str, Any],
+    *,
+    hardening: dict[str, Any] | None = None,
+) -> float:
+    if hardening is None:
+        return (
+            float(validation["gpt_teacher_forced_sequence_accuracy"])
+            + 0.10 * float(validation["wake_f1"])
+            + 0.05 * max(0.0, float(validation["causal_message_loss_gap"]))
+            - 1.0e-5 * float(validation["loss"])
+        )
+    return (
+        float(validation["gpt_teacher_forced_sequence_accuracy"])
+        + 0.25 * float(validation["gpt_teacher_forced_token_accuracy"])
+        + 0.25 * float(validation["exact_required_set_accuracy"])
+        + 0.10 * float(validation["wake_precision"])
+        + 0.10 * float(validation["wake_recall"])
+        + 0.05 * max(0.0, float(validation["causal_message_loss_gap"]))
+        - 0.25 * float(validation["pure_language_false_wake_rate"])
+        - 1.0e-5 * float(validation["loss"])
+    )
+
+
+@torch.no_grad()
+def evaluate_hard_transition_baseline(
+    config: dict[str, Any],
+    *,
+    device_name: str = "cuda",
+    max_batches: int | None = None,
+    wandb_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Measure thresholding alone from the selected soft checkpoint."""
+
+    audit_v1_2_pass(config)
+    transition = config["integration_training"]["hard_transition_baseline"]
+    source_phase = str(transition["source_phase"])
+    _, source_definition = _phase(config, source_phase)
+    _, hard_definition = _phase(config, "hardened_wake")
+    source_summary_path = (
+        Path(config["paths"]["artifact_root"]) / source_phase / "summary.json"
+    )
+    if not source_summary_path.is_file():
+        raise FileNotFoundError(
+            f"soft-wake source summary is missing: {source_summary_path}"
+        )
+    source_summary = json.loads(source_summary_path.read_text(encoding="utf-8"))
+    if source_summary.get("state") != "completed":
+        raise RuntimeError("soft-wake source phase is not complete")
+    source_checkpoint = Path(source_summary["best_checkpoint"])
+    source_sha256 = file_sha256(source_checkpoint)
+    if source_sha256 != source_summary.get("best_checkpoint_sha256"):
+        raise RuntimeError("soft-wake source checkpoint hash mismatch")
+
+    seed = int(config["revision"]["seed"])
+    seed_everything(seed)
+    device = resolve_device(device_name)
+    data_root, manifest = load_v1_3_data_contract(config)
+    model, gpt_tokenizer, provenance = build_v1_3_model(
+        config, device=device, collaboration_checkpoint=source_checkpoint
+    )
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    allowed_classes = set(hard_definition["include_task_classes"])
+    validation_records = [
+        record
+        for record in V13Dataset(
+            data_root / manifest["splits"]["joint_validation"]["path"]
+        ).records
+        if record["task_class"] in allowed_classes
+    ]
+    collator = V13JointCollator(
+        ByteMathTokenizer(),
+        gpt_tokenizer,
+        maximum_gpt_length=int(config["data"]["maximum_gpt_length"]),
+        maximum_specialist_length=int(config["data"]["maximum_specialist_length"]),
+        maximum_rounds=int(config["runtime"]["maximum_callosal_rounds"]),
+        neutral_workspaces=config["runtime"]["neutral_workspaces"],
+    )
+    settings = config["integration_training"]
+    loader = _loader(
+        V13Dataset(validation_records),
+        collator,
+        batch_size=int(settings["eval_batch_size"]),
+        shuffle=False,
+        seed=seed,
+        epoch=0,
+        num_workers=int(settings["num_workers"]),
+    )
+    causal_batches = math.ceil(
+        int(settings["validation_causal_examples"])
+        / int(settings["eval_batch_size"])
+    )
+    dtype = precision_dtype(settings["precision"], device)
+    started_at = time.time()
+    soft_metrics = evaluate_joint_teacher_forcing(
+        model,
+        loader,
+        device,
+        dtype,
+        wake_mode=str(source_definition["wake_mode"]),
+        maximum_rounds=int(source_definition["maximum_rounds"]),
+        causal_batches=causal_batches,
+        max_batches=max_batches,
+    )
+    hard_metrics = evaluate_joint_teacher_forcing(
+        model,
+        loader,
+        device,
+        dtype,
+        wake_mode=str(transition["wake_mode"]),
+        maximum_rounds=int(hard_definition["maximum_rounds"]),
+        causal_batches=causal_batches,
+        max_batches=max_batches,
+    )
+    if file_sha256(source_checkpoint) != source_sha256:
+        raise RuntimeError("zero-update baseline modified its source checkpoint")
+    artifact = _hard_transition_baseline_path(config).parent
+    artifact.mkdir(parents=True, exist_ok=True)
+    report = {
+        "format": "cftn_text_hard_transition_baseline_v1",
+        "state": "completed",
+        "optimizer_updates": 0,
+        "trainable_parameters": 0,
+        "full_validation": max_batches is None
+        and int(soft_metrics["examples"]) == len(validation_records)
+        and int(hard_metrics["examples"]) == len(validation_records),
+        "validation_examples_expected": len(validation_records),
+        "maximum_batches": max_batches,
+        "source_phase": source_phase,
+        "source_checkpoint": str(source_checkpoint.resolve()),
+        "source_checkpoint_sha256": source_sha256,
+        "soft_metrics": soft_metrics,
+        "hard_metrics": hard_metrics,
+        "thresholding_delta": {
+            "sequence_accuracy": float(
+                hard_metrics["gpt_teacher_forced_sequence_accuracy"]
+            )
+            - float(soft_metrics["gpt_teacher_forced_sequence_accuracy"]),
+            "token_accuracy": float(hard_metrics["gpt_teacher_forced_token_accuracy"])
+            - float(soft_metrics["gpt_teacher_forced_token_accuracy"]),
+            "exact_required_set_accuracy": float(
+                hard_metrics["exact_required_set_accuracy"]
+            )
+            - float(soft_metrics["exact_required_set_accuracy"]),
+        },
+        "elapsed_seconds": time.time() - started_at,
+        "revision_sha256": config["_meta"]["sha256"],
+        "manifest_sha256": manifest["manifest_sha256"],
+        "provenance": provenance,
+        "gpu": gpu_status(),
+    }
+    atomic_json_dump(report, _hard_transition_baseline_path(config))
+    tracker = initialize_wandb(
+        wandb_options,
+        artifact_dir=artifact,
+        stage="hard_transition_baseline",
+        config={"revision_sha256": config["_meta"]["sha256"]},
+    )
+    tracker.log(report, global_step=0, epoch=0, event="zero_update_hard_baseline")
+    tracker.update_summary({"run/state": "completed", "baseline": report})
+    tracker.finish()
+    return report
+
+
 def train_integration_phase(
     config: dict[str, Any],
     phase_name: str,
@@ -698,11 +952,30 @@ def train_integration_phase(
 ) -> dict[str, Any]:
     audit_v1_2_pass(config)
     phase_index, phase = _phase(config, phase_name)
+    baseline_required = bool(
+        config["integration_training"]
+        .get("hard_transition_baseline", {})
+        .get("required", False)
+    )
+    hardening_baseline = (
+        _load_hard_transition_baseline(config)
+        if phase_name == "hardened_wake" and baseline_required
+        else None
+    )
     seed = int(config["revision"]["seed"])
     seed_everything(seed + phase_index)
     device = resolve_device(device_name)
     data_root, manifest = load_v1_3_data_contract(config)
     previous = _previous_phase_checkpoint(config, phase_index)
+    if hardening_baseline is not None:
+        if previous is None or previous.resolve() != Path(
+            hardening_baseline["source_checkpoint"]
+        ).resolve():
+            raise RuntimeError(
+                "hardened_wake source differs from the zero-update baseline source"
+            )
+        if file_sha256(previous) != hardening_baseline["source_checkpoint_sha256"]:
+            raise RuntimeError("hardened_wake source checkpoint hash changed")
     model, gpt_tokenizer, provenance = build_v1_3_model(
         config, device=device, collaboration_checkpoint=previous
     )
@@ -740,6 +1013,19 @@ def train_integration_phase(
     best_path = artifact / f"{phase_name}.best.pth"
     started_at = time.time()
     named = [(name, value) for name, value in model.named_parameters() if value.requires_grad]
+    if not named:
+        raise RuntimeError(f"{phase_name} has no trainable parameters")
+    if phase_name == "hardened_wake":
+        unexpected = sorted(
+            name
+            for name, _ in named
+            if not (name.startswith("wake_gates.") or name.startswith("halt_gate."))
+        )
+        if unexpected:
+            raise RuntimeError(
+                "hardened_wake must be gate-only; unexpected trainable parameters: "
+                f"{unexpected}"
+            )
     gate_parameters = [
         value
         for name, value in named
@@ -747,30 +1033,50 @@ def train_integration_phase(
     ]
     gate_ids = {id(value) for value in gate_parameters}
     other_parameters = [value for _, value in named if id(value) not in gate_ids]
-    optimizer = AdamW(
-        [
+    phase_learning_rate = float(phase.get("learning_rate", settings["learning_rate"]))
+    gate_learning_rate = float(
+        phase.get(
+            "gate_learning_rate",
+            phase_learning_rate
+            if phase_name == "hardened_wake" and "learning_rate" in phase
+            else phase_learning_rate * float(settings["gate_learning_rate_multiplier"]),
+        )
+    )
+    optimizer_groups: list[dict[str, Any]] = []
+    if other_parameters:
+        optimizer_groups.append(
             {
                 "params": other_parameters,
-                "lr": float(settings["learning_rate"]),
+                "lr": phase_learning_rate,
                 "group_name": "bridges_and_receivers",
-            },
+            }
+        )
+    if gate_parameters:
+        optimizer_groups.append(
             {
                 "params": gate_parameters,
-                "lr": float(settings["learning_rate"])
-                * float(settings["gate_learning_rate_multiplier"]),
+                "lr": gate_learning_rate,
                 "group_name": "gates",
-            },
-        ],
-        weight_decay=float(settings["weight_decay"]),
+            }
+        )
+    if phase_name == "hardened_wake" and [
+        group["group_name"] for group in optimizer_groups
+    ] != ["gates"]:
+        raise RuntimeError("hardened_wake optimizer must contain only the gates group")
+    optimizer = AdamW(
+        optimizer_groups,
+        weight_decay=float(phase.get("weight_decay", settings["weight_decay"])),
     )
     steps_per_epoch = max(1, math.ceil(len(train_records) / int(settings["batch_size"])))
     total_steps = int(phase["max_epochs"]) * steps_per_epoch
     scheduler = make_scheduler(
         optimizer,
         total_steps=total_steps,
-        warmup_fraction=float(settings["warmup_fraction"]),
-        minimum_ratio=float(settings["minimum_learning_rate"])
-        / float(settings["learning_rate"]),
+        warmup_fraction=float(phase.get("warmup_fraction", settings["warmup_fraction"])),
+        minimum_ratio=float(
+            phase.get("minimum_learning_rate", settings["minimum_learning_rate"])
+        )
+        / max(phase_learning_rate, gate_learning_rate),
     )
     dtype = precision_dtype(settings["precision"], device)
     scaler = make_scaler(device, dtype)
@@ -778,6 +1084,63 @@ def train_integration_phase(
     global_step = 0
     best_metric = float("-inf")
     patience = 0
+    eligible_best_exists = False
+    best_metrics: dict[str, Any] = {}
+    if hardening_baseline is not None and not resume:
+        baseline_acceptance = hardening_acceptance(
+            hardening_baseline["hard_metrics"], hardening_baseline, settings
+        )
+        if baseline_acceptance["gates"]["pass"] is True:
+            best_metric = integration_selection_score(
+                hardening_baseline["hard_metrics"],
+                hardening=baseline_acceptance,
+            )
+            eligible_best_exists = True
+            best_metrics = {
+                "epoch": 0,
+                "global_step": 0,
+                "phase": phase_name,
+                "wake_mode": wake_mode,
+                "maximum_rounds": maximum_rounds,
+                "train": None,
+                "validation": hardening_baseline["hard_metrics"],
+                "selection_metric": best_metric,
+                "checkpoint_eligible": True,
+                "hardening_acceptance": baseline_acceptance,
+                "best_metric": best_metric,
+                "patience": 0,
+                "learning_rates": {
+                    str(group.get("group_name", index)): float(group["lr"])
+                    for index, group in enumerate(optimizer.param_groups)
+                },
+                "trainable_parameters": model.trainable_parameter_count(),
+                "trainable_parameter_names": [name for name, _ in named],
+                "optimizer_group_names": [
+                    str(group.get("group_name")) for group in optimizer.param_groups
+                ],
+                "candidate_source": "zero_update_hard_baseline",
+            }
+            baseline_payload = build_checkpoint(
+                stage=f"v1_3_{phase_name}",
+                epoch=0,
+                global_step=0,
+                model_state=model.collaboration_state_dict(),
+                optimizer_state=optimizer.state_dict(),
+                scheduler_state=scheduler.state_dict(),
+                scaler_state=scaler.state_dict() if scaler.is_enabled() else None,
+                config_sha256=config["_meta"]["sha256"],
+                manifest_sha256=manifest["manifest_sha256"],
+                best_metric=best_metric,
+                patience=0,
+                extra={
+                    "metrics": best_metrics,
+                    "best_metrics": best_metrics,
+                    "provenance": provenance,
+                    "zero_update_candidate": True,
+                },
+            )
+            atomic_torch_save(baseline_payload, artifact / "checkpoint_epoch_0000.pth")
+            atomic_torch_save(baseline_payload, best_path)
     if resume and latest_checkpoint(artifact):
         checkpoint = load_checkpoint(
             latest_checkpoint(artifact),
@@ -796,6 +1159,8 @@ def train_integration_phase(
         global_step = int(checkpoint["global_step"])
         best_metric = float(checkpoint["best_metric"])
         patience = int(checkpoint["patience"])
+        eligible_best_exists = math.isfinite(best_metric) and best_path.is_file()
+        best_metrics = dict(checkpoint.get("extra", {}).get("best_metrics", {}))
     tracker = initialize_wandb(
         wandb_options,
         artifact_dir=artifact,
@@ -806,7 +1171,7 @@ def train_integration_phase(
             "maximum_rounds": maximum_rounds,
         },
     )
-    final_metrics: dict[str, Any] = {}
+    final_metrics: dict[str, Any] = dict(best_metrics)
     try:
         for epoch in range(start_epoch, int(phase["max_epochs"]) + 1):
             epoch_started = time.time()
@@ -899,16 +1264,20 @@ def train_integration_phase(
                 causal_batches=causal_batches,
                 max_batches=max_batches,
             )
-            selection = (
-                float(validation["gpt_teacher_forced_sequence_accuracy"])
-                + 0.10 * float(validation["wake_f1"])
-                + 0.05 * max(0.0, float(validation["causal_message_loss_gap"]))
-                - 1e-5 * float(validation["loss"])
+            hardening = (
+                hardening_acceptance(validation, hardening_baseline, settings)
+                if hardening_baseline is not None
+                else None
             )
-            improved = selection > best_metric
+            selection = integration_selection_score(
+                validation, hardening=hardening
+            )
+            checkpoint_eligible = hardening is None or hardening["gates"]["pass"] is True
+            improved = checkpoint_eligible and selection > best_metric
             patience = 0 if improved else patience + 1
             if improved:
                 best_metric = selection
+                eligible_best_exists = True
             final_metrics = {
                 "epoch": epoch,
                 "global_step": global_step,
@@ -920,6 +1289,8 @@ def train_integration_phase(
                 },
                 "validation": validation,
                 "selection_metric": selection,
+                "checkpoint_eligible": checkpoint_eligible,
+                "hardening_acceptance": hardening,
                 "best_metric": best_metric,
                 "patience": patience,
                 "learning_rates": {
@@ -927,6 +1298,10 @@ def train_integration_phase(
                     for index, group in enumerate(optimizer.param_groups)
                 },
                 "trainable_parameters": model.trainable_parameter_count(),
+                "trainable_parameter_names": [name for name, _ in named],
+                "optimizer_group_names": [
+                    str(group.get("group_name")) for group in optimizer.param_groups
+                ],
                 "timing": {
                     "epoch_seconds": time.time() - epoch_started,
                     "eta_seconds_to_phase_end": (
@@ -936,6 +1311,8 @@ def train_integration_phase(
                 },
                 "gpu": gpu_status(),
             }
+            if improved:
+                best_metrics = dict(final_metrics)
             append_jsonl(final_metrics, metrics_path)
             tracker.log(final_metrics, global_step=global_step, epoch=epoch, event="epoch_validation")
             payload = build_checkpoint(
@@ -950,7 +1327,11 @@ def train_integration_phase(
                 manifest_sha256=manifest["manifest_sha256"],
                 best_metric=best_metric,
                 patience=patience,
-                extra={"metrics": final_metrics, "provenance": provenance},
+                extra={
+                    "metrics": final_metrics,
+                    "best_metrics": best_metrics,
+                    "provenance": provenance,
+                },
             )
             checkpoint_path = artifact / f"checkpoint_epoch_{epoch:04d}.pth"
             atomic_torch_save(payload, checkpoint_path)
@@ -982,20 +1363,37 @@ def train_integration_phase(
         )
         tracker.finish(exit_code=1)
         raise
+    hardening_passed = eligible_best_exists
     result = {
         "format": "cftn_text_v1_3_integration_training_result_v1",
-        "state": "completed",
+        "state": "completed" if hardening_passed else "failed_acceptance",
         "phase": phase_name,
-        "best_checkpoint": str(best_path.resolve()),
-        "best_checkpoint_sha256": file_sha256(best_path),
+        "best_checkpoint": str(best_path.resolve()) if hardening_passed else None,
+        "best_checkpoint_sha256": file_sha256(best_path) if hardening_passed else None,
         "final_metrics": final_metrics,
+        "best_metrics": best_metrics,
+        "optimizer_contract": {
+            "group_names": [
+                str(group.get("group_name")) for group in optimizer.param_groups
+            ],
+            "peak_learning_rates": {
+                str(group.get("group_name")): float(group.get("initial_lr", group["lr"]))
+                for group in optimizer.param_groups
+            },
+            "gate_only": phase_name == "hardened_wake",
+        },
+        "hard_transition_baseline": (
+            str(_hard_transition_baseline_path(config).resolve())
+            if hardening_baseline is not None
+            else None
+        ),
         "revision_sha256": config["_meta"]["sha256"],
     }
     atomic_json_dump(result, artifact / "summary.json")
     atomic_json_dump(
         _status(
             stage=phase_name,
-            state="completed",
+            state=str(result["state"]),
             epoch=int(final_metrics["epoch"]),
             global_step=global_step,
             started_at=started_at,
@@ -1003,5 +1401,16 @@ def train_integration_phase(
         ),
         status_path,
     )
+    if not hardening_passed:
+        tracker.update_summary(
+            {
+                "run/state": "failed_acceptance",
+                "collapse_guard": final_metrics.get("hardening_acceptance"),
+            }
+        )
+        tracker.finish(exit_code=1)
+        raise RuntimeError(
+            f"{phase_name} produced no checkpoint eligible under the collapse guard"
+        )
     tracker.finish()
     return result

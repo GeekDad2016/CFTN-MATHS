@@ -4,9 +4,13 @@ project:
   artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r2}
   data_root: ${CFTN_DATA_ROOT:-data/manifests/v2_broad_math_400k_r2}
 
-prerequisites:
+prior_evidence:
+  role: informational_provenance_only
   v1_2_report: ${CFTN_V1_2_REPORT:-evidence/v1_2_final_report.json}
   v1_3_report: ${CFTN_V1_3_REPORT:-evidence/v1_3_final_report.json}
+
+multi_specialist:
+  revision_config: config/v2_multi_specialist.yaml
 
 data:
   format: cftn_text_broad_math_v2
@@ -244,9 +248,6 @@ checkpoint_selection:
   split: validation
   generation_examples: 512
 
-conditional_bridge:
-  revision_config: config/v2_conditional_bridge.yaml
-
 evaluation:
   batch_size: 16
   maximum_generation_examples: 5000
@@ -307,7 +308,7 @@ gpt_calibration:
 
 wandb:
   project: ${WANDB_PROJECT:-cftn-text-v2}
-  group: ${WANDB_GROUP:-broad-math-400k}
+  group: ${WANDB_GROUP:-scaled-multi-specialist}
   entity: ${WANDB_ENTITY:-}
   mode: online
   require_api_key_environment: true

@@ -285,6 +285,45 @@ def test_v1_3_multi_tower_forward_backward_and_independent_wakes():
     )
 
 
+def test_hardened_wake_freezes_bridges_receivers_and_specialists():
+    model, _ = _tiny_model_and_batch()
+    model.set_trainable_phase("hardened_wake")
+    model.train()
+    trainable = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert trainable
+    assert all(
+        name.startswith("wake_gates.") or name.startswith("halt_gate.")
+        for name in trainable
+    )
+    assert not any(
+        parameter.requires_grad for parameter in model.request_bridges.parameters()
+    )
+    assert not any(
+        parameter.requires_grad for parameter in model.return_bridges.parameters()
+    )
+    assert model.wake_gates.training is True
+    assert model.halt_gate.training is True
+    assert model.request_bridges.training is False
+    assert model.return_bridges.training is False
+    assert model.specialist_receivers.training is False
+    assert model.gpt_tower.receivers.training is False
+
+
+def test_configured_hard_mode_physically_skips_closed_specialists():
+    model, batch = _tiny_model_and_batch()
+    model.config["runtime"]["conditional_execution_in_hard_mode"] = True
+    with torch.no_grad():
+        for parameter in model.wake_gates.parameters():
+            parameter.zero_()
+        model.wake_gates.network[-1].bias.fill_(-10.0)
+    for tower in model.specialists.values():
+        tower.reset_execution_count()
+    model(batch, wake_mode="hard", maximum_rounds=1)
+    assert all(tower.execution_count == 0 for tower in model.specialists.values())
+
+
 def test_v1_3_pipeline_is_ordered_and_guarded():
     path = ROOT / "config" / "v1_3_multi_specialist.yaml"
     config = load_v1_3_config(path)

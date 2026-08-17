@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .checkpoint import atomic_json_dump
+from .config import load_config
 from .data_generator import file_sha256
-from .v1_3_config import audit_v1_2_pass
+from .v1_3_config import V2_REVISION_FORMAT, audit_v1_2_pass
 from .v1_3_data import SPECIALISTS
 
 
@@ -62,12 +63,14 @@ def _percent(value: float) -> str:
 
 def render_v1_3_markdown(report: dict[str, Any]) -> str:
     result = "PASS" if report["final_gates"]["pass"] else "FAIL"
+    label = str(report.get("experiment_label", "V1.3"))
+    design_document = str(report.get("design_document", "V1_3_EXPERIMENT_PLAN.md"))
     lines = [
-        "# CFTN-Text V1.3 experiment results",
+        f"# CFTN-Text {label} experiment results",
         "",
         f"Status: sealed **{result}**.",
         "",
-        "Preregistered design: `V1_3_EXPERIMENT_PLAN.md`",
+        f"Preregistered design: `{design_document}`",
         "",
         "## Executive conclusion",
         "",
@@ -76,11 +79,26 @@ def render_v1_3_markdown(report: dict[str, Any]) -> str:
         "## Immutable provenance",
         "",
         f"- Generated UTC: `{report['generated_utc']}`",
-        f"- V1.3 revision SHA-256: `{report['revision_sha256']}`",
+        f"- {label} revision SHA-256: `{report['revision_sha256']}`",
         f"- Dataset manifest SHA-256: `{report['manifest_sha256']}`",
         f"- Final checkpoint: `{report['checkpoint']}`",
         f"- Final checkpoint SHA-256: `{report['checkpoint_sha256']}`",
-        f"- V1.2 sealed report SHA-256: `{report['prerequisite']['v1_2_report_sha256']}`",
+    ]
+    if report["prerequisite"].get("v1_2_report_sha256"):
+        lines.append(
+            f"- V1.2 sealed report SHA-256: "
+            f"`{report['prerequisite']['v1_2_report_sha256']}`"
+        )
+    else:
+        lines.extend(
+            [
+                f"- Collaboration initialization: "
+                f"`{report['prerequisite']['bridge_initialization']}`",
+                "- Earlier experiment reports: informational provenance only; not a training gate.",
+            ]
+        )
+    lines.extend(
+        [
         "",
         "## Central measurements",
         "",
@@ -105,7 +123,8 @@ def render_v1_3_markdown(report: dict[str, Any]) -> str:
         "",
         "## Acceptance gates",
         "",
-    ]
+        ]
+    )
     for name, passed in report["final_gates"].items():
         if name != "pass":
             lines.append(f"- {'PASS' if passed else 'FAIL'} — `{name}`")
@@ -145,6 +164,8 @@ def render_v1_3_markdown(report: dict[str, Any]) -> str:
 
 def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
     root = Path(config["paths"]["artifact_root"])
+    is_v2 = config.get("format") == V2_REVISION_FORMAT
+    experiment_label = "V2" if is_v2 else "V1.3"
     prerequisite = audit_v1_2_pass(config)
     calibration_path = root / "gpt_language_calibration" / "report.json"
     native_path = root / "native_specialist_evaluation" / "report.json"
@@ -152,6 +173,16 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
     calibration = _load(calibration_path)
     native = _load(native_path)
     evaluation = _load(evaluation_path)
+    hard_transition_baseline = None
+    if is_v2:
+        baseline_path = root / "hard_transition_baseline" / "report.json"
+        hard_transition_baseline = _load(baseline_path)
+        if (
+            hard_transition_baseline.get("state") != "completed"
+            or hard_transition_baseline.get("optimizer_updates") != 0
+            or hard_transition_baseline.get("full_validation") is not True
+        ):
+            raise RuntimeError("V2 report requires a sealed zero-update hard baseline")
     if calibration.get("pass") is not True:
         raise RuntimeError("V1.3 report refuses a failed GPT calibration precondition")
     if native.get("gates", {}).get("pass") is not True:
@@ -169,6 +200,8 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
             "best_checkpoint": summary["best_checkpoint"],
             "best_checkpoint_sha256": summary["best_checkpoint_sha256"],
             "final_metrics": summary["final_metrics"],
+            "best_metrics": summary.get("best_metrics", summary["final_metrics"]),
+            "optimizer_contract": summary.get("optimizer_contract"),
         }
     contract = evaluation.get("evaluation_contract", {})
     primary_split = str(config["evaluation"]["primary_split"])
@@ -299,8 +332,11 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
     task_matched_native = bool(native["gates"].get("task_matched_math")) and bool(
         native["gates"].get("task_matched_string")
     )
+    initialization_gate = (
+        "fresh_training_initialization" if is_v2 else "v1_2_prerequisite"
+    )
     gates = {
-        "v1_2_prerequisite": True,
+        initialization_gate: prerequisite.get("state") == "passed",
         "gpt_language_precondition": bool(calibration["pass"]),
         "native_specialists_familiar": bool(native["gates"].get("math_familiar"))
         and bool(native["gates"].get("string_familiar")),
@@ -338,9 +374,31 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
         "beats_fixed_open": joint_learned > joint_fixed,
         "beats_serial_pipeline": joint_learned > joint_serial,
     }
+    if is_v2:
+        hard_phase = phases["hardened_wake"]
+        hard_contract = hard_phase.get("optimizer_contract") or {}
+        hard_acceptance = hard_phase["best_metrics"].get(
+            "hardening_acceptance", {}
+        )
+        gates.update(
+            {
+                "zero_update_hard_baseline": bool(hard_transition_baseline)
+                and hard_transition_baseline.get("optimizer_updates") == 0,
+                "hardening_gate_only": hard_contract.get("group_names")
+                == ["gates"],
+                "hardening_collapse_guard_clear": hard_acceptance.get("gates", {}).get(
+                    "pass"
+                )
+                is True,
+            }
+        )
     gates["pass"] = all(gates.values())
     explanations = {
-        "v1_2_prerequisite": "The sealed V1.2 conditional bridge passed.",
+        initialization_gate: (
+            "V2 trained fresh collaboration modules; earlier reports were provenance only."
+            if is_v2
+            else "The sealed V1.2 conditional bridge passed."
+        ),
         "gpt_language_precondition": "Frozen GPT passed the no-specialist calibration.",
         "native_specialists_familiar": "Both native specialists passed familiar exact generation.",
         "native_specialists_task_matched": (
@@ -366,6 +424,20 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
         "beats_fixed_open": "Contextual wake/message gates beat fixed-open communication.",
         "beats_serial_pipeline": "The state-connected model beat the simple serial baseline.",
     }
+    if is_v2:
+        explanations.update(
+            {
+                "zero_update_hard_baseline": (
+                    "Hard thresholding was measured before any hard-phase update."
+                ),
+                "hardening_gate_only": (
+                    "Only wake and halt gates were trainable during hardening."
+                ),
+                "hardening_collapse_guard_clear": (
+                    "The selected hard checkpoint passed no-harm and exact-routing guards."
+                ),
+            }
+        )
     passed = [text for name, text in explanations.items() if gates[name]]
     failed = [f"{text} (failed)" for name, text in explanations.items() if not gates[name]]
     hypotheses = [
@@ -373,24 +445,45 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
         for name in explanations
         if not gates[name]
     ]
-    recommendations = (
-        [
-            "Advance to V1.4 only as an incremental third-specialist extension; retain all V1.3 regressions and controls."
-        ]
-        if gates["pass"]
-        else [
-            "Run a targeted V1.3.x repair for the failed gate(s); do not add more specialists until conditional communication and compute pass."
-        ]
-    )
+    if is_v2:
+        recommendations = (
+            [
+                "Populate the reserved extension_1 slot only after defining its native competence and matched causal tests."
+            ]
+            if gates["pass"]
+            else [
+                "Repair only the failed V2 gate(s); keep extension_1 inactive until current conditional communication and compute pass."
+            ]
+        )
+    else:
+        recommendations = (
+            [
+                "Advance to V1.4 only as an incremental third-specialist extension; retain all V1.3 regressions and controls."
+            ]
+            if gates["pass"]
+            else [
+                "Run a targeted V1.3.x repair for the failed gate(s); do not add more specialists until conditional communication and compute pass."
+            ]
+        )
     final_phase = config["integration_training"]["phases"][-1]["name"]
     report = {
-        "format": "cftn_text_v1_3_revision_report_v1",
+        "format": (
+            "cftn_text_v2_multi_specialist_report_v1"
+            if is_v2
+            else "cftn_text_v1_3_revision_report_v1"
+        ),
+        "experiment_label": experiment_label,
+        "design_document": (
+            "V2_EVIDENCE_REVISION.md" if is_v2 else "V1_3_EXPERIMENT_PLAN.md"
+        ),
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "revision_sha256": config["_meta"]["sha256"],
         "manifest_sha256": evaluation["manifest_sha256"],
         "checkpoint": phases[final_phase]["best_checkpoint"],
         "checkpoint_sha256": phases[final_phase]["best_checkpoint_sha256"],
         "prerequisite": prerequisite,
+        "specialist_registry": config.get("specialist_registry"),
+        "hard_transition_baseline": hard_transition_baseline,
         "calibration": calibration,
         "native_specialists": native,
         "phases": phases,
@@ -434,12 +527,12 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
         },
         "interpretation": {
             "conclusion": (
-                "V1.3 passed the preregistered multi-specialist communication, recurrence, and conditional-compute gates."
+                f"{experiment_label} passed the preregistered multi-specialist communication, recurrence, and conditional-compute gates."
                 if gates["pass"]
-                else "V1.3 completed but did not pass every preregistered multi-specialist gate."
+                else f"{experiment_label} completed but did not pass every preregistered multi-specialist gate."
             ),
             "scope": (
-                "This result concerns two controlled specialists and a frozen GPT-2 workspace. "
+                "This result concerns two active controlled specialists, one inactive reserved slot, and a frozen GPT-2 workspace. "
                 "Central bridge claims are conditioned on independently verified task-matched "
                 "specialist competence with at least 95% primary coverage. Held-out, extrapolation, "
                 "counterfactual, and unseen-composition splits remain non-gating diagnostics and "
@@ -460,13 +553,40 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
             for name in config["evaluation"]["diagnostic_splits"]
         },
     }
-    artifact_document = root / "V1_3_EXPERIMENT_RESULTS.md"
-    repository_document = Path(config["_meta"]["repository_root"]) / "V1_3_EXPERIMENT_RESULTS.md"
+    if is_v2:
+        base = load_config(config["paths"]["base_config"])
+        selection_path = root / "math_checkpoint_selection" / "report.json"
+        math_evaluation_path = Path(config["paths"]["math_evaluation_report"])
+        scale_path = root / "scale_decision.json"
+        report["broad_math"] = {
+            "base_config_sha256": base["_meta"]["sha256"],
+            "checkpoint_selection": _load(selection_path),
+            "evaluation": _load(math_evaluation_path),
+            "scale_decision": _load(scale_path),
+        }
+        report["training_contract"] = {
+            "gpt_weights_frozen": True,
+            "native_specialists_frozen_during_integration": True,
+            "collaboration_modules_trained_from_scratch": True,
+            "soft_wake_precedes_hard_wake": True,
+            "zero_update_hard_baseline": True,
+            "hardening_gate_only": phases["hardened_wake"][
+                "optimizer_contract"
+            ].get("group_names")
+            == ["gates"],
+            "reserved_extension_is_inactive": True,
+        }
+    result_filename = "V2_EXPERIMENT_RESULTS.md" if is_v2 else "V1_3_EXPERIMENT_RESULTS.md"
+    artifact_document = root / result_filename
+    repository_document = Path(config["_meta"]["repository_root"]) / result_filename
     report["result_documents"] = {
         "artifact": str(artifact_document.resolve()),
         "repository": str(repository_document.resolve()),
     }
-    atomic_json_dump(report, root / "v1_3_final_report.json")
+    atomic_json_dump(
+        report,
+        root / ("v2_final_report.json" if is_v2 else "v1_3_final_report.json"),
+    )
     markdown = render_v1_3_markdown(report)
     _atomic_text(markdown, artifact_document)
     _atomic_text(markdown, repository_document)

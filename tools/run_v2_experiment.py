@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from cftn_text.checkpoint import atomic_json_dump
-from cftn_text.conditional_training import load_revision_config
 from cftn_text.config import load_config
 from cftn_text.data_generator import file_sha256
 from cftn_text.pipeline_lock import exclusive_pipeline_lock
 from cftn_text.v2_data import audit_v2_manifest
+from cftn_text.v1_3_config import load_v1_3_config
+from cftn_text.v1_3_data import audit_v1_3_manifest
 
 
 @dataclass(frozen=True)
@@ -39,14 +40,19 @@ def _wandb_arguments(
     if not enabled:
         return []
     settings = config.get("wandb", {})
+    project_name = str(
+        config.get("project", {}).get(
+            "name", config.get("revision", {}).get("name", "cftn-text-v2")
+        )
+    )
     arguments = [
         "--wandb",
         "--wandb-project",
         str(settings.get("project", "cftn-text-v2")),
         "--wandb-run-name",
-        f"{config['project']['name']}-{suffix}",
+        f"{project_name}-{suffix}",
         "--wandb-group",
-        str(settings.get("group", config["project"]["name"])),
+        str(settings.get("group", project_name)),
         "--wandb-mode",
         str(settings.get("mode", "online")),
         "--wandb-tags",
@@ -67,27 +73,36 @@ def command_plan(
     device: str,
     wandb: bool,
 ) -> list[Stage]:
-    root = Path(config["project"]["artifact_root"])
-    data_root = Path(config["project"]["data_root"])
-    math_checkpoint = root / "math_selected" / "math.selected.pth"
-    m2g_root = root / "bridge_m2g_contextual"
-    conditional_root = root / "bridge_conditional_contextual"
-    conditional_checkpoint = conditional_root / "bridge_bidirectional.best.pth"
     repository_root = Path(config_path).resolve().parent.parent
-    revision_path = Path(
-        config.get("conditional_bridge", {}).get(
-            "revision_config", "config/v2_conditional_bridge.yaml"
+    root_value = Path(config["project"]["artifact_root"])
+    root = (
+        root_value.resolve()
+        if root_value.is_absolute()
+        else (repository_root / root_value).resolve()
+    )
+    data_value = Path(config["project"]["data_root"])
+    data_root = (
+        data_value.resolve()
+        if data_value.is_absolute()
+        else (repository_root / data_value).resolve()
+    )
+    revision_value = Path(
+        config.get("multi_specialist", {}).get(
+            "revision_config", "config/v2_multi_specialist.yaml"
         )
     )
-    if not revision_path.is_absolute():
-        revision_path = repository_root / revision_path
-    revision = load_revision_config(revision_path)
+    revision_path = (
+        revision_value.resolve()
+        if revision_value.is_absolute()
+        else (repository_root / revision_value).resolve()
+    )
+    revision = load_v1_3_config(revision_path)
     if Path(revision["paths"]["base_config"]) != Path(config_path).resolve():
-        raise ValueError("V2 conditional revision points to a different base config")
-    resolved_root = (root if root.is_absolute() else repository_root / root).resolve()
-    if Path(revision["paths"]["artifact_root"]).resolve() != resolved_root:
-        raise ValueError("V2 conditional revision and base config use different artifact roots")
-    return [
+        raise ValueError("V2 multi-specialist revision points to a different base config")
+    if Path(revision["paths"]["artifact_root"]) != root:
+        raise ValueError("V2 base and multi-specialist configs use different artifact roots")
+    math_checkpoint = root / "math_selected" / "math.selected.pth"
+    stages = [
         Stage(
             "prepare_data",
             [
@@ -162,114 +177,7 @@ def command_plan(
             root / "evaluation_math_v2" / "report.json",
         ),
         Stage(
-            "audit_mechanism_prerequisites",
-            [
-                sys.executable,
-                "-m",
-                "tools.audit_v2_prerequisites",
-                "--config",
-                config_path,
-            ],
-            root / "mechanism_prerequisites.json",
-        ),
-        Stage(
-            "train_m2g",
-            [
-                sys.executable,
-                "-m",
-                "tools.train_bridges",
-                "--config",
-                config_path,
-                "--device",
-                device,
-                "--stage",
-                "m2g",
-                "--view-mode",
-                "shared",
-                "--math-checkpoint",
-                str(math_checkpoint),
-                *_wandb_arguments(
-                    wandb,
-                    config,
-                    suffix="m2g",
-                    tags=["bridge", "math-to-gpt", "shared"],
-                ),
-            ],
-            m2g_root / "summary.json",
-            m2g_root,
-            int(config["bridge_training"]["max_epochs"]),
-        ),
-        Stage(
-            "train_conditional_gpt_to_math",
-            [
-                sys.executable,
-                "-m",
-                "tools.train_conditional_bridge",
-                "--revision-config",
-                str(revision_path.resolve()),
-                "--device",
-                device,
-                *_wandb_arguments(
-                    wandb,
-                    config,
-                    suffix="conditional-gpt-to-math",
-                    tags=["bridge", "conditional", "mixed-necessity", "no-harm"],
-                ),
-            ],
-            conditional_root / "summary.json",
-            conditional_root,
-            int(revision["training"]["max_epochs"]),
-        ),
-        Stage(
-            "evaluate_shared_no_harm",
-            [
-                sys.executable,
-                "-m",
-                "tools.evaluate_v2_collaboration",
-                "--config",
-                config_path,
-                "--device",
-                device,
-                "--view-mode",
-                "shared",
-                "--checkpoint",
-                str(conditional_checkpoint),
-                "--math-checkpoint",
-                str(math_checkpoint),
-                *_wandb_arguments(
-                    wandb,
-                    config,
-                    suffix="shared-no-harm-evaluation",
-                    tags=["evaluation", "shared", "no-harm"],
-                ),
-            ],
-            root / "evaluation_shared_no_harm_v2" / "report.json",
-        ),
-        Stage(
-            "evaluate_collaboration",
-            [
-                sys.executable,
-                "-m",
-                "tools.evaluate_v2_collaboration",
-                "--config",
-                config_path,
-                "--device",
-                device,
-                "--checkpoint",
-                str(conditional_checkpoint),
-                "--math-checkpoint",
-                str(math_checkpoint),
-                *_wandb_arguments(
-                    wandb,
-                    config,
-                    suffix="collaboration-evaluation",
-                    tags=["evaluation", "causal-ablation", "synergy"],
-                ),
-            ],
-            root / "evaluation_collaboration_v2" / "report.json",
-        ),
-        Stage(
-            "assess_scale",
+            "assess_math_scale",
             [
                 sys.executable,
                 "-m",
@@ -280,17 +188,171 @@ def command_plan(
             root / "scale_decision.json",
         ),
         Stage(
-            "assemble_report",
+            "prepare_multi_specialist_data",
             [
                 sys.executable,
+                "-u",
                 "-m",
-                "tools.assemble_v2_report",
+                "tools.prepare_v1_3_data",
                 "--config",
-                config_path,
+                str(revision_path),
             ],
-            root / "v2_final_report.json",
+            Path(revision["paths"]["data_root"]) / "manifest.json",
+        ),
+        Stage(
+            "calibrate_frozen_gpt_language",
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "tools.calibrate_v1_3_gpt",
+                "--config",
+                str(revision_path),
+                "--device",
+                device,
+            ],
+            root / "gpt_language_calibration" / "report.json",
+        ),
+        Stage(
+            "train_exact_string_specialist",
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "tools.train_v1_3_string",
+                "--config",
+                str(revision_path),
+                "--device",
+                device,
+                *_wandb_arguments(
+                    wandb,
+                    revision,
+                    suffix="string-specialist",
+                    tags=["string-specialist", "native-training"],
+                ),
+            ],
+            root / "string_specialist" / "summary.json",
+            root / "string_specialist",
+            int(revision["string_training"]["max_epochs"]),
+        ),
+        Stage(
+            "seal_native_specialists",
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "tools.evaluate_v1_3_specialists",
+                "--config",
+                str(revision_path),
+                "--device",
+                device,
+                "--specialist-generation-policy",
+                "configured",
+            ],
+            root / "native_specialist_evaluation" / "report.json",
         ),
     ]
+    for phase in revision["integration_training"]["phases"]:
+        phase_name = str(phase["name"])
+        if phase_name == "hardened_wake":
+            stages.append(
+                Stage(
+                    "evaluate_zero_update_hard_baseline",
+                    [
+                        sys.executable,
+                        "-u",
+                        "-m",
+                        "tools.evaluate_hard_transition_baseline",
+                        "--config",
+                        str(revision_path),
+                        "--device",
+                        device,
+                        *_wandb_arguments(
+                            wandb,
+                            revision,
+                            suffix="zero-update-hard-baseline",
+                            tags=["hard-wake", "zero-update", "diagnostic"],
+                        ),
+                    ],
+                    root / "hard_transition_baseline" / "report.json",
+                )
+            )
+        stages.append(
+            Stage(
+                f"train_{phase_name}",
+                [
+                    sys.executable,
+                    "-u",
+                    "-m",
+                    "tools.train_v1_3_integration",
+                    "--config",
+                    str(revision_path),
+                    "--phase",
+                    phase_name,
+                    "--device",
+                    device,
+                    *_wandb_arguments(
+                        wandb,
+                        revision,
+                        suffix=phase_name.replace("_", "-"),
+                        tags=["multi-specialist", phase_name],
+                    ),
+                ],
+                root / phase_name / "summary.json",
+                root / phase_name,
+                int(phase["max_epochs"]),
+            )
+        )
+    stages.extend(
+        [
+            Stage(
+                "evaluate_sealed_causal_suite",
+                [
+                    sys.executable,
+                    "-u",
+                    "-m",
+                    "tools.evaluate_v1_3",
+                    "--config",
+                    str(revision_path),
+                    "--device",
+                    device,
+                    "--specialist-generation-policy",
+                    "configured",
+                    *_wandb_arguments(
+                        wandb,
+                        revision,
+                        suffix="sealed-causal-evaluation",
+                        tags=["evaluation", "causal-suite", "conditional-compute"],
+                    ),
+                ],
+                root / "sealed_evaluation" / "report.json",
+            ),
+            Stage(
+                "assemble_v2_evidence",
+                [
+                    sys.executable,
+                    "-u",
+                    "-m",
+                    "tools.assemble_v2_multi_report",
+                    "--config",
+                    str(revision_path),
+                ],
+                root / "v2_final_report.json",
+            ),
+        ]
+    )
+    return stages
+
+
+def _multi_revision(config: dict[str, Any]) -> dict[str, Any]:
+    repository_root = Path(config["_meta"]["path"]).resolve().parent.parent
+    value = Path(
+        config.get("multi_specialist", {}).get(
+            "revision_config", "config/v2_multi_specialist.yaml"
+        )
+    )
+    path = value if value.is_absolute() else repository_root / value
+    return load_v1_3_config(path)
 
 
 def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
@@ -300,7 +362,14 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
         try:
             with stage.completion_path.open("r", encoding="utf-8") as handle:
                 manifest = json.load(handle)
-            audit_v2_manifest(manifest, config["project"]["data_root"])
+            audit_v2_manifest(manifest, stage.completion_path.parent)
+            return True
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            return False
+    if stage.name == "prepare_multi_specialist_data":
+        try:
+            revision = _multi_revision(config)
+            audit_v1_3_manifest(revision, stage.completion_path.parent)
             return True
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             return False
@@ -310,9 +379,18 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
                 summary = json.load(handle)
             if summary.get("state") != "completed":
                 return False
-            if stage.name == "train_conditional_gpt_to_math":
+            if stage.name == "train_hardened_wake":
+                contract = summary.get("optimizer_contract", {})
+                selected_metrics = summary.get("best_metrics") or summary.get(
+                    "final_metrics", {}
+                )
                 return (
-                    summary.get("best_acceptance", {}).get("gates", {}).get("pass")
+                    contract.get("group_names") == ["gates"]
+                    and contract.get("gate_only") is True
+                    and selected_metrics
+                    .get("hardening_acceptance", {})
+                    .get("gates", {})
+                    .get("pass")
                     is True
                 )
             return True
@@ -323,8 +401,6 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
             report = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return False
-    if stage.name == "audit_mechanism_prerequisites":
-        return report.get("state") == "passed" and report.get("pass") is True
     if stage.name == "select_math_checkpoint":
         selected = report.get("selected", {})
         path = Path(str(selected.get("path", "")))
@@ -335,12 +411,24 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
         )
     if stage.name == "evaluate_math":
         return report.get("specialist_gate", {}).get("pass") is True
-    if stage.name == "evaluate_shared_no_harm":
-        return report.get("shared_no_harm_gate", {}).get("pass") is True
-    if stage.name == "evaluate_collaboration":
-        return report.get("collaboration_gate", {}).get("pass") is True
-    if stage.name == "assemble_report":
-        return report.get("overall_pass") is True
+    if stage.name == "calibrate_frozen_gpt_language":
+        return report.get("state") == "passed" and report.get("pass") is True
+    if stage.name == "seal_native_specialists":
+        return report.get("state") == "passed" and report.get("gates", {}).get("pass") is True
+    if stage.name == "evaluate_zero_update_hard_baseline":
+        return (
+            report.get("state") == "completed"
+            and report.get("optimizer_updates") == 0
+            and report.get("trainable_parameters") == 0
+            and report.get("full_validation") is True
+        )
+    if stage.name == "evaluate_sealed_causal_suite":
+        return report.get("state") == "completed"
+    if stage.name == "assemble_v2_evidence":
+        return (
+            report.get("format") == "cftn_text_v2_multi_specialist_report_v1"
+            and isinstance(report.get("final_gates", {}).get("pass"), bool)
+        )
     return True
 
 
@@ -399,11 +487,15 @@ def _runtime_preflight(
     if sys.version_info < (3, 11):
         raise RuntimeError("CFTN V2 requires Python 3.11 or newer")
     _validate_wandb_environment(config, wandb)
+    revision = _multi_revision(config)
+    _validate_wandb_environment(revision, wandb)
 
     artifact_root = _project_path(config, "artifact_root")
     data_root = _project_path(config, "data_root")
+    multi_data_root = Path(revision["paths"]["data_root"])
     _verify_writable(artifact_root)
     _verify_writable(data_root)
+    _verify_writable(multi_data_root)
     repository_root = Path(config["_meta"]["path"]).resolve().parent.parent
 
     gpu: dict[str, Any] = {"required": device.casefold().startswith("cuda")}
@@ -421,6 +513,10 @@ def _runtime_preflight(
         bf16_required = any(
             str(config.get(section, {}).get("precision", "")).casefold() == "bf16"
             for section in ("math_training", "bridge_training")
+        ) or any(
+            str(revision.get(section, {}).get("precision", "")).casefold()
+            == "bf16"
+            for section in ("string_training", "integration_training")
         )
         bf16_supported = bool(torch.cuda.is_bf16_supported())
         if bf16_required and not bf16_supported:
@@ -442,13 +538,6 @@ def _runtime_preflight(
     else:
         gpu.update({"available": False, "device": device})
 
-    prerequisite = config.get("prerequisites", {})
-    v1_3_value = Path(str(prerequisite.get("v1_3_report", ""))).expanduser()
-    v1_3_path = (
-        v1_3_value.resolve()
-        if v1_3_value.is_absolute()
-        else (repository_root / v1_3_value).resolve()
-    )
     report = {
         "format": "cftn_text_v2_startup_preflight_v1",
         "state": "passed",
@@ -460,8 +549,11 @@ def _runtime_preflight(
         "repository_revision": _git_revision(repository_root),
         "config_path": config["_meta"]["path"],
         "config_sha256": config["_meta"]["sha256"],
+        "multi_specialist_config_path": revision["_meta"]["path"],
+        "multi_specialist_revision_sha256": revision["_meta"]["sha256"],
         "artifact_root": str(artifact_root),
         "data_root": str(data_root),
+        "multi_specialist_data_root": str(multi_data_root),
         "storage": {
             "artifact_free_bytes": int(shutil.disk_usage(artifact_root).free),
             "data_free_bytes": int(shutil.disk_usage(data_root).free),
@@ -475,12 +567,16 @@ def _runtime_preflight(
             "entity": config.get("wandb", {}).get("entity") or None,
             "api_key_present": bool(os.environ.get("WANDB_API_KEY")),
         },
-        "mechanism_prerequisite": {
-            "timing": "after_standalone_math_gate_before_any_bridge_training",
-            "v1_3_report": str(v1_3_path),
-            "v1_3_report_present": v1_3_path.is_file(),
-            "missing_report_blocks_math_training": False,
-            "missing_or_failed_report_blocks_bridge_training": True,
+        "multi_specialist_initialization": {
+            "mode": revision["prerequisite"]["mode"],
+            "bridges": "fresh_contextual_bridges_zero_initialized_receivers",
+            "prior_reports_gate_training": False,
+            "active_specialists": revision["runtime"]["specialist_names"],
+            "reserved_specialists": revision["specialist_registry"]["reserved"],
+            "hard_transition_baseline_required": True,
+            "hardening_trainable_components": revision["integration_training"][
+                "phases"
+            ][-1]["trainable_components"],
         },
     }
     atomic_json_dump(report, artifact_root / "startup_preflight.json")
@@ -496,6 +592,7 @@ def _execute_stages(
     preflight: dict[str, Any],
 ) -> None:
     artifact_root = _project_path(config, "artifact_root")
+    revision = _multi_revision(config)
     log_root = artifact_root / "pipeline_logs"
     log_root.mkdir(parents=True, exist_ok=True)
     state_path = artifact_root / "pipeline_state.json"
@@ -506,6 +603,7 @@ def _execute_stages(
         "pid": os.getpid(),
         "repository_revision": preflight.get("repository_revision"),
         "config_sha256": config["_meta"]["sha256"],
+        "multi_specialist_revision_sha256": revision["_meta"]["sha256"],
         "started_unix": time.time(),
         "stage_count": len(stages),
         "stages": {},
@@ -617,6 +715,7 @@ def main(argv: list[str] | None = None) -> None:
     start = names.index(args.from_stage) if args.from_stage else 0
     end = names.index(args.through_stage) + 1 if args.through_stage else len(stages)
     stages = stages[start:end]
+    revision = _multi_revision(config)
     preview = {
         "project": config["project"]["name"],
         "execute": args.execute,
@@ -626,9 +725,20 @@ def main(argv: list[str] | None = None) -> None:
         "single_pipeline_lock": str(
             (_project_path(config, "artifact_root") / "pipeline.lock").resolve()
         ),
-        "mechanism_prerequisite_timing": (
-            "after standalone math evaluation and before any bridge training"
-        ),
+        "training_contract": "scaled_v1_3_multi_specialist_with_conditional_execution",
+        "bridge_initialization": "fresh_contextual_bridges_zero_initialized_receivers",
+        "prior_reports_gate_training": False,
+        "active_specialists": revision["runtime"]["specialist_names"],
+        "reserved_specialist_slots": revision["specialist_registry"]["reserved"],
+        "hardening_contract": {
+            "zero_update_hard_baseline": True,
+            "trainable_components": revision["integration_training"]["phases"][-1][
+                "trainable_components"
+            ],
+            "maximum_gate_learning_rate": revision["integration_training"]["phases"][-1][
+                "learning_rate"
+            ],
+        },
         "train_examples": config["data"]["train_examples"],
         "training_epoch_limits": {
             stage.name: stage.epoch_limit
