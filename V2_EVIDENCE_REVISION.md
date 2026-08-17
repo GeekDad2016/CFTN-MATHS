@@ -1,9 +1,10 @@
 # CFTN-Text V2 evidence-integrated revision
 
-Status: implemented, tested locally, and deliberately blocked from execution
-until the sealed V1.3 report exists and passes. The sealed V1.2 report is
-versioned under `evidence/`; V1.3 is still running, so no V1.3 result is claimed
-here.
+Status: implemented and tested locally. Independent broad-math preparation,
+training, generation-led checkpoint selection, and standalone evaluation may
+run while V1.3 finishes. Every communication stage remains deliberately
+blocked until the sealed V1.3 report exists and passes. The sealed V1.2 report
+is versioned under `evidence/`; no V1.3 result is claimed here.
 
 ## Why V2 was revised
 
@@ -29,15 +30,16 @@ and verifies that its report chains to the exact sealed V1.2 report.
 
 The V2 runner now performs these checks and stages in order:
 
-1. verify passed, hash-chained V1.2 and V1.3 mechanism reports;
-2. generate and hash the immutable 400K data contract: 150,000 exact
+1. generate and hash the immutable 400K data contract: 150,000 exact
    project-generated problems, 212,690 balanced DeepMind problems, 29,837
    MathQA training programs, and 7,473 GSM8K training problems;
-3. train the scratch byte-level math transformer for all 12 curriculum epochs;
-4. compare the teacher-forced best and retained epoch checkpoints on a
+2. train the scratch byte-level math transformer for all 12 curriculum epochs;
+3. compare the teacher-forced best and retained epoch checkpoints on a
    validation-only greedy-generation panel, then copy the winner by hash;
-5. evaluate that selected checkpoint on sealed generalization splits and stop
+4. evaluate that selected checkpoint on sealed generalization splits and stop
    unless the generative specialist gate passes;
+5. verify passed, hash-chained V1.2 and V1.3 mechanism reports immediately
+   before any bridge optimization;
 6. train the math-to-GPT return bridge on shared complete prompts, where the
    frozen specialist can already solve and GPT learns to consume its result;
 7. freeze that successful return path and train GPT-to-math with V1.2's paired
@@ -69,9 +71,23 @@ collaboration, or final gates are terminal. A resumed run cannot silently skip
 one of those failures.
 
 `evidence/v1_3_final_report.json` is intentionally absent while V1.3 is active.
-After V1.3 finishes, copy its sealed report there or set `CFTN_V1_3_REPORT` to
-the immutable report path. A failed V1.3 report remains a hard stop; do not
-replace it with an override.
+Its absence does not invalidate or block the independent broad specialist run.
+It does block Stage 5 and every bridge stage. After V1.3 finishes, copy its
+sealed report there or set `CFTN_V1_3_REPORT` to the immutable report path, then
+rerun the same resumable launcher. A failed V1.3 report remains a hard stop; do
+not replace it with an override.
+
+The prerequisite audit now checks the concrete V1.3 transition evidence,
+including pure-language false wake, wake precision and recall, exact required
+sets, hard-vs-dense regression, no-harm, causal message content, and compute
+reduction. A lone top-level `pass: true` is insufficient. This incorporates the
+Stage-10 lesson that perfect recall can coexist with an always-open collapse.
+
+V2 itself does not contain a soft-to-hard wake phase. If that phase is added in
+a later natural-interface transfer, it must first evaluate the source
+checkpoint in hard mode with zero updates, preserve the proven bridge paths,
+continue at the terminal learning-rate scale rather than restarting upward,
+and forbid checkpoint promotion on false-wake or exact-routing collapse.
 
 ## Claim boundary
 

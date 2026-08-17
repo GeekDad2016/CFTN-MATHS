@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -14,6 +16,7 @@ from cftn_text.checkpoint import atomic_json_dump
 from cftn_text.conditional_training import load_revision_config
 from cftn_text.config import load_config
 from cftn_text.data_generator import file_sha256
+from cftn_text.pipeline_lock import exclusive_pipeline_lock
 from cftn_text.v2_data import audit_v2_manifest
 
 
@@ -86,17 +89,6 @@ def command_plan(
         raise ValueError("V2 conditional revision and base config use different artifact roots")
     return [
         Stage(
-            "audit_mechanism_prerequisites",
-            [
-                sys.executable,
-                "-m",
-                "tools.audit_v2_prerequisites",
-                "--config",
-                config_path,
-            ],
-            root / "mechanism_prerequisites.json",
-        ),
-        Stage(
             "prepare_data",
             [
                 sys.executable,
@@ -168,6 +160,17 @@ def command_plan(
                 ),
             ],
             root / "evaluation_math_v2" / "report.json",
+        ),
+        Stage(
+            "audit_mechanism_prerequisites",
+            [
+                sys.executable,
+                "-m",
+                "tools.audit_v2_prerequisites",
+                "--config",
+                config_path,
+            ],
+            root / "mechanism_prerequisites.json",
         ),
         Stage(
             "train_m2g",
@@ -357,63 +360,142 @@ def _validate_wandb_environment(config: dict[str, Any], enabled: bool) -> None:
         )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the complete resumable CFTN-Text V2")
-    parser.add_argument("--config", default="config/v2_broad_math.yaml")
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--from-stage")
-    parser.add_argument("--through-stage")
-    parser.add_argument(
-        "--control-root",
-        default=os.environ.get("CFTN_CONTROL_ROOT"),
-        help="Optional control directory used for safe pause-at-stage-boundary requests",
-    )
-    args = parser.parse_args()
-    config_path = str(Path(args.config).resolve())
-    config = load_config(config_path)
-    stages = command_plan(
-        config_path, config, device=args.device, wandb=args.wandb
-    )
-    names = [stage.name for stage in stages]
-    if args.from_stage and args.from_stage not in names:
-        raise ValueError(f"unknown --from-stage {args.from_stage}; choose from {names}")
-    if args.through_stage and args.through_stage not in names:
-        raise ValueError(
-            f"unknown --through-stage {args.through_stage}; choose from {names}"
+def _project_path(config: dict[str, Any], key: str) -> Path:
+    value = Path(config["project"][key]).expanduser()
+    if value.is_absolute():
+        return value.resolve()
+    repository_root = Path(config["_meta"]["path"]).resolve().parent.parent
+    return (repository_root / value).resolve()
+
+
+def _git_revision(repository_root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
-    start = names.index(args.from_stage) if args.from_stage else 0
-    end = names.index(args.through_stage) + 1 if args.through_stage else len(stages)
-    stages = stages[start:end]
-    preview = {
-        "project": config["project"]["name"],
-        "execute": args.execute,
-        "resume": args.resume,
-        "wandb": args.wandb,
-        "wandb_api_key_source": "WANDB_API_KEY environment variable",
-        "train_examples": config["data"]["train_examples"],
-        "training_epoch_limits": {
-            stage.name: stage.epoch_limit
-            for stage in stages
-            if stage.epoch_limit is not None
-        },
-        "stages": [
+        return result.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _verify_writable(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    probe = path / f".cftn-write-test-{os.getpid()}"
+    try:
+        with probe.open("x", encoding="utf-8") as handle:
+            handle.write("ok\n")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _runtime_preflight(
+    config: dict[str, Any], *, device: str, wandb: bool
+) -> dict[str, Any]:
+    if sys.version_info < (3, 11):
+        raise RuntimeError("CFTN V2 requires Python 3.11 or newer")
+    _validate_wandb_environment(config, wandb)
+
+    artifact_root = _project_path(config, "artifact_root")
+    data_root = _project_path(config, "data_root")
+    _verify_writable(artifact_root)
+    _verify_writable(data_root)
+    repository_root = Path(config["_meta"]["path"]).resolve().parent.parent
+
+    gpu: dict[str, Any] = {"required": device.casefold().startswith("cuda")}
+    if gpu["required"]:
+        import torch
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA was requested but torch.cuda.is_available() is false; "
+                "install a CUDA PyTorch build and attach a GPU before starting V2"
+            )
+        selected = torch.device(device)
+        index = selected.index if selected.index is not None else torch.cuda.current_device()
+        properties = torch.cuda.get_device_properties(index)
+        bf16_required = any(
+            str(config.get(section, {}).get("precision", "")).casefold() == "bf16"
+            for section in ("math_training", "bridge_training")
+        )
+        bf16_supported = bool(torch.cuda.is_bf16_supported())
+        if bf16_required and not bf16_supported:
+            raise RuntimeError(
+                "the V2 config requires bf16 but the selected CUDA device does not support it"
+            )
+        gpu.update(
             {
-                "name": stage.name,
-                "complete": _is_complete(stage, config),
-                "command": subprocess.list2cmdline(stage.command),
-                "epoch_limit": stage.epoch_limit,
+                "available": True,
+                "device": str(selected),
+                "name": properties.name,
+                "compute_capability": f"{properties.major}.{properties.minor}",
+                "total_memory_bytes": int(properties.total_memory),
+                "bf16_supported": bf16_supported,
+                "torch_version": torch.__version__,
+                "cuda_version": torch.version.cuda,
             }
-            for stage in stages
-        ],
+        )
+    else:
+        gpu.update({"available": False, "device": device})
+
+    prerequisite = config.get("prerequisites", {})
+    v1_3_value = Path(str(prerequisite.get("v1_3_report", ""))).expanduser()
+    v1_3_path = (
+        v1_3_value.resolve()
+        if v1_3_value.is_absolute()
+        else (repository_root / v1_3_value).resolve()
+    )
+    report = {
+        "format": "cftn_text_v2_startup_preflight_v1",
+        "state": "passed",
+        "checked_unix": time.time(),
+        "pid": os.getpid(),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "repository_root": str(repository_root),
+        "repository_revision": _git_revision(repository_root),
+        "config_path": config["_meta"]["path"],
+        "config_sha256": config["_meta"]["sha256"],
+        "artifact_root": str(artifact_root),
+        "data_root": str(data_root),
+        "storage": {
+            "artifact_free_bytes": int(shutil.disk_usage(artifact_root).free),
+            "data_free_bytes": int(shutil.disk_usage(data_root).free),
+        },
+        "gpu": gpu,
+        "wandb": {
+            "enabled": wandb,
+            "mode": str(config.get("wandb", {}).get("mode", "online")),
+            "project": str(config.get("wandb", {}).get("project", "cftn-text-v2")),
+            "group": str(config.get("wandb", {}).get("group", "")),
+            "entity": config.get("wandb", {}).get("entity") or None,
+            "api_key_present": bool(os.environ.get("WANDB_API_KEY")),
+        },
+        "mechanism_prerequisite": {
+            "timing": "after_standalone_math_gate_before_any_bridge_training",
+            "v1_3_report": str(v1_3_path),
+            "v1_3_report_present": v1_3_path.is_file(),
+            "missing_report_blocks_math_training": False,
+            "missing_or_failed_report_blocks_bridge_training": True,
+        },
     }
-    print(json.dumps(preview, indent=2))
-    if not args.execute:
-        return
-    _validate_wandb_environment(config, args.wandb)
-    artifact_root = Path(config["project"]["artifact_root"])
+    atomic_json_dump(report, artifact_root / "startup_preflight.json")
+    return report
+
+
+def _execute_stages(
+    config: dict[str, Any],
+    stages: list[Stage],
+    *,
+    resume: bool,
+    control_root: str | None,
+    preflight: dict[str, Any],
+) -> None:
+    artifact_root = _project_path(config, "artifact_root")
     log_root = artifact_root / "pipeline_logs"
     log_root.mkdir(parents=True, exist_ok=True)
     state_path = artifact_root / "pipeline_state.json"
@@ -421,6 +503,9 @@ def main() -> None:
         "format": "cftn_text_v2_pipeline_state_v1",
         "project": config["project"]["name"],
         "state": "running",
+        "pid": os.getpid(),
+        "repository_revision": preflight.get("repository_revision"),
+        "config_sha256": config["_meta"]["sha256"],
         "started_unix": time.time(),
         "stage_count": len(stages),
         "stages": {},
@@ -428,7 +513,7 @@ def main() -> None:
     atomic_json_dump(state, state_path)
     try:
         for stage_index, stage in enumerate(stages, start=1):
-            if args.resume and _is_complete(stage, config):
+            if resume and _is_complete(stage, config):
                 state["stages"][stage.name] = {
                     "state": "skipped_completed",
                     "completion_path": str(stage.completion_path.resolve()),
@@ -436,7 +521,7 @@ def main() -> None:
                 atomic_json_dump(state, state_path)
                 continue
             command = list(stage.command)
-            if args.resume and _has_checkpoint(stage.resumable_artifact):
+            if resume and _has_checkpoint(stage.resumable_artifact):
                 command.append("--resume")
             stdout_path = log_root / f"{stage.name}.stdout.log"
             stderr_path = log_root / f"{stage.name}.stderr.log"
@@ -472,8 +557,8 @@ def main() -> None:
                 }
             )
             atomic_json_dump(state, state_path)
-            if args.control_root:
-                pause_path = Path(args.control_root).resolve() / "pause_after_stage.json"
+            if control_root:
+                pause_path = Path(control_root).resolve() / "pause_after_stage.json"
                 if pause_path.is_file():
                     state["state"] = "paused"
                     state["paused_after_stage"] = stage.name
@@ -495,6 +580,87 @@ def main() -> None:
         state["failed_unix"] = time.time()
         atomic_json_dump(state, state_path)
         raise
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the complete resumable CFTN-Text V2")
+    parser.add_argument("--config", default="config/v2_broad_math.yaml")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Validate Python, storage, CUDA/BF16, and W&B without running a stage",
+    )
+    parser.add_argument("--from-stage")
+    parser.add_argument("--through-stage")
+    parser.add_argument(
+        "--control-root",
+        default=os.environ.get("CFTN_CONTROL_ROOT"),
+        help="Optional control directory used for safe pause-at-stage-boundary requests",
+    )
+    args = parser.parse_args(argv)
+    config_path = str(Path(args.config).resolve())
+    config = load_config(config_path)
+    stages = command_plan(
+        config_path, config, device=args.device, wandb=args.wandb
+    )
+    names = [stage.name for stage in stages]
+    if args.from_stage and args.from_stage not in names:
+        raise ValueError(f"unknown --from-stage {args.from_stage}; choose from {names}")
+    if args.through_stage and args.through_stage not in names:
+        raise ValueError(
+            f"unknown --through-stage {args.through_stage}; choose from {names}"
+        )
+    start = names.index(args.from_stage) if args.from_stage else 0
+    end = names.index(args.through_stage) + 1 if args.through_stage else len(stages)
+    stages = stages[start:end]
+    preview = {
+        "project": config["project"]["name"],
+        "execute": args.execute,
+        "resume": args.resume,
+        "wandb": args.wandb,
+        "wandb_api_key_source": "WANDB_API_KEY environment variable",
+        "single_pipeline_lock": str(
+            (_project_path(config, "artifact_root") / "pipeline.lock").resolve()
+        ),
+        "mechanism_prerequisite_timing": (
+            "after standalone math evaluation and before any bridge training"
+        ),
+        "train_examples": config["data"]["train_examples"],
+        "training_epoch_limits": {
+            stage.name: stage.epoch_limit
+            for stage in stages
+            if stage.epoch_limit is not None
+        },
+        "stages": [
+            {
+                "name": stage.name,
+                "complete": _is_complete(stage, config),
+                "command": subprocess.list2cmdline(stage.command),
+                "epoch_limit": stage.epoch_limit,
+            }
+            for stage in stages
+        ],
+    }
+    print(json.dumps(preview, indent=2))
+    if not args.execute and not args.preflight_only:
+        return
+    artifact_root = _project_path(config, "artifact_root")
+    with exclusive_pipeline_lock(artifact_root / "pipeline.lock"):
+        preflight = _runtime_preflight(config, device=args.device, wandb=args.wandb)
+        print(json.dumps({"startup_preflight": preflight}, indent=2), flush=True)
+        if args.preflight_only:
+            return
+        _execute_stages(
+            config,
+            stages,
+            resume=args.resume,
+            control_root=args.control_root,
+            preflight=preflight,
+        )
 
 
 if __name__ == "__main__":

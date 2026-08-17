@@ -13,11 +13,13 @@ preservation, the required-message causal margin, paired required/redundant
 views, generation-led checkpoint selection, and a shared-view no-harm gate.
 
 The prerequisite stage verifies a passing V1.2 report, a passing V1.3 report,
-and the hash chain connecting them. The sealed V1.2 report is included in
-`evidence/`. V1.3 is still active, so its report is intentionally absent and
-V2 currently fails closed. Supply the final immutable report through
-`evidence/v1_3_final_report.json` or `CFTN_V1_3_REPORT`; there is no bypass for
-a failed report.
+their concrete wake/no-harm/causality gates, and the hash chain connecting
+them. It runs after the standalone broad-math evaluation but before any bridge
+training. The sealed V1.2 report is included in `evidence/`. V1.3 is still
+active, so its report is intentionally absent. This does not block independent
+math training; it fails closed at the communication boundary. Supply the final
+immutable report through `evidence/v1_3_final_report.json` or
+`CFTN_V1_3_REPORT`; there is no bypass for a failed report.
 
 The intended division of labour is asymmetric and complementary:
 
@@ -74,6 +76,48 @@ compatibility shim and the generator's former `np.object` alias are applied
 locally without downgrading PyTorch's SymPy.
 
 ## RunPod launch
+
+### Existing pod / Git checkout (simple launch)
+
+On a new RunPod pod with the repository already cloned or pulled, use a
+persistent volume for data, artifacts, model downloads, and W&B files:
+
+```bash
+cd /workspace/CFTN-MATHS
+git pull --ff-only origin main
+python -m pip install --upgrade pip
+python -m pip install -e .
+
+export CFTN_DATA_ROOT=/workspace/volume/cftn-text/data/v2_broad_math_400k_r2
+export CFTN_ARTIFACT_ROOT=/workspace/volume/cftn-text/artifacts/v2_broad_math_400k_r2
+export HF_HOME=/workspace/volume/cftn-text/cache/huggingface
+export WANDB_DIR=$CFTN_ARTIFACT_ROOT/wandb
+export CFTN_V1_3_REPORT=/workspace/volume/cftn-text/evidence/v1_3_final_report.json
+
+export WANDB_API_KEY='your-runpod-secret'
+export WANDB_PROJECT=cftn-text-v2
+export WANDB_GROUP=broad-math-400k
+# Optional when the API key's default W&B entity is not the desired one:
+# export WANDB_ENTITY=your-team-or-user
+
+python run_v2.py --preflight-only
+python run_v2.py
+```
+
+`python run_v2.py` always requests safe resume and enables online W&B logging.
+It validates Python, writable storage, CUDA, BF16, and the W&B key before
+starting, then holds an operating-system lock under the artifact root so a
+second launcher cannot duplicate the run. The lock is released automatically
+if the process or pod dies; running the same command resumes retained stages
+and checkpoints. Use `python run_v2.py --no-wandb` only when logging is
+intentionally disabled.
+
+If V1.3 has not sealed when standalone math evaluation completes, Stage 5 will
+stop before bridge training. Place the immutable report at
+`$CFTN_V1_3_REPORT` and run `python run_v2.py` again; Stages 1-4 are validated
+and skipped.
+
+### Container plus authenticated monitoring API
 
 1. Build `Dockerfile.runpod` and attach a persistent volume at `/workspace/volume`.
 2. Add `WANDB_API_KEY` and a random `CFTN_CONTROL_API_TOKEN` (at least 32
@@ -139,16 +183,16 @@ training resumes only from retained compatible checkpoints.
 Preview all stages without downloading data or training:
 
 ```bash
-python -m tools.run_v2_experiment --config config/v2_broad_math.yaml --wandb
+python run_v2.py --preview
 ```
 
 ## Ordered stages
 
-1. Audit passed and hash-chained V1.2/V1.3 evidence.
-2. Generate and hash the immutable manifests.
-3. Train the math tower through all three curriculum phases for 12 epochs.
-4. Select among retained checkpoints using validation-only greedy generation.
-5. Evaluate standalone exact generation and stop on a failed specialist gate.
+1. Generate and hash the immutable manifests.
+2. Train the math tower through all three curriculum phases for 12 epochs.
+3. Select among retained checkpoints using validation-only greedy generation.
+4. Evaluate standalone exact generation and stop on a failed specialist gate.
+5. Audit passed, concrete, hash-chained V1.2/V1.3 evidence before bridges.
 6. Train math-to-GPT communication on shared complete prompts.
 7. Train conditional GPT-to-math while freezing the return path.
 8. Evaluate shared-view specialist no-harm and stop on failure.

@@ -65,5 +65,6 @@ monitoring:
 wandb:
   project: ${WANDB_PROJECT:-cftn-text-v2}
   group: ${WANDB_GROUP:-broad-math-400k}
+  entity: ${WANDB_ENTITY:-}
   mode: online
   require_api_key_environment: true

@@ -218,19 +218,25 @@ selection. See [V2_EVIDENCE_REVISION.md](V2_EVIDENCE_REVISION.md) for the
 evidence mapping, exact stage gates, and explicit natural-interface claim
 boundary.
 
-Preview or execute the complete resumable experiment:
+Preview or execute the complete resumable experiment. The top-level launcher
+enables W&B and safe resume by default:
 
 ```powershell
-py -3.11 -m tools.run_v2_experiment --config config/v2_broad_math.yaml --wandb
-py -3.11 -m tools.run_v2_experiment --config config/v2_broad_math.yaml --device cuda --execute --resume --wandb
+py -3.11 run_v2.py --preview
+py -3.11 run_v2.py --preflight-only
+py -3.11 run_v2.py
 ```
 
-Execution intentionally refuses to start while
-`evidence/v1_3_final_report.json` is absent or failed. After V1.3 seals, copy
-that immutable report into place (or set `CFTN_V1_3_REPORT`) without editing
-its contents.
+The independent data, math-training, checkpoint-selection, and standalone-math
+stages can run while V1.3 is finishing. Immediately before the first bridge
+stage, execution requires `evidence/v1_3_final_report.json` (or
+`CFTN_V1_3_REPORT`) to contain the passing, hash-chained concrete V1.3 gates.
+If it is not ready, the pipeline stops there without promoting or training a
+bridge; supplying the immutable report and running `python run_v2.py` again
+resumes from that boundary.
 
 For online V2 logging, the runner requires `WANDB_API_KEY` in the process
-environment and never stores its value. RunPod setup, persistent-volume paths,
-dataset boundaries, stages, and logs are documented in
+environment and never stores its value. `WANDB_PROJECT`, `WANDB_GROUP`, and
+`WANDB_ENTITY` are optional. RunPod setup, persistent-volume paths, dataset
+boundaries, stages, and logs are documented in
 [RUNPOD_V2.md](RUNPOD_V2.md).

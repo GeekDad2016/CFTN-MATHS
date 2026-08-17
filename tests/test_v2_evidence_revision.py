@@ -7,11 +7,18 @@ import pytest
 
 from cftn_text.data_generator import file_sha256
 from cftn_text.v2_checkpoint_selection import candidate_score
-from cftn_text.v2_prerequisites import audit_v2_mechanism_prerequisites
+from cftn_text.v2_prerequisites import (
+    V1_3_REQUIRED_GATES,
+    audit_v2_mechanism_prerequisites,
+)
 
 
 def _write(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _passing_v1_3_gates() -> dict[str, bool]:
+    return {**{name: True for name in V1_3_REQUIRED_GATES}, "pass": True}
 
 
 def test_v2_prerequisite_audit_verifies_chained_passes(tmp_path):
@@ -31,7 +38,7 @@ def test_v2_prerequisite_audit_verifies_chained_passes(tmp_path):
             "format": "cftn_text_v1_3_revision_report_v1",
             "revision_sha256": "v13",
             "prerequisite": {"v1_2_report_sha256": file_sha256(v1_2_path)},
-            "final_gates": {"pass": True},
+            "final_gates": _passing_v1_3_gates(),
         },
     )
     config = {
@@ -73,6 +80,40 @@ def test_v2_prerequisite_audit_rejects_failed_v1_3(tmp_path):
         },
     }
     with pytest.raises(RuntimeError, match="V1.3"):
+        audit_v2_mechanism_prerequisites(config)
+
+
+def test_v2_prerequisite_audit_rejects_pass_without_concrete_hard_wake_gates(
+    tmp_path,
+):
+    v1_2_path = tmp_path / "v1_2.json"
+    _write(
+        v1_2_path,
+        {
+            "format": "cftn_text_v1_2_revision_report_v1",
+            "final_gates": {"pass": True},
+        },
+    )
+    gates = _passing_v1_3_gates()
+    gates.pop("exact_required_set")
+    v1_3_path = tmp_path / "v1_3.json"
+    _write(
+        v1_3_path,
+        {
+            "format": "cftn_text_v1_3_revision_report_v1",
+            "prerequisite": {"v1_2_report_sha256": file_sha256(v1_2_path)},
+            "final_gates": gates,
+        },
+    )
+    config = {
+        "_meta": {"path": str(tmp_path / "config" / "v2.yaml")},
+        "project": {"artifact_root": str(tmp_path / "artifacts")},
+        "prerequisites": {
+            "v1_2_report": str(v1_2_path),
+            "v1_3_report": str(v1_3_path),
+        },
+    }
+    with pytest.raises(ValueError, match="exact_required_set"):
         audit_v2_mechanism_prerequisites(config)
 
 
