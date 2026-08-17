@@ -11,6 +11,10 @@ def _write_json(path, value):
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
+def test_pid_probe_detects_current_process():
+    assert watch_v2_progress._pid_running(watch_v2_progress.os.getpid()) is True
+
+
 def test_v2_progress_snapshot_and_render(tmp_path, monkeypatch):
     artifact = tmp_path / "artifacts"
     data = tmp_path / "data"

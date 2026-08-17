@@ -93,10 +93,28 @@ def _tail_text(path: Path, lines: int = 30) -> str:
 
 
 def _pid_running(pid: Any) -> bool:
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            process_id = int(pid)
+            if process_id <= 0:
+                return False
+            query_limited_information = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                query_limited_information, False, process_id
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            # Access denied still proves that the process exists.
+            return int(ctypes.windll.kernel32.GetLastError()) == 5
+        except (AttributeError, OSError, SystemError, TypeError, ValueError):
+            return False
     try:
         os.kill(int(pid), 0)
         return True
-    except (OSError, TypeError, ValueError):
+    except (OSError, SystemError, TypeError, ValueError):
         return False
 
 
