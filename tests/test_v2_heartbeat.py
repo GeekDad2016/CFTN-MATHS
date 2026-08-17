@@ -109,3 +109,11 @@ def test_heartbeat_reports_dead_pipeline_and_stalled_training():
     messages = "\n".join(event["text"] for event in events)
     assert "pipeline PID is dead" in messages
     assert "has not advanced" in messages
+
+
+def test_heartbeat_reports_recovery_from_error_state():
+    snapshot = _snapshot()
+    _, state = classify_snapshot(snapshot, {}, now=1000.0, prime=True)
+    state["last_pipeline_state"] = "error"
+    events, _ = classify_snapshot(snapshot, state, now=1010.0)
+    assert any("changed from `error` to `running`" in event["text"] for event in events)

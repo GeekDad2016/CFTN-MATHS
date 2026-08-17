@@ -229,6 +229,7 @@ def classify_snapshot(
     pipeline_state = str(snapshot.get("pipeline_state", "missing"))
     stage = str(snapshot.get("stage") or "none")
     old_stage = old.get("last_stage")
+    old_pipeline_state = old.get("last_pipeline_state")
 
     if pipeline_state in {"error", "failed", "failed_acceptance"}:
         pipeline = snapshot.get("pipeline") or {}
@@ -246,6 +247,14 @@ def classify_snapshot(
                 "pipeline-completed-" + _fingerprint((snapshot.get("pipeline") or {}).get("completed_unix")),
                 "info",
                 "The complete V2 pipeline finished.",
+            )
+        )
+    elif old_pipeline_state is not None and pipeline_state != str(old_pipeline_state):
+        candidates.append(
+            _event(
+                f"pipeline-state-{old_pipeline_state}-to-{pipeline_state}-{stage}",
+                "info",
+                f"V2 pipeline state changed from `{old_pipeline_state}` to `{pipeline_state}` in `{stage}`.",
             )
         )
 
