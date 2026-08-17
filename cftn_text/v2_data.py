@@ -56,6 +56,27 @@ _WHITESPACE = re.compile(r"\s+")
 _SLOTS = tuple("PQRSTUVWXYZABCDEFGHIJKLMNO")
 
 
+class _IntegralFloatRandintProxy:
+    """Preserve old random.randint support for mathematically integral floats."""
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+
+    @staticmethod
+    def _bound(value: Any) -> Any:
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise TypeError(f"non-integral randint bound: {value!r}")
+            return int(value)
+        return value
+
+    def randint(self, lower: Any, upper: Any) -> int:
+        return self._delegate.randint(self._bound(lower), self._bound(upper))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
 def normalize_problem(text: str) -> str:
     return _WHITESPACE.sub(" ", str(text)).strip()
 
@@ -660,6 +681,14 @@ def _install_deepmind_sympy_compatibility() -> None:
 
         constant_is_simple._cftn_numpy_integer_compatible = True  # type: ignore[attr-defined]
         ops.Constant._is_simple = constant_is_simple
+    # Python 3.12 removed random.randrange's deprecated conversion of integral
+    # floats. mathematics_dataset.modules.numbers.round_number computes its
+    # inclusive bounds with true division, so both bounds are floats even
+    # though they are always whole numbers. Limit the compatibility shim to
+    # that upstream module and reject genuinely fractional bounds.
+    deepmind_numbers = importlib.import_module("mathematics_dataset.modules.numbers")
+    if not isinstance(deepmind_numbers.random, _IntegralFloatRandintProxy):
+        deepmind_numbers.random = _IntegralFloatRandintProxy(deepmind_numbers.random)
 
 
 def _flatten_modules(values: dict[str, Any], prefix: str = "") -> dict[str, Callable]:

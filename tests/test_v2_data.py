@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from cftn_text.config import load_config
 from cftn_text.v2_data import (
+    _IntegralFloatRandintProxy,
     LOCAL_FAMILIES,
     V2_FORMAT,
     audit_v2_manifest,
@@ -17,6 +18,32 @@ from cftn_text.v2_data import (
     prepare_v2_manifests,
     validate_v2_record,
 )
+
+
+def test_legacy_randint_proxy_converts_only_integral_float_bounds():
+    class Delegate:
+        sentinel = object()
+
+        def __init__(self):
+            self.bounds = None
+
+        def randint(self, lower, upper):
+            self.bounds = (lower, upper)
+            return 7
+
+    delegate = Delegate()
+    proxy = _IntegralFloatRandintProxy(delegate)
+
+    assert proxy.randint(-50.0, 49.0) == 7
+    assert delegate.bounds == (-50, 49)
+    assert proxy.sentinel is delegate.sentinel
+
+    try:
+        proxy.randint(0.5, 2.0)
+    except TypeError as exc:
+        assert "non-integral randint bound" in str(exc)
+    else:
+        raise AssertionError("fractional randint bound was silently accepted")
 
 
 def test_deepmind_generator_retries_transient_internal_assertions(monkeypatch):
