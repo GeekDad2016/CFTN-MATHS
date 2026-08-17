@@ -233,6 +233,13 @@ py -3.11 run_v2.py --preflight-only
 py -3.11 run_v2.py
 ```
 
+On a RunPod checkout, installation, persistent-path setup, preflight, and the
+resumable launch are combined into one phone-friendly command:
+
+```bash
+bash start_v2_runpod.sh
+```
+
 The launcher executes 17 resumable stages from broad-math data preparation
 through the sealed multi-specialist causal report. It requires neither a V1.3
 checkpoint nor a V1.3 report because all V2 collaboration modules are trained

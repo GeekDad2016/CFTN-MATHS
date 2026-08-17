@@ -76,38 +76,29 @@ locally without downgrading PyTorch's SymPy.
 
 ### Existing pod / Git checkout (simple launch)
 
-On a new RunPod pod with the repository already cloned or pulled, use a
-persistent volume for data, artifacts, model downloads, and W&B files:
+On a new RunPod pod with the repository already cloned, the phone-friendly
+launch is one command:
 
 ```bash
 cd /workspace/CFTN-MATHS
-git pull --ff-only origin main
-python -m pip install --upgrade pip
-python -m pip install -e .
-
-export CFTN_DATA_ROOT=/workspace/volume/cftn-text/data/v2_broad_math_400k_r2
-export CFTN_V2_MULTI_DATA_ROOT=/workspace/volume/cftn-text/data/v2_multi_specialist_r1
-export CFTN_ARTIFACT_ROOT=/workspace/volume/cftn-text/artifacts/v2_broad_math_400k_r2
-export HF_HOME=/workspace/volume/cftn-text/cache/huggingface
-export WANDB_DIR=$CFTN_ARTIFACT_ROOT/wandb
-
-export WANDB_API_KEY='your-runpod-secret'
-export WANDB_PROJECT=cftn-text-v2
-export WANDB_GROUP=scaled-multi-specialist
-# Optional when the API key's default W&B entity is not the desired one:
-# export WANDB_ENTITY=your-team-or-user
-
-python run_v2.py --preflight-only
-python run_v2.py
+bash start_v2_runpod.sh
 ```
 
-`python run_v2.py` always requests safe resume and enables online W&B logging.
-It validates Python, writable storage, CUDA, BF16, and the W&B key before
-starting, then holds an operating-system lock under the artifact root so a
+The bootstrap fast-forwards a clean `main` checkout, reopens its updated copy,
+sets all persistent `/workspace/volume/cftn-text` paths, installs the project
+and dependencies, runs the CUDA/BF16/storage/W&B preflight, and starts the
+normal resumable launcher. Prefer adding `WANDB_API_KEY` as a RunPod secret. If
+it is absent and the terminal is interactive, the bootstrap securely prompts
+for it without echoing or writing it to disk.
+
+The pipeline holds an operating-system lock under the artifact root so a
 second launcher cannot duplicate the run. The lock is released automatically
-if the process or pod dies; running the same command resumes retained stages
-and checkpoints. Use `python run_v2.py --no-wandb` only when logging is
-intentionally disabled.
+if the process or pod dies; running `bash start_v2_runpod.sh` again validates
+completed artifacts and resumes retained checkpoints.
+
+Advanced path, W&B project/group/entity, Python executable, branch, and storage
+overrides remain available through the variables in `.env.example`. Set
+`CFTN_SKIP_GIT_UPDATE=1` only for an intentionally pinned checkout.
 
 No V1.2 or V1.3 report variable is required. Existing reports in `evidence/`
 are recorded when present but never gate this fresh V2 run.
