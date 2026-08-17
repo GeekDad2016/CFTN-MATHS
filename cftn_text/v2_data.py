@@ -756,7 +756,13 @@ def iter_deepmind_records(
                 )
             try:
                 example = function()
-            except (ArithmeticError, ValueError, OverflowError):
+            except (ArithmeticError, ValueError, OverflowError, AssertionError):
+                # mathematics_dataset uses assertions to reject occasional
+                # degenerate stochastic samples (for example, a zero-term
+                # polynomial expansion with residual entropy).  These are
+                # invalid draws, not broken module contracts, and the bounded
+                # attempt budget above prevents an unhealthy module from
+                # retrying forever.
                 continue
             raw_problem = str(example.question)
             problem = normalize_problem(raw_problem)

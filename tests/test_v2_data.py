@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 
 from cftn_text.config import load_config
 from cftn_text.v2_data import (
     LOCAL_FAMILIES,
     V2_FORMAT,
     audit_v2_manifest,
+    iter_deepmind_records,
     iter_gsm8k_records,
     iter_gsm_symbolic_records,
     iter_local_records,
@@ -15,6 +17,35 @@ from cftn_text.v2_data import (
     prepare_v2_manifests,
     validate_v2_record,
 )
+
+
+def test_deepmind_generator_retries_transient_internal_assertions(monkeypatch):
+    attempts = 0
+
+    def flaky_generator():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise AssertionError("stochastic degenerate sample")
+        return SimpleNamespace(question="What is 1 + 1?", answer="2")
+
+    monkeypatch.setattr(
+        "cftn_text.v2_data._deepmind_module_pool",
+        lambda mode, selected_names: [("arithmetic__add_or_sub", 1, flaky_generator)],
+    )
+    records = list(
+        iter_deepmind_records(
+            count=1,
+            split="train",
+            seed=719,
+            mode="train",
+            selected_modules=["arithmetic__add_or_sub"],
+        )
+    )
+
+    assert attempts == 2
+    assert len(records) == 1
+    assert records[0]["normalized_answer"] == "2"
 
 
 def test_local_v2_generator_covers_every_requested_family_without_overlap():
