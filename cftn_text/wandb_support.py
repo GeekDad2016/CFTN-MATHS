@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +110,13 @@ def initialize_wandb(
             existing = json.load(handle)
     project = str(options.get("project") or existing.get("project") or "cftn-text")
     entity = options.get("entity", existing.get("entity"))
-    run_id = str(existing.get("run_id") or options.get("run_id") or wandb.util.generate_id())
+    # W&B no longer exposes ``wandb.util.generate_id`` in every supported
+    # release. Run IDs are client-provided opaque strings, so generate the
+    # same compact, URL-safe identifier locally and persist it below for
+    # deterministic resume behavior.
+    run_id = str(
+        existing.get("run_id") or options.get("run_id") or secrets.token_hex(4)
+    )
     run_name = str(options.get("run_name") or existing.get("run_name") or stage)
     mode = str(options.get("mode", "online"))
     tags = [str(tag) for tag in options.get("tags", [])]
