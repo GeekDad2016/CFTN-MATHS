@@ -51,7 +51,11 @@ data:
   gsm8k_test_examples: 1319
   mathqa_validation_examples: 4475
   mathqa_test_examples: 2985
-  gsm_symbolic_examples_per_variant: 5000
+  # Unique, cross-split-clean rows at the pinned Apple dataset revision.
+  gsm_symbolic_examples:
+    gsm_symbolic: 4999
+    gsm_symbolic_p1: 5000
+    gsm_symbolic_p2: 2492
   deepmind_modules:
     train:
       - algebra__polynomial_roots

@@ -156,6 +156,37 @@ def test_gsm_adapters_keep_training_and_symbolic_evaluation_contracts():
     assert "do-not-copy" not in str(symbolic)
 
 
+def test_gsm_symbolic_retains_requested_unique_rows_after_source_duplicates():
+    rows = [
+        {
+            "id": "a",
+            "instance": index,
+            "original_id": "source",
+            "question": question,
+            "answer": f"Compute it. #### {answer}",
+        }
+        for index, (question, answer) in enumerate(
+            (
+                ("What is 2 + 2?", "4"),
+                ("What is 2 + 2?", "4"),
+                ("What is 3 + 3?", "6"),
+            )
+        )
+    ]
+
+    records = list(
+        iter_gsm_symbolic_records(
+            variant="gsm_symbolic",
+            cache_root="unused",
+            count=2,
+            rows=rows,
+        )
+    )
+
+    assert [record["normalized_answer"] for record in records] == ["4", "6"]
+    assert [record["metadata"]["official_index"] for record in records] == [0, 2]
+
+
 def test_small_local_only_v2_manifest_is_immutable_and_auditable(tmp_path: Path):
     source = Path(__file__).parents[1] / "config" / "v2_broad_math.yaml"
     config = copy.deepcopy(load_config(source))
@@ -197,4 +228,9 @@ def test_v2_recommended_400k_mix_and_sealed_mathqa_splits_are_fixed():
     assert sum(config["data"]["training_sources"].values()) == 400000
     assert config["data"]["mathqa_validation_examples"] == 4475
     assert config["data"]["mathqa_test_examples"] == 2985
+    assert config["data"]["gsm_symbolic_examples"] == {
+        "gsm_symbolic": 4999,
+        "gsm_symbolic_p1": 5000,
+        "gsm_symbolic_p2": 2492,
+    }
     assert config["data"]["max_math_length"] == 1536

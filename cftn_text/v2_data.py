@@ -38,13 +38,15 @@ MATHQA_PARQUET_ROOT = (
     f"{MATHQA_DATA_REVISION}/data"
 )
 GSM_SYMBOLIC_LICENSE = "Apple-Sample-Code-License"
+GSM_SYMBOLIC_DATA_REVISION = "b6a1625025fc857300203bac9f617e5d8ec99f65"
 GSM_SYMBOLIC_FILES = {
     "gsm_symbolic": "GSM_symbolic.jsonl",
     "gsm_symbolic_p1": "GSM_p1.jsonl",
     "gsm_symbolic_p2": "GSM_p2.jsonl",
 }
 GSM_SYMBOLIC_RAW_ROOT = (
-    "https://raw.githubusercontent.com/apple/ml-gsm-symbolic/main/generated_data"
+    "https://raw.githubusercontent.com/apple/ml-gsm-symbolic/"
+    f"{GSM_SYMBOLIC_DATA_REVISION}/generated_data"
 )
 
 _INTEGER = re.compile(r"^[+-]?\d+$")
@@ -1113,6 +1115,7 @@ def iter_gsm_symbolic_records(
                 ),
                 "license": GSM_SYMBOLIC_LICENSE,
                 "evaluation_only": True,
+                "dataset_revision": GSM_SYMBOLIC_DATA_REVISION,
                 "source_url": "https://github.com/apple/ml-gsm-symbolic",
             },
         )
@@ -1415,26 +1418,31 @@ def prepare_v2_manifests(
                 progress_callback=benchmark_progress(benchmark_name, benchmark_count),
                 max_math_length=int(data["max_math_length"]),
             )
-        maximum_symbolic = data.get("gsm_symbolic_examples_per_variant")
+        symbolic_counts = data.get("gsm_symbolic_examples")
+        if symbolic_counts is not None and not isinstance(symbolic_counts, dict):
+            raise ValueError("gsm_symbolic_examples must map each variant to a count")
+        legacy_symbolic_count = data.get("gsm_symbolic_examples_per_variant")
         for variant in GSM_SYMBOLIC_FILES:
+            maximum_symbolic = (
+                symbolic_counts.get(variant)
+                if symbolic_counts is not None
+                else legacy_symbolic_count
+            )
+            if maximum_symbolic is None:
+                raise ValueError(f"missing configured GSM-Symbolic count: {variant}")
+            maximum_symbolic = int(maximum_symbolic)
             iterator = iter_gsm_symbolic_records(
                 variant=variant,
                 cache_root=root / "raw_cache",
-                count=(int(maximum_symbolic) if maximum_symbolic is not None else None),
+                count=maximum_symbolic,
                 seen_content=seen_content,
                 seen_signatures=seen_signatures,
             )
             split_metadata[variant] = _atomic_write_records(
                 root / f"{variant}.jsonl",
                 iterator,
-                expected_count=(
-                    int(maximum_symbolic) if maximum_symbolic is not None else None
-                ),
-                progress_callback=(
-                    benchmark_progress(variant, int(maximum_symbolic))
-                    if maximum_symbolic is not None
-                    else None
-                ),
+                expected_count=maximum_symbolic,
+                progress_callback=benchmark_progress(variant, maximum_symbolic),
                 max_math_length=int(data["max_math_length"]),
             )
 
@@ -1458,6 +1466,10 @@ def prepare_v2_manifests(
             "gsm8k": GSM8K_LICENSE,
             "mathqa": MATHQA_LICENSE,
             "gsm_symbolic": GSM_SYMBOLIC_LICENSE,
+        },
+        "source_revisions": {
+            "gsm_symbolic": GSM_SYMBOLIC_DATA_REVISION,
+            "mathqa": MATHQA_DATA_REVISION,
         },
     }
     unsigned = canonical_json(manifest).encode("utf-8")
