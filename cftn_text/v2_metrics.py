@@ -49,7 +49,11 @@ def _symbolically_equal(candidate: str, target: str) -> bool:
         candidate_expr = sympy.sympify(candidate.replace("^", "**"), evaluate=True)
         target_expr = sympy.sympify(target.replace("^", "**"), evaluate=True)
         return bool(sympy.simplify(candidate_expr - target_expr) == 0)
-    except (TypeError, ValueError, SyntaxError, sympy.SympifyError):
+    # Candidate strings are untrusted model output. SymPy can raise parser- and
+    # object-specific exceptions (including AttributeError for inputs such as
+    # ``e19/8``), so any ordinary exception means "not symbolically equal"
+    # rather than an evaluator failure.
+    except Exception:
         return False
 
 

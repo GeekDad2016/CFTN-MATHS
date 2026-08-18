@@ -34,6 +34,25 @@ def test_v2_generation_metrics_require_answer_tags():
     assert untagged["valid_rate"] == 0.0
 
 
+def test_v2_generation_metrics_reject_malformed_symbolic_output_without_crashing():
+    records = [
+        make_v2_record(
+            split="test",
+            source="unit",
+            family="fraction",
+            difficulty=2,
+            problem="What is nineteen eighths?",
+            answer="19/8",
+        )
+    ]
+    report, correctness = score_v2_generations(
+        ["<answer>e19/8</answer>"], records
+    )
+    assert report["accuracy"] == 0.0
+    assert correctness == [False]
+    assert not answers_equivalent("e19/8", "19/8")
+
+
 def test_optional_answer_loss_is_finite_when_batch_has_no_integer_targets():
     logits = torch.randn(3, 7, requires_grad=True)
     classes = torch.full((3,), -100, dtype=torch.long)
