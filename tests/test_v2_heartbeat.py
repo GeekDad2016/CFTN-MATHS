@@ -50,6 +50,9 @@ def test_heartbeat_prime_and_unchanged_snapshot_are_quiet():
         "stage_count": 17,
         "epoch": 4,
         "global_step": 400,
+        "shutdown_eligible": False,
+        "gpu_idle": False,
+        "gpu": [],
     }
 
 
@@ -129,3 +132,27 @@ def test_heartbeat_reports_recovery_from_error_state():
     state["last_pipeline_state"] = "error"
     events, _ = classify_snapshot(snapshot, state, now=1010.0)
     assert any("changed from `error` to `running`" in event["text"] for event in events)
+
+
+def test_shutdown_summary_requires_terminal_failure_and_idle_gpu():
+    snapshot = _snapshot(
+        pipeline_state="error",
+        gpu=[
+            {
+                "index": 0,
+                "name": "test-gpu",
+                "utilization_percent": 0,
+                "memory_used_mib": 0,
+                "memory_total_mib": 97887,
+                "temperature_c": 30,
+                "power_w": 0.0,
+            }
+        ],
+        process_lines=[],
+    )
+    result = build_result(
+        snapshot,
+        [{"id": "pipeline-error-test", "level": "critical", "text": "failed"}],
+    )
+    assert result["snapshot_summary"]["shutdown_eligible"] is True
+    assert result["snapshot_summary"]["gpu_idle"] is True

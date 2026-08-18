@@ -511,13 +511,35 @@ def build_result(
     snapshot: dict[str, Any], events: Iterable[dict[str, str]]
 ) -> dict[str, Any]:
     event_list = list(events)
+    pipeline_state = str(snapshot.get("pipeline_state", "missing"))
+    critical_shutdown_events = (
+        "pipeline-error-",
+        "pipeline-process-dead-",
+        "stage-process-dead-",
+        "stalled-",
+        "stderr-error-",
+    )
+    shutdown_eligible = pipeline_state in {"error", "failed", "failed_acceptance"}
+    shutdown_eligible = shutdown_eligible or any(
+        str(event.get("id", "")).startswith(critical_shutdown_events)
+        for event in event_list
+    )
+    gpus = snapshot.get("gpu") or []
+    gpu_idle = bool(gpus) and all(
+        int(gpu.get("utilization_percent", 100)) <= 5
+        and int(gpu.get("memory_used_mib", 10**9)) <= 512
+        for gpu in gpus
+    ) and not snapshot.get("process_lines")
     snapshot_summary = {
-        "state": snapshot.get("pipeline_state"),
+        "state": pipeline_state,
         "stage": snapshot.get("stage"),
         "stage_index": snapshot.get("stage_index"),
         "stage_count": snapshot.get("stage_count"),
         "epoch": snapshot.get("epoch"),
         "global_step": snapshot.get("global_step"),
+        "shutdown_eligible": shutdown_eligible,
+        "gpu_idle": gpu_idle,
+        "gpu": gpus,
     }
     if not event_list:
         return {

@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -413,6 +414,96 @@ def _run_v2_checker(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _maybe_shutdown_runpod(
+    v2_result: dict[str, Any], args: argparse.Namespace
+) -> str | None:
+    if not args.shutdown_on_v2_failure:
+        return None
+    summary = v2_result.get("snapshot_summary") or {}
+    if not summary.get("shutdown_eligible"):
+        return None
+    if not summary.get("gpu_idle"):
+        return None
+
+    pod_id = args.runpod_pod_id or os.environ.get("RUNPOD_POD_ID")
+    api_key = os.environ.get("RUNPOD_API_KEY")
+    state_path = Path(args.runpod_shutdown_state_file).expanduser().resolve()
+    fingerprint = "|".join(
+        str(value)
+        for value in (
+            summary.get("state"),
+            summary.get("stage"),
+            summary.get("epoch"),
+            summary.get("global_step"),
+        )
+    )
+    previous = _read_json(state_path) or {}
+    config_fingerprint = "configured" if pod_id and api_key else "missing-config"
+    if (
+        previous.get("fingerprint") == fingerprint
+        and previous.get("config_fingerprint") == config_fingerprint
+    ):
+        return None
+
+    def remember(status: str) -> None:
+        _atomic_json(
+            state_path,
+            {
+                "format": "cftn_runpod_shutdown_guard_v1",
+                "updated_unix": time.time(),
+                "fingerprint": fingerprint,
+                "config_fingerprint": config_fingerprint,
+                "status": status,
+            },
+        )
+
+    if not pod_id or not api_key:
+        remember("missing_config")
+        return (
+            "V2 failure/stall met the idle-GPU shutdown condition, but RunPod was "
+            "not stopped: set RUNPOD_POD_ID and RUNPOD_API_KEY first."
+        )
+
+    runpodctl = shutil.which("runpodctl")
+    if not runpodctl:
+        remember("runpodctl_missing")
+        return "V2 shutdown guard could not run: `runpodctl` is not installed."
+
+    environment = os.environ.copy()
+    environment["RUNPOD_API_KEY"] = api_key
+    get_result = subprocess.run(
+        [runpodctl, "pod", "get", pod_id, "-o", "json"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env=environment,
+    )
+    if get_result.returncode:
+        remember("pod_lookup_failed")
+        return (
+            "V2 shutdown guard could not verify the configured RunPod pod: "
+            + (get_result.stderr or get_result.stdout)[-1000:]
+        )
+
+    stop_result = subprocess.run(
+        [runpodctl, "pod", "stop", pod_id, "-o", "json"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env=environment,
+    )
+    if stop_result.returncode:
+        remember("pod_stop_failed")
+        return (
+            "V2 shutdown guard verified the pod but could not stop it: "
+            + (stop_result.stderr or stop_result.stdout)[-1000:]
+        )
+    remember("stop_requested")
+    return f"V2 failed/stalled with an idle GPU; RunPod pod `{pod_id}` stop was requested."
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Event-only monitor for active CFTN runs")
     parser.add_argument(
@@ -432,6 +523,16 @@ def main(argv: list[str] | None = None) -> int:
         default=str(Path.home() / ".cftn" / "v1_3_heartbeat_state.json"),
     )
     parser.add_argument("--stale-after-seconds", type=float, default=1800.0)
+    parser.add_argument(
+        "--shutdown-on-v2-failure",
+        action="store_true",
+        help="Stop the configured RunPod pod only after a V2 failure/stall and idle-GPU check.",
+    )
+    parser.add_argument("--runpod-pod-id", default=os.environ.get("RUNPOD_POD_ID"))
+    parser.add_argument(
+        "--runpod-shutdown-state-file",
+        default=str(Path.home() / ".cftn" / "runpod_shutdown_state.json"),
+    )
     parser.add_argument("--prime", action="store_true")
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args(argv)
@@ -466,11 +567,14 @@ def main(argv: list[str] | None = None) -> int:
             "state": "monitor_error",
         }
 
+    shutdown_message = _maybe_shutdown_runpod(v2_result, args)
     notifications = [
         str(value.get("message", ""))
         for value in (v2_result, v13_result)
         if value.get("decision") == "NOTIFY"
     ]
+    if shutdown_message:
+        notifications.append(shutdown_message)
     result = {
         "decision": "NOTIFY" if notifications else "DONT_NOTIFY",
         "message": (
