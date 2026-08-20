@@ -85,6 +85,10 @@ def configure_recovery(
             "conditional_execution": True,
             "apply_halt": False,
             "repair_sequential_orders": True,
+            # The first continuation lost two spawned Windows workers midway
+            # through epoch 2.  Collation is lightweight enough to keep in the
+            # trainer process, which also makes checkpoint resume deterministic.
+            "num_workers": 0,
             "max_epochs": 4,
             "minimum_epochs": 2,
             "early_stop_patience": 2,

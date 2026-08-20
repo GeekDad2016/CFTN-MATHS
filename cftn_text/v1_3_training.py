@@ -1366,6 +1366,9 @@ def train_integration_phase(
         provenance["phase_source_checkpoint_sha256"] = file_sha256(previous)
     model.set_trainable_phase(phase_name)
     settings = config["integration_training"]
+    phase_num_workers = int(phase.get("num_workers", settings["num_workers"]))
+    if phase_num_workers < 0:
+        raise ValueError("num_workers must be non-negative")
     wake_mode = str(phase["wake_mode"]).replace("oracle_dense", "oracle")
     maximum_rounds = int(phase["maximum_rounds"])
     allowed_classes = set(phase["include_task_classes"])
@@ -1612,7 +1615,7 @@ def train_integration_phase(
                 shuffle=True,
                 seed=seed + phase_index,
                 epoch=epoch,
-                num_workers=int(settings["num_workers"]),
+                num_workers=phase_num_workers,
             )
             for batch_index, raw in enumerate(train_loader, start=1):
                 if max_batches is not None and batch_index > max_batches:
@@ -1680,7 +1683,7 @@ def train_integration_phase(
                 shuffle=False,
                 seed=seed,
                 epoch=0,
-                num_workers=int(settings["num_workers"]),
+                num_workers=phase_num_workers,
             )
             causal_batches = math.ceil(
                 int(settings["validation_causal_examples"])
@@ -1769,6 +1772,7 @@ def train_integration_phase(
                 "train_task_classes": sorted(train_classes),
                 "validation_task_classes": sorted(allowed_classes),
                 "task_class_weights": task_class_weights,
+                "num_workers": phase_num_workers,
                 "recovery_data": recovery_data,
                 "timing": {
                     "epoch_seconds": time.time() - epoch_started,
