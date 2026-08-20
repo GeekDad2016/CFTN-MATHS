@@ -25,7 +25,7 @@ from cftn_text.v1_3_evaluation import (
     resolve_specialist_generation_budget,
 )
 from cftn_text.v1_3_model import V13MultiTowerModel
-from cftn_text.v1_3_training import v1_3_objective
+from cftn_text.v1_3_training import _repair_sequential_orders, v1_3_objective
 from cftn_text.v1_3_reporting import _weighted_accuracy
 from tools.run_v1_3_experiment import Stage, _completion_is_valid, command_plan
 from tools.wait_then_run_v1_3 import pipeline_command
@@ -136,11 +136,18 @@ def test_v1_3_data_is_deterministic_balanced_and_sequential():
     assert pure["gpt_answer_protocol"] == "first_nonempty_completion_line_v1"
     sequential = records[-1]
     assert sequential["required_specialists_by_round"][:2] == [
+        ["math"],
+        ["string"],
+    ]
+    reverse_order = generate_joint_record(
+        seed=719, split="joint_train", index=19, config=config
+    )
+    assert reverse_order["required_specialists_by_round"][:2] == [
         ["string"],
         ["math"],
     ]
-    assert sequential["specialist_targets_by_round"]["string"][0] is not None
-    assert sequential["specialist_targets_by_round"]["math"][1] is not None
+    assert sequential["specialist_targets_by_round"]["math"][0] is not None
+    assert sequential["specialist_targets_by_round"]["string"][1] is not None
     assert sequential["halt_round"] == 2
     for specialist in ("math", "string"):
         prompts = sequential["specialist_oracle_problems_by_round"][specialist]
@@ -153,7 +160,32 @@ def test_v1_3_data_is_deterministic_balanced_and_sequential():
     assert len(math_items) == len(math_locations) == 1
     assert len(string_items) == len(string_locations) == 1
     assert "For an integer x" in math_items[0]["problem"]
-    assert "How many times" in string_items[0]["problem"]
+    assert "zero-based indexing" in string_items[0]["problem"]
+
+
+def test_recovery_derivation_balances_preserved_sequential_records():
+    config = _config()
+    records = [
+        generate_joint_record(seed=719, split="joint_train", index=index, config=config)
+        for index in range(100)
+    ]
+    # Simulate the preserved parity-bug manifest.
+    for index, record in enumerate(records):
+        if record["task_class"] == "multi_sequential":
+            records[index] = generate_joint_record(
+                seed=719,
+                split="joint_train",
+                index=(index // 10) * 20 + 19,
+                config=config,
+            )
+    repaired, report = _repair_sequential_orders(
+        records, config=config, split="joint_train"
+    )
+    assert len(repaired) == len(records)
+    assert report["sequential_orders"] == {
+        "math_then_string": 5,
+        "string_then_math": 5,
+    }
 
 
 def test_joint_collator_keeps_raw_prompt_out_of_specialist_workspace():
@@ -178,7 +210,7 @@ def test_joint_collator_keeps_raw_prompt_out_of_specialist_workspace():
         prefix = tokenizer.decode(item["input_ids"][0, :prefix_length].tolist())
         assert config["runtime"]["neutral_workspaces"][name] in prefix
         assert record["problem"] not in prefix
-    assert batch["wake_targets"][0].tolist() == [[0.0, 1.0], [1.0, 0.0]]
+    assert batch["wake_targets"][0].tolist() == [[1.0, 0.0], [0.0, 1.0]]
     assert batch["halt_targets"][0].tolist() == [0.0, 1.0]
     gpt_prefix = collator.gpt_tokenizer.decode(
         batch["gpt_prepass_input_ids"][0].tolist()
@@ -277,8 +309,8 @@ def test_v1_3_multi_tower_forward_backward_and_independent_wakes():
     model.set_trainable_phase("dense_recurrent")
     output = model(batch, wake_mode="oracle", maximum_rounds=2)
     assert output.gpt_logits.shape[:2] == batch["gpt_input_ids"].shape
-    assert output.rounds[0].wake_activations.tolist() == [[0.0, 0.0], [0.0, 1.0]]
-    assert output.rounds[1].wake_activations.tolist() == [[0.0, 0.0], [1.0, 0.0]]
+    assert output.rounds[0].wake_activations.tolist() == [[0.0, 0.0], [1.0, 0.0]]
+    assert output.rounds[1].wake_activations.tolist() == [[0.0, 0.0], [0.0, 1.0]]
     output.loss.backward()
     assert all(not parameter.requires_grad for parameter in model.specialists.parameters())
     assert any(
@@ -319,6 +351,61 @@ def test_hardened_wake_trains_only_wake_gates():
     assert torch.allclose(loss, output.wake_loss)
     assert components["routing_calibration_only"] == 1.0
     assert components["auxiliary_step"] == 0.0
+
+
+def test_recovery_phases_separate_adapters_and_router():
+    model, _ = _tiny_model_and_batch()
+    model.set_trainable_phase("oracle_hard_adapter_recovery")
+    adapter_names = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert adapter_names
+    assert all(
+        name.startswith(
+            (
+                "request_bridges.",
+                "return_bridges.",
+                "specialist_receivers.",
+                "gpt_tower.receivers.",
+            )
+        )
+        for name in adapter_names
+    )
+    model.set_trainable_phase("hard_router_recovery")
+    router_names = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert router_names
+    assert all(
+        name.startswith(("wake_gates.", "wake_round_embeddings."))
+        for name in router_names
+    )
+    assert not any(name.startswith("halt_gate.") for name in router_names)
+
+
+def test_hard_all_closed_matches_receiver_bypassed_path_exactly():
+    model, batch = _tiny_model_and_batch()
+    model.eval()
+    with torch.no_grad():
+        for parameter in model.wake_gates.parameters():
+            parameter.zero_()
+        model.wake_gates.network[-1].bias.fill_(-10.0)
+        hard = model(
+            batch,
+            wake_mode="hard",
+            maximum_rounds=2,
+            conditional_execution=True,
+            apply_halt=False,
+        )
+        bypassed = model(
+            batch,
+            wake_mode="hard",
+            maximum_rounds=2,
+            conditional_execution=True,
+            apply_halt=False,
+            disable_all_communication=True,
+        )
+    assert torch.equal(hard.gpt_logits, bypassed.gpt_logits)
 
 
 def test_configured_hard_mode_physically_skips_closed_specialists():

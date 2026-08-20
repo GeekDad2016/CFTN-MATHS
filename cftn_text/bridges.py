@@ -194,12 +194,35 @@ class GatedCrossReceiver(nn.Module):
             raise ValueError("message and receiver batch sizes differ")
         if gate_mode not in {"contextual", "fixed_open"}:
             raise ValueError("gate_mode must be contextual or fixed_open")
-        query = self.query_projection(self.receiver_norm(receiver_hidden))
-        memory = self.message_norm(message)
-        padding_mask = (
+        active_rows = (
+            torch.ones(
+                receiver_hidden.shape[0],
+                dtype=torch.bool,
+                device=receiver_hidden.device,
+            )
+            if message_attention_mask is None
+            else message_attention_mask.to(dtype=torch.bool).any(dim=1)
+        )
+        if not bool(active_rows.any()):
+            self.last_gate = torch.zeros(
+                (*receiver_hidden.shape[:2], 1),
+                dtype=receiver_hidden.dtype,
+                device=receiver_hidden.device,
+            )
+            return receiver_hidden
+
+        active_indices = active_rows.nonzero(as_tuple=False).flatten()
+        selected_hidden = receiver_hidden.index_select(0, active_indices)
+        selected_message = message.index_select(0, active_indices)
+        selected_mask = (
             None
             if message_attention_mask is None
-            else ~message_attention_mask.to(dtype=torch.bool)
+            else message_attention_mask.index_select(0, active_indices)
+        )
+        query = self.query_projection(self.receiver_norm(selected_hidden))
+        memory = self.message_norm(selected_message)
+        padding_mask = (
+            None if selected_mask is None else ~selected_mask.to(dtype=torch.bool)
         )
         context, _ = self.attention(
             query,
@@ -208,12 +231,25 @@ class GatedCrossReceiver(nn.Module):
             key_padding_mask=padding_mask,
             need_weights=False,
         )
-        pooled_message = _masked_mean(memory, message_attention_mask)
+        pooled_message = _masked_mean(memory, selected_mask)
         pooled_message = pooled_message.unsqueeze(1).expand(-1, query.shape[1], -1)
         contextual_gate = torch.sigmoid(
             self.gate_network(torch.cat((query, pooled_message), dim=-1))
         )
         gate = torch.ones_like(contextual_gate) if gate_mode == "fixed_open" else contextual_gate
         delta = self.output_projection(context)
-        self.last_gate = gate.detach()
-        return receiver_hidden + gate * delta
+        selected_output = selected_hidden + gate * delta
+        if bool(active_rows.all()):
+            self.last_gate = gate.detach()
+            return selected_output
+
+        output = receiver_hidden.clone()
+        output.index_copy_(0, active_indices, selected_output)
+        full_gate = torch.zeros(
+            (*receiver_hidden.shape[:2], 1),
+            dtype=gate.dtype,
+            device=gate.device,
+        )
+        full_gate.index_copy_(0, active_indices, gate.detach())
+        self.last_gate = full_gate
+        return output

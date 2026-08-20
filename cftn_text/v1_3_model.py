@@ -162,6 +162,11 @@ class V13MultiTowerModel(nn.Module):
         self.wake_gates = IndependentWakeGates(
             gpt_tower.hidden_size, len(self.specialist_names), gate_hidden
         )
+        self.wake_round_embeddings = nn.Embedding(
+            int(config["runtime"]["maximum_callosal_rounds"]),
+            gpt_tower.hidden_size,
+        )
+        nn.init.zeros_(self.wake_round_embeddings.weight)
         self.halt_gate = HaltGate(gpt_tower.hidden_size, gate_hidden)
         self.maximum_rounds = int(config["runtime"]["maximum_callosal_rounds"])
         self.wake_threshold = float(config["runtime"]["wake_threshold"])
@@ -180,13 +185,15 @@ class V13MultiTowerModel(nn.Module):
             "dense_recurrent",
             "supervised_soft_wake",
             "hardened_wake",
+            "oracle_hard_adapter_recovery",
+            "hard_router_recovery",
         }
         if phase not in allowed:
             raise ValueError(f"unknown V1.3 phase: {phase}")
         self.trainable_phase = phase
         for parameter in self.parameters():
             parameter.requires_grad_(False)
-        if phase != "hardened_wake":
+        if phase not in {"hardened_wake", "hard_router_recovery"}:
             for modules in (
                 self.request_bridges,
                 self.return_bridges,
@@ -199,19 +206,22 @@ class V13MultiTowerModel(nn.Module):
             for modules in (self.wake_gates, self.halt_gate):
                 for parameter in modules.parameters():
                     parameter.requires_grad_(True)
-        elif phase == "hardened_wake":
+        elif phase in {"hardened_wake", "hard_router_recovery"}:
             # Harden only the specialist routing decision.  V1.3 showed that
             # jointly updating the halt gate at the hard threshold can erase a
             # useful soft-wake policy even when the bridges stay frozen.
             for parameter in self.wake_gates.parameters():
                 parameter.requires_grad_(True)
+            if phase == "hard_router_recovery":
+                for parameter in self.wake_round_embeddings.parameters():
+                    parameter.requires_grad_(True)
 
     def train(self, mode: bool = True):
         super().train(mode)
         self.gpt_tower.model.eval()
         for tower in self.specialists.values():
             tower.eval()
-        if self.trainable_phase == "hardened_wake":
+        if self.trainable_phase in {"hardened_wake", "hard_router_recovery"}:
             for modules in (
                 self.request_bridges,
                 self.return_bridges,
@@ -232,6 +242,7 @@ class V13MultiTowerModel(nn.Module):
             "specialist_receivers.",
             "gpt_tower.receivers.",
             "wake_gates.",
+            "wake_round_embeddings.",
             "halt_gate.",
         )
 
@@ -250,7 +261,8 @@ class V13MultiTowerModel(nn.Module):
         expected = {
             name for name in current if name.startswith(self._collaboration_prefixes())
         }
-        missing = sorted(expected.difference(state))
+        optional_legacy = {"wake_round_embeddings.weight"}
+        missing = sorted(expected.difference(state).difference(optional_legacy))
         unexpected = sorted(set(state).difference(expected))
         incompatible = sorted(
             name
@@ -464,6 +476,7 @@ class V13MultiTowerModel(nn.Module):
         if unknown:
             raise ValueError(f"unknown specialists in ablation: {sorted(unknown)}")
         accumulated_returns: list[torch.Tensor] = []
+        accumulated_return_masks: list[torch.Tensor] = []
         round_outputs: list[V13RoundOutput] = []
         specialist_losses: list[torch.Tensor] = []
         wake_logits_all: list[torch.Tensor] = []
@@ -479,7 +492,15 @@ class V13MultiTowerModel(nn.Module):
         )
         for round_index in range(rounds_to_run):
             pooled = _masked_mean(gpt_hidden, batch["gpt_prepass_attention_mask"])
-            wake_logits = self.wake_gates(pooled)
+            round_ids = torch.full(
+                (pooled.shape[0],),
+                round_index,
+                dtype=torch.long,
+                device=pooled.device,
+            )
+            wake_logits = self.wake_gates(
+                pooled + self.wake_round_embeddings(round_ids)
+            )
             targets = batch["wake_targets"][:, round_index]
             wake_probabilities, wake_activations = self._wake_activation(
                 wake_logits, targets, wake_mode
@@ -494,10 +515,21 @@ class V13MultiTowerModel(nn.Module):
             specialist_outputs: dict[str, MathTowerOutput] = {}
             returns: dict[str, BridgeOutput] = {}
             round_return_messages: list[torch.Tensor] = []
+            round_return_masks: list[torch.Tensor] = []
             for specialist_index, name in enumerate(self.specialist_names):
                 activation = wake_activations[:, specialist_index]
                 if name in disabled:
                     activation = torch.zeros_like(activation)
+                binary_routing = wake_mode in {
+                    "oracle",
+                    "hard",
+                    "hard_straight_through",
+                }
+                active_rows = (
+                    activation.detach().ge(self.wake_threshold)
+                    if binary_routing
+                    else torch.ones_like(activation, dtype=torch.bool)
+                )
                 request = self.request_bridges[name](
                     gpt_hidden,
                     batch["gpt_prepass_attention_mask"],
@@ -536,14 +568,16 @@ class V13MultiTowerModel(nn.Module):
                 )
                 specialist_outputs[name] = specialist_output
                 round_return_messages.append(gated_return)
+                round_return_masks.append(
+                    active_rows.unsqueeze(1).expand(-1, gated_return.shape[1])
+                )
                 specialist_losses.append(
                     _safe_causal_loss(specialist_output.logits, specialist_batch["labels"])
                 )
             accumulated_returns.extend(round_return_messages)
+            accumulated_return_masks.extend(round_return_masks)
             combined = torch.cat(accumulated_returns, dim=1)
-            message_mask = torch.ones(
-                combined.shape[:2], dtype=torch.long, device=combined.device
-            )
+            message_mask = torch.cat(accumulated_return_masks, dim=1)
             gpt_update = self.gpt_tower(
                 batch["gpt_prepass_input_ids"],
                 batch["gpt_prepass_attention_mask"],
@@ -573,9 +607,7 @@ class V13MultiTowerModel(nn.Module):
             halt_logits_all.append(halt_logits)
             activations_all.append(wake_activations)
         combined = torch.cat(accumulated_returns, dim=1)
-        message_mask = torch.ones(
-            combined.shape[:2], dtype=torch.long, device=combined.device
-        )
+        message_mask = torch.cat(accumulated_return_masks, dim=1)
         gpt_output = self.gpt_tower(
             batch["gpt_input_ids"],
             batch["gpt_attention_mask"],
@@ -587,8 +619,24 @@ class V13MultiTowerModel(nn.Module):
         gpt_loss = _safe_causal_loss(gpt_output.logits, batch["gpt_labels"])
         specialist_loss = torch.stack(specialist_losses).mean()
         stacked_wake_logits = torch.stack(wake_logits_all, dim=1)
-        wake_loss = F.binary_cross_entropy_with_logits(
-            stacked_wake_logits, batch["wake_targets"][:, :rounds_to_run]
+        wake_targets = batch["wake_targets"][:, :rounds_to_run]
+        reachable_rounds = batch["halt_targets"][:, :rounds_to_run].ge(0)
+        wake_strata = []
+        for round_index in range(rounds_to_run):
+            valid = reachable_rounds[:, round_index]
+            if not bool(valid.any()):
+                continue
+            for specialist_index in range(len(self.specialist_names)):
+                wake_strata.append(
+                    F.binary_cross_entropy_with_logits(
+                        stacked_wake_logits[valid, round_index, specialist_index],
+                        wake_targets[valid, round_index, specialist_index],
+                    )
+                )
+        wake_loss = (
+            torch.stack(wake_strata).mean()
+            if wake_strata
+            else stacked_wake_logits.sum() * 0.0
         )
         stacked_halt_logits = torch.stack(halt_logits_all, dim=1)
         halt_targets = batch["halt_targets"][:, :rounds_to_run]

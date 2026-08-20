@@ -1,8 +1,9 @@
 # V1.3 Stage 10 hard-wake findings
 
-Status: recovery attempt 2 stopped by user on 2026-08-17; recovery attempt 3
-launched from the sealed Stage 9 checkpoint and has not yet produced a full
-validation result.
+Status: recovery attempt 3 completed 10 epochs on 2026-08-18 and failed
+acceptance. A replacement binary-routing recovery was designed on 2026-08-20
+after checkpoint-level oracle and message-leakage diagnostics disproved the
+earlier narrow gate-calibration hypothesis.
 
 ## Preserved evidence
 
@@ -77,9 +78,53 @@ about 4.1/12.3 GiB because sleeping specialists are now actually skipped.
 
 The 1,024-example zero-update panel with true specialist skipping and hard halt
 disabled scored 57.81% sequence accuracy, 90.63% exact routing, 87.69%
-precision, 99.71% recall, and 0% pure-language false wake. This confirms that
-the remaining Stage-10 job is narrow: remove extra wakes without sacrificing
-required wakes.
+precision, 99.71% recall, and 0% pure-language false wake. The subsequent
+10-epoch gate-only run disproved the conclusion that the remaining job was
+narrow: final exact routing fell to 60.00%, recall to 45.38%, and sequence
+accuracy to 39.74%. No checkpoint was eligible.
+
+## Root cause established after attempt 3
+
+1. The soft phase multiplied wake probabilities into request and return
+   messages before `GatedCrossReceiver.message_norm`. Layer normalization
+   largely removes scalar attenuation, so every nonzero sigmoid activation can
+   carry a substantial message. The soft phase also executes every specialist.
+   Its thresholded routing metrics therefore did not represent conditional
+   communication or compute.
+2. Inactive return slots were concatenated as zero tensors but marked valid by
+   an all-ones message mask. An actual Stage-9 checkpoint showed a maximum
+   84-logit difference between this all-closed path and the receiver-bypassed
+   path. Hard-closed communication was not a no-op.
+3. On a balanced 256-example diagnostic, Stage-9 soft routing scored 85.16%
+   sequence accuracy. Keeping nominally closed leakage while forcing required
+   activations to one scored 85.55%; removing the leakage scored 53.52%.
+   Perfect oracle binary routing therefore could not rescue the adapters.
+4. The unmasked wake BCE contained 380,000 post-halt negatives in the
+   100,000-example training set. Those unreachable labels were 76% of all
+   negatives and drove the gate-only recovery toward closed gates.
+5. No example requires round three. A two-round checkpoint panel improved
+   routing over three rounds without training.
+6. The intended alternating sequential curriculum was broken: every
+   `multi_sequential` index is odd, so `index % 2` generated 10,000
+   string-then-math training examples and zero math-then-string examples.
+
+## Binary-routing recovery contract
+
+- Preserve the sealed Stage-9 checkpoint as initialization and reset optimizer
+  state.
+- Use two reachable rounds and keep hard halt disabled.
+- Mask inactive message tokens and bypass all-masked receiver rows exactly.
+- First train only bridges and receivers under oracle 0/1 routing with physical
+  specialist skipping.
+- Then freeze adapters and train only wake gates plus a zero-initialized round
+  embedding on reachable-round supervised labels.
+- Never send task, causal, preservation, halt, or compute gradients into the
+  router-calibration phase.
+- Derive balanced sequential orders deterministically from the sealed manifest
+  and record the derived record-ID hashes without altering the source files.
+- Stop on validation patience and promote routing checkpoints only after exact
+  set >=95%, precision >=95%, recall >=98%, false wake <=1%, and collapse
+  guards pass.
 
 ## Required V2 safeguards
 

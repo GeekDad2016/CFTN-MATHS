@@ -347,7 +347,10 @@ def generate_joint_record(
     else:
         # Alternate both dependency orders so another callosal round is
         # necessary for each specialist, rather than privileging one tower.
-        if index % 2:
+        # ``multi_sequential`` occupies index 9 of every ten-record cycle, so
+        # testing ``index % 2`` made every generated example string->math.
+        # Alternate by the cycle number instead.
+        if (index // 10) % 2:
             count = text.count(char)
             a = rng.choice([value for value in range(-12, 13) if value])
             x = rng.randint(-30, 30)

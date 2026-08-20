@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import time
@@ -40,7 +41,12 @@ from .training import (
     seed_everything,
 )
 from .v1_3_config import audit_v1_2_pass
-from .v1_3_data import SPECIALISTS, audit_v1_3_manifest, prepare_v1_3_manifests
+from .v1_3_data import (
+    SPECIALISTS,
+    audit_v1_3_manifest,
+    generate_joint_record,
+    prepare_v1_3_manifests,
+)
 from .v1_3_dataset import (
     V13Dataset,
     V13JointCollator,
@@ -496,9 +502,16 @@ def v1_3_objective(
     maximum_rounds: int,
     settings: dict[str, Any],
     global_step: int,
+    objective_mode: str = "auto",
+    conditional_execution: bool | None = None,
+    apply_halt: bool | None = None,
 ) -> tuple[V13ModelOutput, torch.Tensor, dict[str, float]]:
     configured = settings["losses"]
-    routing_calibration_only = wake_mode == "hard_straight_through"
+    routing_calibration_only = (
+        objective_mode == "router_calibration"
+        or (objective_mode == "auto" and wake_mode == "hard_straight_through")
+    )
+    oracle_hard_adapter = objective_mode == "oracle_hard_adapter"
     compute_weight = (
         0.0
         if routing_calibration_only
@@ -508,13 +521,23 @@ def v1_3_objective(
         batch,
         wake_mode=wake_mode,
         maximum_rounds=maximum_rounds,
+        conditional_execution=conditional_execution,
+        apply_halt=apply_halt,
         loss_weights={
             "task": 0.0 if routing_calibration_only else float(configured["task"]),
             "specialist": (
                 0.0 if routing_calibration_only else float(configured["specialist"])
             ),
-            "wake_required_set": float(configured["wake_required_set"]),
-            "halt": 0.0 if routing_calibration_only else float(configured["halt"]),
+            "wake_required_set": (
+                float(configured["wake_required_set"])
+                if routing_calibration_only or not oracle_hard_adapter
+                else 0.0
+            ),
+            "halt": (
+                0.0
+                if routing_calibration_only or oracle_hard_adapter
+                else float(configured["halt"])
+            ),
             "active_compute": compute_weight,
         },
     )
@@ -539,6 +562,8 @@ def v1_3_objective(
                 batch,
                 wake_mode="oracle",
                 maximum_rounds=maximum_rounds,
+                conditional_execution=conditional_execution,
+                apply_halt=apply_halt,
                 disable_all_communication=True,
                 loss_weights={"wake_required_set": 0.0, "halt": 0.0},
             )
@@ -551,6 +576,8 @@ def v1_3_objective(
             batch,
             wake_mode=wake_mode,
             maximum_rounds=maximum_rounds,
+            conditional_execution=conditional_execution,
+            apply_halt=apply_halt,
             shuffled_requests=set(SPECIALISTS),
             shuffled_returns=set(SPECIALISTS),
             loss_weights={"wake_required_set": 0.0, "halt": 0.0},
@@ -562,7 +589,11 @@ def v1_3_objective(
             margin - (shuffled_loss[required_rows] - correct_loss[required_rows])
         ).mean()
         total = total + float(configured["causal_message"]) * causal_message
-    if auxiliary and wake_mode in {"soft", "hard_straight_through"} and bool(required_rows.any()):
+    if (
+        auxiliary
+        and (wake_mode in {"soft", "hard_straight_through"} or oracle_hard_adapter)
+        and bool(required_rows.any())
+    ):
         specialist_index = (global_step // int(settings.get("auxiliary_every_steps", 4))) % len(
             SPECIALISTS
         )
@@ -573,6 +604,8 @@ def v1_3_objective(
                 batch,
                 wake_mode=wake_mode,
                 maximum_rounds=maximum_rounds,
+                conditional_execution=conditional_execution,
+                apply_halt=apply_halt,
                 disabled_specialists={specialist},
                 loss_weights={"wake_required_set": 0.0, "halt": 0.0},
             )
@@ -595,6 +628,7 @@ def v1_3_objective(
         "causal_wake_loss": float(causal_wake.detach()),
         "auxiliary_step": float(auxiliary),
         "routing_calibration_only": float(routing_calibration_only),
+        "oracle_hard_adapter": float(oracle_hard_adapter),
     }
 
 
@@ -651,21 +685,29 @@ def evaluate_joint_teacher_forcing(
             else pre_halt_predicted
         )
         targets = batch["wake_targets"][:, :maximum_rounds].bool()
-        pre_halt_tp += int((pre_halt_predicted & targets).sum())
-        pre_halt_fp += int((pre_halt_predicted & ~targets).sum())
-        pre_halt_fn += int((~pre_halt_predicted & targets).sum())
-        pre_halt_exact_sets += int(
-            pre_halt_predicted.eq(targets).all(dim=(1, 2)).sum()
+        reachable = (
+            batch["halt_targets"][:, :maximum_rounds]
+            .ge(0)
+            .unsqueeze(-1)
+            .expand_as(targets)
         )
-        wake_tp += int((predicted & targets).sum())
-        wake_fp += int((predicted & ~targets).sum())
-        wake_fn += int((~predicted & targets).sum())
-        wake_predictions += int(predicted.sum())
-        wake_target_positives += int(targets.sum())
-        exact_sets += int(predicted.eq(targets).all(dim=(1, 2)).sum())
-        all_open_sets += int(predicted.all(dim=(1, 2)).sum())
-        all_closed_sets += int((~predicted).all(dim=(1, 2)).sum())
-        wake_labels += int(targets.numel())
+        pre_halt_tp += int((pre_halt_predicted & targets & reachable).sum())
+        pre_halt_fp += int((pre_halt_predicted & ~targets & reachable).sum())
+        pre_halt_fn += int((~pre_halt_predicted & targets & reachable).sum())
+        pre_halt_exact_sets += int(
+            (pre_halt_predicted.eq(targets) | ~reachable).all(dim=(1, 2)).sum()
+        )
+        wake_tp += int((predicted & targets & reachable).sum())
+        wake_fp += int((predicted & ~targets & reachable).sum())
+        wake_fn += int((~predicted & targets & reachable).sum())
+        wake_predictions += int((predicted & reachable).sum())
+        wake_target_positives += int((targets & reachable).sum())
+        exact_sets += int(
+            (predicted.eq(targets) | ~reachable).all(dim=(1, 2)).sum()
+        )
+        all_open_sets += int((predicted | ~reachable).all(dim=(1, 2)).sum())
+        all_closed_sets += int(((~predicted) | ~reachable).all(dim=(1, 2)).sum())
+        wake_labels += int(reachable.sum())
         pure_mask = torch.tensor(
             [value == "pure_language" for value in batch["task_classes"]],
             device=device,
@@ -673,7 +715,9 @@ def evaluate_joint_teacher_forcing(
         )
         pure_examples += int(pure_mask.sum())
         if bool(pure_mask.any()):
-            pure_false_wakes += int(predicted[pure_mask].any(dim=(1, 2)).sum())
+            pure_false_wakes += int(
+                (predicted[pure_mask] & reachable[pure_mask]).any(dim=(1, 2)).sum()
+            )
         if batch_index < causal_batches:
             required = targets.any(dim=(1, 2))
             if bool(required.any()):
@@ -734,6 +778,82 @@ def _phase(config: dict[str, Any], name: str) -> tuple[int, dict[str, Any]]:
         if value["name"] == name:
             return index, value
     raise ValueError(f"unknown integration phase: {name}")
+
+
+def _repair_sequential_orders(
+    records: list[dict[str, Any]],
+    *,
+    config: dict[str, Any],
+    split: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Derive balanced sequential orders without mutating the sealed manifest."""
+
+    repaired: list[dict[str, Any]] = []
+    source_sequential = 0
+    for index, record in enumerate(records):
+        if record["task_class"] != "multi_sequential":
+            repaired.append(record)
+            continue
+        source_sequential += 1
+        replacement = generate_joint_record(
+            seed=int(config["revision"]["seed"]),
+            split=split,
+            index=index,
+            config=config,
+        )
+        if replacement["task_class"] != "multi_sequential":
+            raise RuntimeError("sequential recovery regeneration changed task class")
+        repaired.append(replacement)
+    orders: dict[str, int] = {}
+    for record in repaired:
+        if record["task_class"] == "multi_sequential":
+            order = str(record["metadata"].get("sequential_order"))
+            orders[order] = orders.get(order, 0) + 1
+    if source_sequential and (
+        set(orders) != {"string_then_math", "math_then_string"}
+        or abs(orders["string_then_math"] - orders["math_then_string"]) > 1
+    ):
+        raise RuntimeError(f"sequential recovery data is not balanced: {orders}")
+    digest = hashlib.sha256(
+        "\n".join(str(record["record_id"]) for record in repaired).encode("utf-8")
+    ).hexdigest()
+    return repaired, {
+        "format": "cftn_text_v1_3_recovery_data_derivation_v1",
+        "split": split,
+        "source_examples": len(records),
+        "source_sequential_examples": source_sequential,
+        "sequential_orders": orders,
+        "derived_record_ids_sha256": digest,
+    }
+
+
+def routing_recovery_acceptance(
+    validation: dict[str, Any], guard: Mapping[str, Any]
+) -> dict[str, Any]:
+    gates = {
+        "pure_language_false_wake": float(
+            validation["pure_language_false_wake_rate"]
+        )
+        <= float(guard["maximum_pure_language_false_wake_rate"]),
+        "exact_required_set": float(validation["exact_required_set_accuracy"])
+        >= float(guard["minimum_exact_required_set_accuracy"]),
+        "wake_precision": float(validation["wake_precision"])
+        >= float(guard["minimum_wake_precision"]),
+        "wake_recall": float(validation["wake_recall"])
+        >= float(guard["minimum_wake_recall"]),
+        "not_always_open": float(validation["all_open_rate"])
+        <= float(guard["maximum_all_open_rate"]),
+        "not_always_closed": float(validation["all_closed_rate"])
+        <= float(guard["maximum_all_closed_rate"]),
+    }
+    gates["pass"] = all(gates.values())
+    return {
+        "gates": gates,
+        "collapse_guard": {
+            "triggered": not gates["pass"],
+            "failed": sorted(name for name, passed in gates.items() if not passed),
+        },
+    }
 
 
 def _previous_phase_checkpoint(config: dict[str, Any], phase_index: int) -> Path | None:
@@ -1001,6 +1121,10 @@ def train_integration_phase(
 ) -> dict[str, Any]:
     audit_v1_2_pass(config)
     phase_index, phase = _phase(config, phase_name)
+    objective_mode = str(phase.get("objective_mode", "auto"))
+    router_recovery = objective_mode == "router_calibration"
+    conditional_execution = phase.get("conditional_execution")
+    apply_halt = phase.get("apply_halt")
     baseline_required = bool(
         config["integration_training"]
         .get("hard_transition_baseline", {})
@@ -1033,18 +1157,28 @@ def train_integration_phase(
     wake_mode = str(phase["wake_mode"]).replace("oracle_dense", "oracle")
     maximum_rounds = int(phase["maximum_rounds"])
     allowed_classes = set(phase["include_task_classes"])
+    all_train_records = V13Dataset(
+        data_root / manifest["splits"]["joint_train"]["path"]
+    ).records
+    all_validation_records = V13Dataset(
+        data_root / manifest["splits"]["joint_validation"]["path"]
+    ).records
+    recovery_data: dict[str, Any] | None = None
+    if bool(phase.get("repair_sequential_orders", False)):
+        all_train_records, train_repair = _repair_sequential_orders(
+            all_train_records, config=config, split="joint_train"
+        )
+        all_validation_records, validation_repair = _repair_sequential_orders(
+            all_validation_records, config=config, split="joint_validation"
+        )
+        recovery_data = {"train": train_repair, "validation": validation_repair}
+        provenance["recovery_data"] = recovery_data
     train_records = [
-        record
-        for record in V13Dataset(
-            data_root / manifest["splits"]["joint_train"]["path"]
-        ).records
-        if record["task_class"] in allowed_classes
+        record for record in all_train_records if record["task_class"] in allowed_classes
     ]
     validation_records = [
         record
-        for record in V13Dataset(
-            data_root / manifest["splits"]["joint_validation"]["path"]
-        ).records
+        for record in all_validation_records
         if record["task_class"] in allowed_classes
     ]
     collator = V13JointCollator(
@@ -1064,23 +1198,29 @@ def train_integration_phase(
     named = [(name, value) for name, value in model.named_parameters() if value.requires_grad]
     if not named:
         raise RuntimeError(f"{phase_name} has no trainable parameters")
-    if phase_name == "hardened_wake":
+    if phase_name == "hardened_wake" or router_recovery:
         unexpected = sorted(
             name
             for name, _ in named
-            if not name.startswith("wake_gates.")
+            if not (
+                name.startswith("wake_gates.")
+                or (router_recovery and name.startswith("wake_round_embeddings."))
+            )
         )
         if unexpected:
             raise RuntimeError(
-                "hardened_wake must be wake-gate-only; unexpected trainable parameters: "
+                "router calibration must be gate-only; unexpected trainable parameters: "
                 f"{unexpected}"
             )
         if any(name.startswith("halt_gate.") for name, _ in named):
-            raise RuntimeError("hardened_wake must keep the halt gate frozen")
+            raise RuntimeError("router calibration must keep the halt gate frozen")
     gate_parameters = [
         value
         for name, value in named
-        if "gate" in name or name.startswith("wake_gates") or name.startswith("halt_gate")
+        if "gate" in name
+        or name.startswith("wake_gates")
+        or name.startswith("wake_round_embeddings")
+        or name.startswith("halt_gate")
     ]
     gate_ids = {id(value) for value in gate_parameters}
     other_parameters = [value for _, value in named if id(value) not in gate_ids]
@@ -1089,7 +1229,8 @@ def train_integration_phase(
         phase.get(
             "gate_learning_rate",
             phase_learning_rate
-            if phase_name == "hardened_wake" and "learning_rate" in phase
+            if (phase_name == "hardened_wake" or router_recovery)
+            and "learning_rate" in phase
             else phase_learning_rate * float(settings["gate_learning_rate_multiplier"]),
         )
     )
@@ -1110,19 +1251,23 @@ def train_integration_phase(
                 "group_name": "gates",
             }
         )
-    if phase_name == "hardened_wake" and [
+    if (phase_name == "hardened_wake" or router_recovery) and [
         group["group_name"] for group in optimizer_groups
     ] != ["gates"]:
-        raise RuntimeError("hardened_wake optimizer must contain only the gates group")
+        raise RuntimeError("router optimizer must contain only the gates group")
     hardening_policy = (
         {
             "objective": "wake_required_set_only",
-            "trainable_components": ["wake_gates"],
+            "trainable_components": (
+                ["wake_gates", "wake_round_embeddings"]
+                if router_recovery
+                else ["wake_gates"]
+            ),
             "halt_gate_trainable": False,
             "hard_halt_enabled": False,
             "conditional_specialist_execution": True,
         }
-        if phase_name == "hardened_wake"
+        if phase_name == "hardened_wake" or router_recovery
         else None
     )
     optimizer = AdamW(
@@ -1263,6 +1408,9 @@ def train_integration_phase(
                         maximum_rounds=maximum_rounds,
                         settings=settings,
                         global_step=global_step,
+                        objective_mode=objective_mode,
+                        conditional_execution=conditional_execution,
+                        apply_halt=apply_halt,
                     )
                 del output
                 scaler.scale(loss).backward()
@@ -1328,14 +1476,26 @@ def train_integration_phase(
                 causal_batches=causal_batches,
                 max_batches=max_batches,
                 conditional_execution=(
-                    True if phase_name == "hardened_wake" else None
+                    conditional_execution
+                    if conditional_execution is not None
+                    else (True if phase_name == "hardened_wake" else None)
                 ),
-                apply_halt=False if phase_name == "hardened_wake" else None,
+                apply_halt=(
+                    apply_halt
+                    if apply_halt is not None
+                    else (False if phase_name == "hardened_wake" else None)
+                ),
             )
             hardening = (
                 hardening_acceptance(validation, hardening_baseline, settings)
                 if hardening_baseline is not None
-                else None
+                else (
+                    routing_recovery_acceptance(
+                        validation, phase["routing_acceptance"]
+                    )
+                    if router_recovery
+                    else None
+                )
             )
             selection = integration_selection_score(
                 validation, hardening=hardening
@@ -1371,6 +1531,8 @@ def train_integration_phase(
                     str(group.get("group_name")) for group in optimizer.param_groups
                 ],
                 "hardening_policy": hardening_policy,
+                "objective_mode": objective_mode,
+                "recovery_data": recovery_data,
                 "timing": {
                     "epoch_seconds": time.time() - epoch_started,
                     "eta_seconds_to_phase_end": (
@@ -1418,6 +1580,13 @@ def train_integration_phase(
                 ),
                 status_path,
             )
+            early_stop_patience = phase.get("early_stop_patience")
+            if (
+                early_stop_patience is not None
+                and epoch >= int(phase.get("minimum_epochs", 1))
+                and patience >= int(early_stop_patience)
+            ):
+                break
     except BaseException as exc:
         atomic_json_dump(
             _status(
@@ -1449,12 +1618,14 @@ def train_integration_phase(
                 str(group.get("group_name")): float(group.get("initial_lr", group["lr"]))
                 for group in optimizer.param_groups
             },
-            "gate_only": phase_name == "hardened_wake",
+            "gate_only": phase_name == "hardened_wake" or router_recovery,
             "trainable_components": (
-                ["wake_gates"] if phase_name == "hardened_wake" else None
+                ["wake_gates", "wake_round_embeddings"]
+                if router_recovery
+                else (["wake_gates"] if phase_name == "hardened_wake" else None)
             ),
             "halt_gate_frozen": (
-                True if phase_name == "hardened_wake" else None
+                True if phase_name == "hardened_wake" or router_recovery else None
             ),
         },
         "hardening_policy": hardening_policy,

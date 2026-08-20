@@ -57,6 +57,45 @@ def test_receiver_disabled_path_is_bit_exact():
     assert receiver.execution_count == 1
 
 
+def test_receiver_masked_rows_are_bit_exact_no_ops():
+    receiver = GatedCrossReceiver(
+        receiver_width=16,
+        message_width=16,
+        heads=4,
+        gate_hidden_size=16,
+        dropout=0.0,
+        gate_init=-1.0,
+        zero_init_output=False,
+    ).eval()
+    hidden = torch.randn(2, 6, 16)
+    message = torch.randn(2, 4, 16)
+    mask = torch.tensor([[0, 0, 0, 0], [1, 1, 1, 1]])
+    output = receiver(hidden, message, mask)
+    assert torch.equal(output[0], hidden[0])
+    assert receiver.last_gate is not None
+    assert torch.count_nonzero(receiver.last_gate[0]) == 0
+    assert not torch.equal(output[1], hidden[1])
+
+
+def test_receiver_all_masked_batch_is_bit_exact():
+    receiver = GatedCrossReceiver(
+        receiver_width=16,
+        message_width=16,
+        heads=4,
+        gate_hidden_size=16,
+        dropout=0.0,
+        gate_init=-1.0,
+        zero_init_output=False,
+    ).eval()
+    hidden = torch.randn(2, 6, 16)
+    output = receiver(
+        hidden,
+        torch.randn(2, 4, 16),
+        torch.zeros(2, 4, dtype=torch.long),
+    )
+    assert torch.equal(output, hidden)
+
+
 def test_zero_initialized_receiver_has_a_live_first_step_gradient():
     receiver = GatedCrossReceiver(
         receiver_width=16,
