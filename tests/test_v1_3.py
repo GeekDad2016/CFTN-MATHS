@@ -25,10 +25,17 @@ from cftn_text.v1_3_evaluation import (
     resolve_specialist_generation_budget,
 )
 from cftn_text.v1_3_model import V13MultiTowerModel
-from cftn_text.v1_3_training import _repair_sequential_orders, v1_3_objective
+from cftn_text.v1_3_training import (
+    _repair_sequential_orders,
+    adapter_recovery_acceptance,
+    apply_protocol_aware_adapter_metrics,
+    integration_selection_score,
+    v1_3_objective,
+)
 from cftn_text.v1_3_reporting import _weighted_accuracy
 from tools.run_v1_3_experiment import Stage, _completion_is_valid, command_plan
 from tools.wait_then_run_v1_3 import pipeline_command
+from tools.recover_v1_3_hard_binary import select_adapter_continuation_source
 
 
 ROOT = Path(__file__).parents[1]
@@ -381,6 +388,142 @@ def test_recovery_phases_separate_adapters_and_router():
         for name in router_names
     )
     assert not any(name.startswith("halt_gate.") for name in router_names)
+
+
+def test_adapter_continuation_uses_weighted_task_loss_and_adapter_parameters():
+    model, batch = _tiny_model_and_batch()
+    model.set_trainable_phase("oracle_hard_adapter_continuation")
+    continuation_names = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert continuation_names
+    assert all(
+        name.startswith(
+            (
+                "request_bridges.",
+                "return_bridges.",
+                "specialist_receivers.",
+                "gpt_tower.receivers.",
+            )
+        )
+        for name in continuation_names
+    )
+    output, loss, components = v1_3_objective(
+        model,
+        batch,
+        wake_mode="oracle",
+        maximum_rounds=2,
+        settings=_config()["integration_training"],
+        global_step=1,
+        objective_mode="oracle_hard_adapter",
+        conditional_execution=True,
+        apply_halt=False,
+        task_class_weights={"pure_language": 0.5, "multi_parallel": 3.0},
+    )
+    assert torch.isfinite(loss)
+    assert components["weighted_gpt_loss"] != pytest.approx(
+        float(output.gpt_loss.detach())
+    )
+    loss.backward()
+    assert any(
+        parameter.grad is not None
+        for parameter in model.request_bridges.parameters()
+        if parameter.requires_grad
+    )
+
+
+def test_protocol_aware_adapter_selection_rewards_real_focus_improvement():
+    calibration = {
+        "answer_protocol": "first_nonempty_completion_line_v1",
+        "examples": 20,
+        "semantic_accuracy": 1.0,
+        "revision_sha256": "revision",
+    }
+
+    def validation(*, focus_token: float, causal_gap: float) -> dict:
+        value = {
+            "examples": 100,
+            "gpt_teacher_forced_sequence_accuracy": 0.63,
+            "gpt_teacher_forced_token_accuracy": 0.70 + focus_token / 100,
+            "gpt_teacher_forced_loss": 2.0 - focus_token / 10,
+            "causal_message_loss_gap": causal_gap,
+            "task_class_metrics": {
+                "pure_language": {
+                    "examples": 20,
+                    "sequence_accuracy": 0.0,
+                    "token_accuracy": 0.5,
+                    "gpt_loss": 3.0,
+                },
+                "explicit_math": {"examples": 16, "sequence_accuracy": 1.0},
+                "language_dependent_math": {
+                    "examples": 16,
+                    "sequence_accuracy": 1.0,
+                },
+                "multi_sequential": {"examples": 16, "sequence_accuracy": 1.0},
+                "exact_string": {
+                    "examples": 16,
+                    "sequence_accuracy": 0.6,
+                    "token_accuracy": 0.45 + focus_token,
+                },
+                "multi_parallel": {
+                    "examples": 16,
+                    "sequence_accuracy": 0.1,
+                    "token_accuracy": 0.60 + focus_token,
+                },
+            },
+        }
+        return apply_protocol_aware_adapter_metrics(value, calibration)
+
+    earlier = validation(focus_token=0.0, causal_gap=9.0)
+    later = validation(focus_token=0.03, causal_gap=5.5)
+    assert earlier["protocol_semantic_sequence_accuracy_lower_bound"] == pytest.approx(
+        0.83
+    )
+    assert integration_selection_score(
+        later, selection_mode="adapter_recovery"
+    ) > integration_selection_score(earlier, selection_mode="adapter_recovery")
+    acceptance = adapter_recovery_acceptance(
+        later,
+        {
+            "minimum_protocol_semantic_sequence_accuracy": 0.83,
+            "minimum_causal_message_loss_gap": 5.0,
+        },
+    )
+    assert acceptance["gates"]["pass"] is True
+
+
+def test_continuation_source_selector_prefers_late_valid_improvement(tmp_path: Path):
+    config = copy.deepcopy(_config())
+    config["paths"]["artifact_root"] = str(tmp_path)
+    adapter = tmp_path / "oracle_hard_adapter_recovery"
+    adapter.mkdir()
+    rows = []
+    for epoch, sequence, token, loss, gap in (
+        (1, 0.6360, 0.7000, 3.8, 7.2),
+        (2, 0.6360, 0.7110, 3.6, 7.0),
+        (3, 0.6366, 0.7132, 3.5, 4.0),
+    ):
+        (adapter / f"checkpoint_epoch_{epoch:04d}.pth").write_bytes(
+            f"checkpoint-{epoch}".encode()
+        )
+        rows.append(
+            json.dumps(
+                {
+                    "epoch": epoch,
+                    "checkpoint_eligible": True,
+                    "validation": {
+                        "gpt_teacher_forced_sequence_accuracy": sequence,
+                        "gpt_teacher_forced_token_accuracy": token,
+                        "loss": loss,
+                        "causal_message_loss_gap": gap,
+                    },
+                }
+            )
+        )
+    (adapter / "metrics.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    report = select_adapter_continuation_source(config)
+    assert report["selected"]["epoch"] == 2
+    assert Path(report["selected"]["checkpoint"]).is_file()
 
 
 def test_hard_all_closed_matches_receiver_bypassed_path_exactly():

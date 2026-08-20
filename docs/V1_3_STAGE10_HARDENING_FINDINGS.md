@@ -148,6 +148,61 @@ Before V2 reaches its own hard transition:
 8. Do not claim conditional-compute success from message masking alone; record
    actual specialist executions and compute saved.
 
+## Oracle-adapter recovery outcome and continuation (2026-08-20)
+
+The first oracle-binary adapter recovery stopped normally after epoch 4 when
+the legacy selector reached patience 3. Training was real: all 180 trainable
+adapter tensors changed between epochs 1 and 2 (7,029,208 changed elements),
+and optimizer state existed for every trainable tensor. Validation token
+accuracy improved from 69.995% at epoch 1 to 71.413% at epoch 4 and validation
+loss fell from 3.83025 to 3.55680. Strict sequence accuracy stayed near 63.6%,
+while causal message-loss gap stayed strong at 7.06-7.16.
+
+The apparent sequence plateau mixed two different protocols. The 1,000
+pure-language validation rows are scored semantically by the preregistered
+`first_nonempty_completion_line_v1` calibration and pass at 100%, but joint
+teacher forcing required an exact continuation/newline/EOS token sequence and
+reported those rows at 0% strict sequence accuracy. Replacing only that known
+diagnostic mismatch gives a protocol-aware lower bound of about 83.6%, close
+to the Stage-9 soft result, while leaving every communication-dependent class
+strict. Pure-language rows also have an exact all-closed receiver bypass, so
+they cannot train the adapters and consumed 20% of the original optimizer
+stream without providing adapter gradients.
+
+A paired FP32 panel across epoch-1 and epoch-2 checkpoints found 19 changed
+predictions, five net additional correct tokens, and one net additional exact
+sequence. The saturated explicit-math, language-dependent-math, and
+multi-sequential strata stayed correct; remaining error and movement were
+concentrated in exact-string and multi-parallel rows. The old checkpoint score
+incorrectly added `0.05 * causal_gap`, allowing noise from only 408 causal
+examples to outweigh full-panel token/loss gains. It therefore kept epoch 1 as
+"best" even while the adapters improved.
+
+The continuation contract consequently:
+
+- validates all six classes but excludes pure-language rows from optimization;
+- weights exact-string and multi-parallel task loss above replay classes;
+- starts a fresh optimizer at 3e-7 (floor 5e-8), rather than resuming stale
+  optimizer, scheduler, best-score, and patience state;
+- ranks only checkpoints that preserve protocol-aware accuracy, protected
+  solved classes, and causal gap >=5;
+- reports strict token, sequence, and GPT loss per task class;
+- treats causal gap as an acceptance guard rather than a ranking bonus; and
+- limits the continuation to four epochs with patience 2 before any router
+  calibration is allowed.
+
+The guarded source selector considered retained epochs 2-4 and selected epoch
+3 (`0df17b1edacf81320616b523cf77297524fddcfb9496674cbb9593b165201350`)
+with proxy score 0.811316. Epoch 4 was not selected because its small token/loss
+gain came with a strict sequence decline (proxy 0.810776). The continuation was
+launched as isolated PID 24696; its source selection, source hash, contract,
+and logs are preserved separately from the completed first adapter run.
+
+For V2, carry forward the protocol separation and per-class reporting. Never
+optimize on rows whose hard-closed path bypasses all trainable collaboration
+components, and never let a small causal panel dominate checkpoint rank after
+it has passed a preregistered causal floor.
+
 ## Remaining tests
 
 - Full 5,000-example validation after one routing-only Stage-10 epoch.

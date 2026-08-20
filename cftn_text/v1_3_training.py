@@ -505,6 +505,7 @@ def v1_3_objective(
     objective_mode: str = "auto",
     conditional_execution: bool | None = None,
     apply_halt: bool | None = None,
+    task_class_weights: Mapping[str, float] | None = None,
 ) -> tuple[V13ModelOutput, torch.Tensor, dict[str, float]]:
     configured = settings["losses"]
     routing_calibration_only = (
@@ -512,6 +513,7 @@ def v1_3_objective(
         or (objective_mode == "auto" and wake_mode == "hard_straight_through")
     )
     oracle_hard_adapter = objective_mode == "oracle_hard_adapter"
+    weighted_task_loss = task_class_weights is not None and not routing_calibration_only
     compute_weight = (
         0.0
         if routing_calibration_only
@@ -524,7 +526,11 @@ def v1_3_objective(
         conditional_execution=conditional_execution,
         apply_halt=apply_halt,
         loss_weights={
-            "task": 0.0 if routing_calibration_only else float(configured["task"]),
+            "task": (
+                0.0
+                if routing_calibration_only or weighted_task_loss
+                else float(configured["task"])
+            ),
             "specialist": (
                 0.0 if routing_calibration_only else float(configured["specialist"])
             ),
@@ -542,6 +548,18 @@ def v1_3_objective(
         },
     )
     total = output.loss
+    weighted_gpt = output.gpt_loss
+    if weighted_task_loss:
+        row_weights = torch.tensor(
+            [float(task_class_weights.get(value, 1.0)) for value in batch["task_classes"]],
+            dtype=torch.float32,
+            device=output.gpt_logits.device,
+        )
+        if bool(row_weights.le(0).any()):
+            raise ValueError("task-class loss weights must be positive")
+        per_example_gpt = _per_example_loss(output.gpt_logits, batch["gpt_labels"])
+        weighted_gpt = (per_example_gpt * row_weights).sum() / row_weights.sum()
+        total = total + float(configured["task"]) * weighted_gpt
     preservation = output.loss.detach() * 0.0
     causal_message = output.loss.detach() * 0.0
     causal_wake = output.loss.detach() * 0.0
@@ -619,6 +637,7 @@ def v1_3_objective(
     return output, total, {
         "model_loss": float(output.loss.detach()),
         "gpt_loss": float(output.gpt_loss.detach()),
+        "weighted_gpt_loss": float(weighted_gpt.detach()),
         "specialist_loss": float(output.specialist_loss.detach()),
         "wake_loss": float(output.wake_loss.detach()),
         "halt_loss": float(output.halt_loss.detach()),
@@ -654,6 +673,8 @@ def evaluate_joint_teacher_forcing(
     wake_predictions = wake_target_positives = all_open_sets = all_closed_sets = 0
     pure_examples = pure_false_wakes = 0
     causal_correct = causal_shuffled = causal_examples = 0.0
+    gpt_loss_sum = 0.0
+    task_class_sums: dict[str, dict[str, float | int]] = {}
     for batch_index, raw in enumerate(loader):
         if max_batches is not None and batch_index >= max_batches:
             break
@@ -675,6 +696,41 @@ def evaluate_joint_teacher_forcing(
         token_correct += correct
         token_total += total
         sequence_correct += sequences
+        per_example_gpt = _per_example_loss(output.gpt_logits, batch["gpt_labels"])
+        shifted_labels = batch["gpt_labels"][:, 1:]
+        valid_tokens = shifted_labels.ne(-100)
+        predicted_tokens = output.gpt_logits[:, :-1].argmax(dim=-1)
+        row_token_correct = ((predicted_tokens == shifted_labels) & valid_tokens).sum(dim=1)
+        row_token_total = valid_tokens.sum(dim=1)
+        row_sequence_correct = (
+            ((predicted_tokens == shifted_labels) | ~valid_tokens).all(dim=1)
+            & row_token_total.gt(0)
+        )
+        gpt_loss_sum += float(per_example_gpt.sum())
+        for row_index, task_class in enumerate(batch["task_classes"]):
+            sums = task_class_sums.setdefault(
+                str(task_class),
+                {
+                    "examples": 0,
+                    "token_correct": 0,
+                    "token_total": 0,
+                    "sequence_correct": 0,
+                    "gpt_loss_sum": 0.0,
+                },
+            )
+            sums["examples"] = int(sums["examples"]) + 1
+            sums["token_correct"] = int(sums["token_correct"]) + int(
+                row_token_correct[row_index]
+            )
+            sums["token_total"] = int(sums["token_total"]) + int(
+                row_token_total[row_index]
+            )
+            sums["sequence_correct"] = int(sums["sequence_correct"]) + int(
+                row_sequence_correct[row_index]
+            )
+            sums["gpt_loss_sum"] = float(sums["gpt_loss_sum"]) + float(
+                per_example_gpt[row_index]
+            )
         logits = torch.stack([item.wake_logits for item in output.rounds], dim=1)
         pre_halt_predicted = torch.sigmoid(logits).ge(model.wake_threshold)
         predicted = (
@@ -742,11 +798,24 @@ def evaluate_joint_teacher_forcing(
     recall = wake_tp / max(1, wake_tp + wake_fn)
     pre_halt_precision = pre_halt_tp / max(1, pre_halt_tp + pre_halt_fp)
     pre_halt_recall = pre_halt_tp / max(1, pre_halt_tp + pre_halt_fn)
+    task_class_metrics = {
+        name: {
+            "examples": int(sums["examples"]),
+            "gpt_loss": float(sums["gpt_loss_sum"]) / max(1, int(sums["examples"])),
+            "sequence_accuracy": int(sums["sequence_correct"])
+            / max(1, int(sums["examples"])),
+            "token_accuracy": int(sums["token_correct"])
+            / max(1, int(sums["token_total"])),
+        }
+        for name, sums in sorted(task_class_sums.items())
+    }
     return {
         "examples": examples,
         "loss": loss_sum / examples,
         "gpt_teacher_forced_token_accuracy": token_correct / max(1, token_total),
         "gpt_teacher_forced_sequence_accuracy": sequence_correct / examples,
+        "gpt_teacher_forced_loss": gpt_loss_sum / examples,
+        "task_class_metrics": task_class_metrics,
         "wake_precision": precision,
         "wake_recall": recall,
         "wake_f1": 2 * precision * recall / max(1e-12, precision + recall),
@@ -936,11 +1005,135 @@ def hardening_acceptance(
     }
 
 
+def _load_gpt_language_calibration(config: dict[str, Any]) -> dict[str, Any]:
+    path = (
+        Path(config["paths"]["artifact_root"])
+        / "gpt_language_calibration"
+        / "report.json"
+    )
+    if not path.is_file():
+        raise FileNotFoundError(f"GPT language calibration is missing: {path}")
+    calibration = json.loads(path.read_text(encoding="utf-8"))
+    if calibration.get("state") != "passed" or calibration.get("pass") is not True:
+        raise RuntimeError("GPT language calibration did not pass")
+    if calibration.get("revision_sha256") != config["_meta"]["sha256"]:
+        raise RuntimeError("GPT language calibration revision hash mismatch")
+    if calibration.get("answer_protocol") != "first_nonempty_completion_line_v1":
+        raise RuntimeError("unsupported GPT language answer protocol")
+    return calibration
+
+
+def apply_protocol_aware_adapter_metrics(
+    validation: dict[str, Any], calibration: dict[str, Any]
+) -> dict[str, Any]:
+    """Replace the known strict-format pure-language diagnostic with its semantic gate.
+
+    Non-pure classes remain strict teacher-forced measurements, so the combined value is
+    deliberately labelled as a lower bound rather than a generation accuracy estimate.
+    """
+
+    class_metrics = validation.get("task_class_metrics", {})
+    pure = class_metrics.get("pure_language")
+    if not isinstance(pure, dict):
+        raise RuntimeError("protocol-aware validation requires pure_language class metrics")
+    pure_examples = int(pure["examples"])
+    if int(calibration.get("examples", -1)) != pure_examples:
+        raise RuntimeError(
+            "GPT language calibration panel does not match validation pure-language rows"
+        )
+    examples = int(validation["examples"])
+    strict_correct = (
+        float(validation["gpt_teacher_forced_sequence_accuracy"]) * examples
+    )
+    pure_strict_correct = float(pure["sequence_accuracy"]) * pure_examples
+    pure_semantic_accuracy = float(calibration["semantic_accuracy"])
+    protocol_correct = (
+        strict_correct - pure_strict_correct + pure_semantic_accuracy * pure_examples
+    )
+    enriched = dict(validation)
+    enriched["protocol_semantic_sequence_accuracy_lower_bound"] = (
+        protocol_correct / max(1, examples)
+    )
+    enriched["protocol_aware"] = {
+        "answer_protocol": calibration["answer_protocol"],
+        "pure_language_examples": pure_examples,
+        "pure_language_semantic_accuracy": pure_semantic_accuracy,
+        "pure_language_strict_sequence_accuracy_diagnostic": float(
+            pure["sequence_accuracy"]
+        ),
+        "calibration_pass": True,
+        "calibration_revision_sha256": calibration["revision_sha256"],
+    }
+    return enriched
+
+
+def adapter_recovery_acceptance(
+    validation: dict[str, Any], settings: Mapping[str, Any]
+) -> dict[str, Any]:
+    class_metrics = validation["task_class_metrics"]
+    protected = settings.get(
+        "protected_task_classes",
+        {
+            "explicit_math": 0.95,
+            "language_dependent_math": 0.95,
+            "multi_sequential": 0.95,
+        },
+    )
+    gates = {
+        "protocol_semantic_floor": float(
+            validation["protocol_semantic_sequence_accuracy_lower_bound"]
+        )
+        >= float(settings.get("minimum_protocol_semantic_sequence_accuracy", 0.83)),
+        "causal_message_floor": float(validation["causal_message_loss_gap"])
+        >= float(settings.get("minimum_causal_message_loss_gap", 5.0)),
+        "pure_language_calibration": validation.get("protocol_aware", {}).get(
+            "calibration_pass"
+        )
+        is True,
+    }
+    for task_class, minimum in protected.items():
+        metrics = class_metrics.get(task_class)
+        gates[f"protected_{task_class}"] = bool(metrics) and float(
+            metrics["sequence_accuracy"]
+        ) >= float(minimum)
+    gates["pass"] = all(gates.values())
+    return {
+        "gates": gates,
+        "collapse_guard": {
+            "triggered": not gates["pass"],
+            "failed": sorted(name for name, passed in gates.items() if not passed),
+        },
+    }
+
+
 def integration_selection_score(
     validation: dict[str, Any],
     *,
     hardening: dict[str, Any] | None = None,
+    selection_mode: str = "legacy",
+    focus_classes: list[str] | tuple[str, ...] | None = None,
 ) -> float:
+    if selection_mode == "adapter_recovery":
+        focus = tuple(focus_classes or ("exact_string", "multi_parallel"))
+        class_metrics = validation.get("task_class_metrics", {})
+        missing = sorted(name for name in focus if name not in class_metrics)
+        if missing:
+            raise RuntimeError(f"adapter selection is missing focus classes: {missing}")
+        focus_sequence = sum(
+            float(class_metrics[name]["sequence_accuracy"]) for name in focus
+        ) / len(focus)
+        focus_token = sum(
+            float(class_metrics[name]["token_accuracy"]) for name in focus
+        ) / len(focus)
+        return (
+            float(validation["protocol_semantic_sequence_accuracy_lower_bound"])
+            + 0.20 * focus_sequence
+            + 0.10 * focus_token
+            + 0.05 * float(validation["gpt_teacher_forced_token_accuracy"])
+            - 0.001 * float(validation["gpt_teacher_forced_loss"])
+        )
+    if selection_mode != "legacy":
+        raise ValueError(f"unknown integration selection mode: {selection_mode}")
     if hardening is None:
         return (
             float(validation["gpt_teacher_forced_sequence_accuracy"])
@@ -1123,6 +1316,8 @@ def train_integration_phase(
     phase_index, phase = _phase(config, phase_name)
     objective_mode = str(phase.get("objective_mode", "auto"))
     router_recovery = objective_mode == "router_calibration"
+    selection_mode = str(phase.get("selection_mode", "legacy"))
+    adapter_selection = selection_mode == "adapter_recovery"
     conditional_execution = phase.get("conditional_execution")
     apply_halt = phase.get("apply_halt")
     baseline_required = bool(
@@ -1139,7 +1334,21 @@ def train_integration_phase(
     seed_everything(seed + phase_index)
     device = resolve_device(device_name)
     data_root, manifest = load_v1_3_data_contract(config)
-    previous = _previous_phase_checkpoint(config, phase_index)
+    configured_source = phase.get("source_checkpoint")
+    previous = (
+        Path(str(configured_source))
+        if configured_source is not None
+        else _previous_phase_checkpoint(config, phase_index)
+    )
+    if previous is not None and not previous.is_file():
+        raise FileNotFoundError(f"V1.3 phase source checkpoint is missing: {previous}")
+    expected_source_sha256 = phase.get("source_checkpoint_sha256")
+    if (
+        previous is not None
+        and expected_source_sha256 is not None
+        and file_sha256(previous) != str(expected_source_sha256)
+    ):
+        raise RuntimeError("V1.3 phase source checkpoint hash changed")
     if hardening_baseline is not None:
         if previous is None or previous.resolve() != Path(
             hardening_baseline["source_checkpoint"]
@@ -1152,11 +1361,19 @@ def train_integration_phase(
     model, gpt_tokenizer, provenance = build_v1_3_model(
         config, device=device, collaboration_checkpoint=previous
     )
+    if previous is not None:
+        provenance["phase_source_checkpoint"] = str(previous.resolve())
+        provenance["phase_source_checkpoint_sha256"] = file_sha256(previous)
     model.set_trainable_phase(phase_name)
     settings = config["integration_training"]
     wake_mode = str(phase["wake_mode"]).replace("oracle_dense", "oracle")
     maximum_rounds = int(phase["maximum_rounds"])
     allowed_classes = set(phase["include_task_classes"])
+    train_classes = set(phase.get("train_task_classes", allowed_classes))
+    if not train_classes.issubset(allowed_classes):
+        raise ValueError("train_task_classes must be a subset of include_task_classes")
+    task_class_weights = phase.get("task_class_weights")
+    calibration = _load_gpt_language_calibration(config) if adapter_selection else None
     all_train_records = V13Dataset(
         data_root / manifest["splits"]["joint_train"]["path"]
     ).records
@@ -1174,13 +1391,15 @@ def train_integration_phase(
         recovery_data = {"train": train_repair, "validation": validation_repair}
         provenance["recovery_data"] = recovery_data
     train_records = [
-        record for record in all_train_records if record["task_class"] in allowed_classes
+        record for record in all_train_records if record["task_class"] in train_classes
     ]
     validation_records = [
         record
         for record in all_validation_records
         if record["task_class"] in allowed_classes
     ]
+    if not train_records or not validation_records:
+        raise RuntimeError("V1.3 phase class filtering produced an empty split")
     collator = V13JointCollator(
         ByteMathTokenizer(),
         gpt_tokenizer,
@@ -1411,6 +1630,7 @@ def train_integration_phase(
                         objective_mode=objective_mode,
                         conditional_execution=conditional_execution,
                         apply_halt=apply_halt,
+                        task_class_weights=task_class_weights,
                     )
                 del output
                 scaler.scale(loss).backward()
@@ -1486,6 +1706,10 @@ def train_integration_phase(
                     else (False if phase_name == "hardened_wake" else None)
                 ),
             )
+            if calibration is not None:
+                validation = apply_protocol_aware_adapter_metrics(
+                    validation, calibration
+                )
             hardening = (
                 hardening_acceptance(validation, hardening_baseline, settings)
                 if hardening_baseline is not None
@@ -1494,11 +1718,20 @@ def train_integration_phase(
                         validation, phase["routing_acceptance"]
                     )
                     if router_recovery
-                    else None
+                    else (
+                        adapter_recovery_acceptance(
+                            validation, phase.get("adapter_acceptance", {})
+                        )
+                        if adapter_selection
+                        else None
+                    )
                 )
             )
             selection = integration_selection_score(
-                validation, hardening=hardening
+                validation,
+                hardening=hardening,
+                selection_mode=selection_mode,
+                focus_classes=phase.get("selection_focus_classes"),
             )
             checkpoint_eligible = hardening is None or hardening["gates"]["pass"] is True
             improved = checkpoint_eligible and selection > best_metric
@@ -1532,6 +1765,10 @@ def train_integration_phase(
                 ],
                 "hardening_policy": hardening_policy,
                 "objective_mode": objective_mode,
+                "selection_mode": selection_mode,
+                "train_task_classes": sorted(train_classes),
+                "validation_task_classes": sorted(allowed_classes),
+                "task_class_weights": task_class_weights,
                 "recovery_data": recovery_data,
                 "timing": {
                     "epoch_seconds": time.time() - epoch_started,

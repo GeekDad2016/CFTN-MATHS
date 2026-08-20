@@ -186,6 +186,7 @@ class V13MultiTowerModel(nn.Module):
             "supervised_soft_wake",
             "hardened_wake",
             "oracle_hard_adapter_recovery",
+            "oracle_hard_adapter_continuation",
             "hard_router_recovery",
         }
         if phase not in allowed:
