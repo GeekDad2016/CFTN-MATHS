@@ -26,6 +26,7 @@ from cftn_text.v1_3_evaluation import (
 )
 from cftn_text.v1_3_model import V13MultiTowerModel
 from cftn_text.v1_3_training import (
+    _limit_records_by_class,
     _repair_sequential_orders,
     adapter_recovery_acceptance,
     apply_protocol_aware_adapter_metrics,
@@ -36,6 +37,7 @@ from cftn_text.v1_3_reporting import _weighted_accuracy
 from tools.run_v1_3_experiment import Stage, _completion_is_valid, command_plan
 from tools.wait_then_run_v1_3 import pipeline_command
 from tools.recover_v1_3_hard_binary import select_adapter_continuation_source
+from tools.recover_v1_3_fusion import PHASE_NAME, configure_fusion_recovery
 
 
 ROOT = Path(__file__).parents[1]
@@ -430,6 +432,101 @@ def test_adapter_continuation_uses_weighted_task_loss_and_adapter_parameters():
         for parameter in model.request_bridges.parameters()
         if parameter.requires_grad
     )
+
+
+def test_fusion_recovery_trains_only_fusion_and_gpt_receivers():
+    model, batch = _tiny_model_and_batch()
+    legacy_state = {
+        name: value
+        for name, value in model.collaboration_state_dict().items()
+        if not name.startswith("message_fusion.")
+    }
+    model.load_collaboration_state_dict(legacy_state, strict=True)
+    model.set_trainable_phase("oracle_hard_fusion_recovery")
+    model.train()
+    trainable = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert trainable
+    assert all(
+        name.startswith(("message_fusion.", "gpt_tower.receivers."))
+        for name in trainable
+    )
+    assert any(name.startswith("message_fusion.") for name in trainable)
+    assert any(name.startswith("gpt_tower.receivers.") for name in trainable)
+    assert model.message_fusion.training is True
+    assert model.gpt_tower.receivers.training is True
+    assert model.request_bridges.training is False
+    assert model.return_bridges.training is False
+    assert model.specialist_receivers.training is False
+
+    _output, loss, components = v1_3_objective(
+        model,
+        batch,
+        wake_mode="oracle",
+        maximum_rounds=2,
+        settings=_config()["integration_training"],
+        global_step=1,
+        objective_mode="oracle_hard_fusion",
+        conditional_execution=True,
+        apply_halt=False,
+        task_class_weights={"pure_language": 0.5, "multi_parallel": 3.0},
+    )
+    assert torch.isfinite(loss)
+    assert components["oracle_hard_fusion"] == 1.0
+    loss.backward()
+    assert model.message_fusion.output_projection.weight.grad is not None
+    assert not any(
+        parameter.grad is not None for parameter in model.return_bridges.parameters()
+    )
+
+
+def test_recovery_subset_is_deterministic_and_class_stratified():
+    records = [
+        {"record_id": f"math-{index}", "task_class": "explicit_math"}
+        for index in range(7)
+    ] + [
+        {"record_id": f"parallel-{index}", "task_class": "multi_parallel"}
+        for index in range(9)
+    ]
+    first, report = _limit_records_by_class(
+        records,
+        {"explicit_math": 3, "multi_parallel": 5},
+        seed=719,
+    )
+    second, second_report = _limit_records_by_class(
+        list(reversed(records)),
+        {"explicit_math": 3, "multi_parallel": 5},
+        seed=719,
+    )
+    assert [record["record_id"] for record in first] == [
+        record["record_id"] for record in second
+    ]
+    assert report["selected_counts"] == {
+        "explicit_math": 3,
+        "multi_parallel": 5,
+    }
+    assert report["selected_record_ids_sha256"] == second_report[
+        "selected_record_ids_sha256"
+    ]
+
+
+def test_fusion_recovery_configuration_pins_optimizer_and_source(tmp_path: Path):
+    config = copy.deepcopy(_config())
+    source = tmp_path / "source.pth"
+    source.write_bytes(b"preserved fusion source")
+    phase = configure_fusion_recovery(config, source)
+    assert phase["name"] == PHASE_NAME
+    assert phase["objective_mode"] == "oracle_hard_fusion"
+    assert phase["wake_mode"] == "oracle"
+    assert phase["conditional_execution"] is True
+    assert phase["apply_halt"] is False
+    assert phase["zero_update_candidate"] is True
+    assert phase["fusion_learning_rate"] == pytest.approx(1.0e-4)
+    assert phase["receiver_learning_rate"] == pytest.approx(5.0e-7)
+    assert phase["source_checkpoint_sha256"] == file_sha256(source)
+    assert phase["train_examples_by_class"]["multi_parallel"] == 10_000
+    assert config["integration_training"]["phases"][-1] is phase
 
 
 def test_protocol_aware_adapter_selection_rewards_real_focus_improvement():

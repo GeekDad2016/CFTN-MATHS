@@ -203,9 +203,56 @@ optimize on rows whose hard-closed path bypasses all trainable collaboration
 components, and never let a small causal panel dominate checkpoint rank after
 it has passed a preregistered causal floor.
 
+## Route-schedule falsification and fusion recovery (2026-08-22)
+
+The continuation selected its own epoch-2 checkpoint
+(`236d3b4b71b595cf99f6babf2d17f090823f5a2b716e32c671487a471becdb99`).
+It retained 100% strict accuracy on explicit math, language-dependent math,
+and multi-sequential rows, reached 66.7% on exact string, but only 3.4% on
+multi-parallel composition. This isolated the remaining failure to combining
+simultaneous specialist returns.
+
+An exhaustive hard route-schedule sweep evaluated all 84 one-, two-, and
+three-round schedules on 500 multi-parallel validation rows. The intended
+single `both` call scored 3.0% exact sequence accuracy, 63.66% token accuracy,
+and GPT loss 1.4238. The best schedule, `both > closed > math`, reached only
+3.4% exact sequence accuracy while reducing token accuracy to 55.30% and
+raising GPT loss to 2.0751. Its 0.4-point exact gain costs another specialist
+call and is not material. Repeated `both`, math-first, and string-first
+schedules also failed. Therefore neither supervised route calibration nor
+gate-only RL has a useful action policy to discover with the current message
+consumer.
+
+The next recovery changes the message consumer, not the trained towers or
+router:
+
+- add specialist, round, and slot type embeddings plus self-attention over
+  returned message tokens;
+- apply the learned transformation as a residual with a zero-initialized final
+  projection, making the preserved checkpoint an exact identity at step zero;
+- train only this message-fusion module and the GPT receiver adapters;
+- keep specialists, request/return bridges, specialist receivers, wake gates,
+  and halt gate frozen;
+- use oracle hard two-round execution on a deterministic 18,000-row subset
+  weighted toward multi-parallel and exact-string cases, with protected replay;
+- validate all six classes and retain the zero-update source as an eligible
+  epoch-0 candidate; and
+- promote only a checkpoint that improves the focus-class selection score
+  while preserving protocol-aware accuracy, solved classes, and causal gap
+  >=5.
+
+The real epoch-2 checkpoint passed a batch-16 BF16 forward/backward probe on
+the RTX 4070. Loss was finite, only `message_fusion` and `gpt_receivers` had
+trainable parameters, and no frozen component received a gradient. Peak GPU
+allocation was 2.75 GiB in the probe. These findings and the route-sweep report
+must be carried into V2 before its composition/fusion stage; adding RL to V2
+routing before establishing a rewarding hard action is specifically ruled
+out.
+
 ## Remaining tests
 
-- Full 5,000-example validation after one routing-only Stage-10 epoch.
+- Full 5,000-example zero-update fusion validation and first recovery epoch.
+- Multi-parallel exact/string component accuracy after each fusion epoch.
 - Gate-probability margin distribution around the 0.5 threshold.
 - Zero-message receiver versus receiver-disabled numerical identity.
 - Separate hard-halt zero-update panel after wake routing passes.

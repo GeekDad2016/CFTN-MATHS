@@ -11,6 +11,7 @@ from .bridges import BridgeOutput, ContextualMessageBridge, GatedCrossReceiver
 from .gpt_receiver import FrozenGPT2Tower
 from .math_tower import MathTower, MathTowerOutput
 from .model import causal_language_loss
+from .v1_3_fusion import SpecialistAwareMessageFusion
 
 
 WAKE_MODES = {
@@ -140,6 +141,14 @@ class V13MultiTowerModel(nn.Module):
                 for name in self.specialist_names
             }
         )
+        self.message_fusion = SpecialistAwareMessageFusion(
+            message_width=message_width,
+            message_tokens=int(bridge["message_tokens"]),
+            specialist_count=len(self.specialist_names),
+            maximum_rounds=int(config["runtime"]["maximum_callosal_rounds"]),
+            heads=int(bridge["attention_heads"]),
+            dropout=float(bridge["dropout"]),
+        )
         self.specialist_receivers = nn.ModuleDict()
         for name in self.specialist_names:
             tower = self.specialists[name]
@@ -187,6 +196,7 @@ class V13MultiTowerModel(nn.Module):
             "hardened_wake",
             "oracle_hard_adapter_recovery",
             "oracle_hard_adapter_continuation",
+            "oracle_hard_fusion_recovery",
             "hard_router_recovery",
         }
         if phase not in allowed:
@@ -194,7 +204,11 @@ class V13MultiTowerModel(nn.Module):
         self.trainable_phase = phase
         for parameter in self.parameters():
             parameter.requires_grad_(False)
-        if phase not in {"hardened_wake", "hard_router_recovery"}:
+        if phase == "oracle_hard_fusion_recovery":
+            for modules in (self.message_fusion, self.gpt_tower.receivers):
+                for parameter in modules.parameters():
+                    parameter.requires_grad_(True)
+        elif phase not in {"hardened_wake", "hard_router_recovery"}:
             for modules in (
                 self.request_bridges,
                 self.return_bridges,
@@ -222,14 +236,20 @@ class V13MultiTowerModel(nn.Module):
         self.gpt_tower.model.eval()
         for tower in self.specialists.values():
             tower.eval()
-        if self.trainable_phase in {"hardened_wake", "hard_router_recovery"}:
+        if self.trainable_phase in {
+            "hardened_wake",
+            "hard_router_recovery",
+            "oracle_hard_fusion_recovery",
+        }:
             for modules in (
                 self.request_bridges,
                 self.return_bridges,
                 self.specialist_receivers,
-                self.gpt_tower.receivers,
             ):
                 modules.eval()
+            if self.trainable_phase != "oracle_hard_fusion_recovery":
+                self.gpt_tower.receivers.eval()
+                self.message_fusion.eval()
         return self
 
     def trainable_parameter_count(self) -> int:
@@ -242,6 +262,7 @@ class V13MultiTowerModel(nn.Module):
             "return_bridges.",
             "specialist_receivers.",
             "gpt_tower.receivers.",
+            "message_fusion.",
             "wake_gates.",
             "wake_round_embeddings.",
             "halt_gate.",
@@ -263,6 +284,10 @@ class V13MultiTowerModel(nn.Module):
             name for name in current if name.startswith(self._collaboration_prefixes())
         }
         optional_legacy = {"wake_round_embeddings.weight"}
+        if not any(name.startswith("message_fusion.") for name in state):
+            optional_legacy.update(
+                name for name in expected if name.startswith("message_fusion.")
+            )
         missing = sorted(expected.difference(state).difference(optional_legacy))
         unexpected = sorted(set(state).difference(expected))
         incompatible = sorted(
@@ -579,6 +604,9 @@ class V13MultiTowerModel(nn.Module):
             accumulated_return_masks.extend(round_return_masks)
             combined = torch.cat(accumulated_returns, dim=1)
             message_mask = torch.cat(accumulated_return_masks, dim=1)
+            combined = self.message_fusion(
+                combined, message_mask, rounds=round_index + 1
+            )
             gpt_update = self.gpt_tower(
                 batch["gpt_prepass_input_ids"],
                 batch["gpt_prepass_attention_mask"],
@@ -609,6 +637,7 @@ class V13MultiTowerModel(nn.Module):
             activations_all.append(wake_activations)
         combined = torch.cat(accumulated_returns, dim=1)
         message_mask = torch.cat(accumulated_return_masks, dim=1)
+        combined = self.message_fusion(combined, message_mask, rounds=rounds_to_run)
         gpt_output = self.gpt_tower(
             batch["gpt_input_ids"],
             batch["gpt_attention_mask"],

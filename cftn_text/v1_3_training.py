@@ -512,7 +512,11 @@ def v1_3_objective(
         objective_mode == "router_calibration"
         or (objective_mode == "auto" and wake_mode == "hard_straight_through")
     )
-    oracle_hard_adapter = objective_mode == "oracle_hard_adapter"
+    oracle_hard_fusion = objective_mode == "oracle_hard_fusion"
+    oracle_hard_adapter = objective_mode in {
+        "oracle_hard_adapter",
+        "oracle_hard_fusion",
+    }
     weighted_task_loss = task_class_weights is not None and not routing_calibration_only
     compute_weight = (
         0.0
@@ -648,6 +652,7 @@ def v1_3_objective(
         "auxiliary_step": float(auxiliary),
         "routing_calibration_only": float(routing_calibration_only),
         "oracle_hard_adapter": float(oracle_hard_adapter),
+        "oracle_hard_fusion": float(oracle_hard_fusion),
     }
 
 
@@ -893,6 +898,70 @@ def _repair_sequential_orders(
         "source_sequential_examples": source_sequential,
         "sequential_orders": orders,
         "derived_record_ids_sha256": digest,
+    }
+
+
+def _limit_records_by_class(
+    records: list[dict[str, Any]],
+    limits: Mapping[str, int] | None,
+    *,
+    seed: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select a deterministic, class-stratified recovery subset.
+
+    The source manifest remains sealed. Ranking by the stable record id avoids
+    taking an order-dependent prefix and makes the exact subset reproducible.
+    """
+
+    source_counts: dict[str, int] = {}
+    for record in records:
+        task_class = str(record["task_class"])
+        source_counts[task_class] = source_counts.get(task_class, 0) + 1
+    if limits is None:
+        selected = list(records)
+    else:
+        unknown = sorted(set(limits).difference(source_counts))
+        if unknown:
+            raise ValueError(f"train_examples_by_class contains unknown classes: {unknown}")
+        normalized: dict[str, int] = {}
+        for task_class, raw_limit in limits.items():
+            limit = int(raw_limit)
+            if limit < 1:
+                raise ValueError("train_examples_by_class limits must be positive")
+            normalized[str(task_class)] = limit
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for record in records:
+            grouped.setdefault(str(record["task_class"]), []).append(record)
+        selected = []
+        for task_class in sorted(grouped):
+            values = grouped[task_class]
+            limit = normalized.get(task_class, len(values))
+            ranked = sorted(
+                values,
+                key=lambda record: hashlib.sha256(
+                    f"{seed}:{record['record_id']}".encode("utf-8")
+                ).digest(),
+            )
+            selected.extend(ranked[:limit])
+        selected.sort(
+            key=lambda record: hashlib.sha256(
+                f"{seed}:merged:{record['record_id']}".encode("utf-8")
+            ).digest()
+        )
+    selected_counts: dict[str, int] = {}
+    for record in selected:
+        task_class = str(record["task_class"])
+        selected_counts[task_class] = selected_counts.get(task_class, 0) + 1
+    digest = hashlib.sha256(
+        "\n".join(str(record["record_id"]) for record in selected).encode("utf-8")
+    ).hexdigest()
+    return selected, {
+        "format": "cftn_text_v1_3_class_subset_v1",
+        "seed": int(seed),
+        "source_counts": source_counts,
+        "selected_counts": selected_counts,
+        "selected_examples": len(selected),
+        "selected_record_ids_sha256": digest,
     }
 
 
@@ -1316,6 +1385,7 @@ def train_integration_phase(
     phase_index, phase = _phase(config, phase_name)
     objective_mode = str(phase.get("objective_mode", "auto"))
     router_recovery = objective_mode == "router_calibration"
+    fusion_recovery = objective_mode == "oracle_hard_fusion"
     selection_mode = str(phase.get("selection_mode", "legacy"))
     adapter_selection = selection_mode == "adapter_recovery"
     conditional_execution = phase.get("conditional_execution")
@@ -1366,6 +1436,12 @@ def train_integration_phase(
         provenance["phase_source_checkpoint_sha256"] = file_sha256(previous)
     model.set_trainable_phase(phase_name)
     settings = config["integration_training"]
+    phase_batch_size = int(phase.get("batch_size", settings["batch_size"]))
+    phase_eval_batch_size = int(
+        phase.get("eval_batch_size", settings["eval_batch_size"])
+    )
+    if phase_batch_size < 1 or phase_eval_batch_size < 1:
+        raise ValueError("phase batch sizes must be positive")
     phase_num_workers = int(phase.get("num_workers", settings["num_workers"]))
     if phase_num_workers < 0:
         raise ValueError("num_workers must be non-negative")
@@ -1396,6 +1472,14 @@ def train_integration_phase(
     train_records = [
         record for record in all_train_records if record["task_class"] in train_classes
     ]
+    train_records, train_subset = _limit_records_by_class(
+        train_records,
+        phase.get("train_examples_by_class"),
+        seed=seed + phase_index,
+    )
+    if set(train_subset["selected_counts"]) != train_classes:
+        missing = sorted(train_classes.difference(train_subset["selected_counts"]))
+        raise RuntimeError(f"V1.3 recovery subset omitted training classes: {missing}")
     validation_records = [
         record
         for record in all_validation_records
@@ -1403,6 +1487,7 @@ def train_integration_phase(
     ]
     if not train_records or not validation_records:
         raise RuntimeError("V1.3 phase class filtering produced an empty split")
+    provenance["train_subset"] = train_subset
     collator = V13JointCollator(
         ByteMathTokenizer(),
         gpt_tokenizer,
@@ -1436,16 +1521,6 @@ def train_integration_phase(
             )
         if any(name.startswith("halt_gate.") for name, _ in named):
             raise RuntimeError("router calibration must keep the halt gate frozen")
-    gate_parameters = [
-        value
-        for name, value in named
-        if "gate" in name
-        or name.startswith("wake_gates")
-        or name.startswith("wake_round_embeddings")
-        or name.startswith("halt_gate")
-    ]
-    gate_ids = {id(value) for value in gate_parameters}
-    other_parameters = [value for _, value in named if id(value) not in gate_ids]
     phase_learning_rate = float(phase.get("learning_rate", settings["learning_rate"]))
     gate_learning_rate = float(
         phase.get(
@@ -1457,22 +1532,70 @@ def train_integration_phase(
         )
     )
     optimizer_groups: list[dict[str, Any]] = []
-    if other_parameters:
-        optimizer_groups.append(
-            {
-                "params": other_parameters,
-                "lr": phase_learning_rate,
-                "group_name": "bridges_and_receivers",
-            }
+    if fusion_recovery:
+        unexpected = sorted(
+            name
+            for name, _ in named
+            if not name.startswith(("message_fusion.", "gpt_tower.receivers."))
         )
-    if gate_parameters:
-        optimizer_groups.append(
-            {
-                "params": gate_parameters,
-                "lr": gate_learning_rate,
-                "group_name": "gates",
-            }
+        if unexpected:
+            raise RuntimeError(
+                "fusion recovery may train only fusion and GPT receivers; "
+                f"unexpected trainable parameters: {unexpected}"
+            )
+        fusion_parameters = [
+            value for name, value in named if name.startswith("message_fusion.")
+        ]
+        receiver_parameters = [
+            value
+            for name, value in named
+            if name.startswith("gpt_tower.receivers.")
+        ]
+        if not fusion_parameters or not receiver_parameters:
+            raise RuntimeError("fusion recovery is missing a required optimizer component")
+        optimizer_groups.extend(
+            [
+                {
+                    "params": fusion_parameters,
+                    "lr": float(phase.get("fusion_learning_rate", phase_learning_rate)),
+                    "group_name": "message_fusion",
+                },
+                {
+                    "params": receiver_parameters,
+                    "lr": float(
+                        phase.get("receiver_learning_rate", phase_learning_rate)
+                    ),
+                    "group_name": "gpt_receivers",
+                },
+            ]
         )
+    else:
+        gate_parameters = [
+            value
+            for name, value in named
+            if "gate" in name
+            or name.startswith("wake_gates")
+            or name.startswith("wake_round_embeddings")
+            or name.startswith("halt_gate")
+        ]
+        gate_ids = {id(value) for value in gate_parameters}
+        other_parameters = [value for _, value in named if id(value) not in gate_ids]
+        if other_parameters:
+            optimizer_groups.append(
+                {
+                    "params": other_parameters,
+                    "lr": phase_learning_rate,
+                    "group_name": "bridges_and_receivers",
+                }
+            )
+        if gate_parameters:
+            optimizer_groups.append(
+                {
+                    "params": gate_parameters,
+                    "lr": gate_learning_rate,
+                    "group_name": "gates",
+                }
+            )
     if (phase_name == "hardened_wake" or router_recovery) and [
         group["group_name"] for group in optimizer_groups
     ] != ["gates"]:
@@ -1490,13 +1613,33 @@ def train_integration_phase(
             "conditional_specialist_execution": True,
         }
         if phase_name == "hardened_wake" or router_recovery
-        else None
+        else (
+            {
+                "objective": "oracle_hard_fusion",
+                "trainable_components": ["message_fusion", "gpt_receivers"],
+                "frozen_components": [
+                    "specialist_towers",
+                    "request_bridges",
+                    "return_bridges",
+                    "specialist_receivers",
+                    "wake_gates",
+                    "halt_gate",
+                ],
+                "conditional_specialist_execution": True,
+                "hard_halt_enabled": False,
+                "zero_update_candidate": bool(
+                    phase.get("zero_update_candidate", False)
+                ),
+            }
+            if fusion_recovery
+            else None
+        )
     )
     optimizer = AdamW(
         optimizer_groups,
         weight_decay=float(phase.get("weight_decay", settings["weight_decay"])),
     )
-    steps_per_epoch = max(1, math.ceil(len(train_records) / int(settings["batch_size"])))
+    steps_per_epoch = max(1, math.ceil(len(train_records) / phase_batch_size))
     total_steps = int(phase["max_epochs"]) * steps_per_epoch
     scheduler = make_scheduler(
         optimizer,
@@ -1505,7 +1648,7 @@ def train_integration_phase(
         minimum_ratio=float(
             phase.get("minimum_learning_rate", settings["minimum_learning_rate"])
         )
-        / max(phase_learning_rate, gate_learning_rate),
+        / max(float(group["lr"]) for group in optimizer_groups),
     )
     dtype = precision_dtype(settings["precision"], device)
     scaler = make_scaler(device, dtype)
@@ -1515,6 +1658,7 @@ def train_integration_phase(
     patience = 0
     eligible_best_exists = False
     best_metrics: dict[str, Any] = {}
+    zero_update_metrics: dict[str, Any] | None = None
     if hardening_baseline is not None and not resume:
         baseline_acceptance = hardening_acceptance(
             hardening_baseline["hard_metrics"], hardening_baseline, settings
@@ -1571,6 +1715,116 @@ def train_integration_phase(
             )
             atomic_torch_save(baseline_payload, artifact / "checkpoint_epoch_0000.pth")
             atomic_torch_save(baseline_payload, best_path)
+    elif bool(phase.get("zero_update_candidate", False)) and not resume:
+        baseline_loader = _loader(
+            V13Dataset(validation_records),
+            collator,
+            batch_size=phase_eval_batch_size,
+            shuffle=False,
+            seed=seed,
+            epoch=0,
+            num_workers=phase_num_workers,
+        )
+        baseline_validation = evaluate_joint_teacher_forcing(
+            model,
+            baseline_loader,
+            device,
+            dtype,
+            wake_mode=wake_mode,
+            maximum_rounds=maximum_rounds,
+            causal_batches=math.ceil(
+                int(settings["validation_causal_examples"])
+                / phase_eval_batch_size
+            ),
+            max_batches=max_batches,
+            conditional_execution=conditional_execution,
+            apply_halt=apply_halt,
+        )
+        if calibration is not None:
+            baseline_validation = apply_protocol_aware_adapter_metrics(
+                baseline_validation, calibration
+            )
+        baseline_acceptance = (
+            adapter_recovery_acceptance(
+                baseline_validation, phase.get("adapter_acceptance", {})
+            )
+            if adapter_selection
+            else None
+        )
+        baseline_selection = integration_selection_score(
+            baseline_validation,
+            hardening=baseline_acceptance,
+            selection_mode=selection_mode,
+            focus_classes=phase.get("selection_focus_classes"),
+        )
+        baseline_eligible = (
+            baseline_acceptance is None
+            or baseline_acceptance["gates"]["pass"] is True
+        )
+        zero_update_metrics = {
+            "epoch": 0,
+            "global_step": 0,
+            "phase": phase_name,
+            "wake_mode": wake_mode,
+            "maximum_rounds": maximum_rounds,
+            "train": None,
+            "validation": baseline_validation,
+            "selection_metric": baseline_selection,
+            "checkpoint_eligible": baseline_eligible,
+            "hardening_acceptance": baseline_acceptance,
+            "best_metric": baseline_selection if baseline_eligible else None,
+            "patience": 0,
+            "learning_rates": {
+                str(group.get("group_name", index)): float(group["lr"])
+                for index, group in enumerate(optimizer.param_groups)
+            },
+            "trainable_parameters": model.trainable_parameter_count(),
+            "trainable_parameter_names": [name for name, _ in named],
+            "optimizer_group_names": [
+                str(group.get("group_name")) for group in optimizer.param_groups
+            ],
+            "candidate_source": "phase_source_zero_update",
+            "hardening_policy": hardening_policy,
+            "objective_mode": objective_mode,
+            "selection_mode": selection_mode,
+            "train_task_classes": sorted(train_classes),
+            "validation_task_classes": sorted(allowed_classes),
+            "task_class_weights": task_class_weights,
+            "batch_size": phase_batch_size,
+            "eval_batch_size": phase_eval_batch_size,
+            "train_subset": train_subset,
+            "num_workers": phase_num_workers,
+            "recovery_data": recovery_data,
+            "gpu": gpu_status(),
+        }
+        append_jsonl(zero_update_metrics, metrics_path)
+        if baseline_eligible:
+            best_metric = baseline_selection
+            eligible_best_exists = True
+            best_metrics = dict(zero_update_metrics)
+            baseline_payload = build_checkpoint(
+                stage=f"v1_3_{phase_name}",
+                epoch=0,
+                global_step=0,
+                model_state=model.collaboration_state_dict(),
+                optimizer_state=optimizer.state_dict(),
+                scheduler_state=scheduler.state_dict(),
+                scaler_state=scaler.state_dict() if scaler.is_enabled() else None,
+                config_sha256=config["_meta"]["sha256"],
+                manifest_sha256=manifest["manifest_sha256"],
+                best_metric=best_metric,
+                patience=0,
+                extra={
+                    "metrics": zero_update_metrics,
+                    "best_metrics": best_metrics,
+                    "provenance": provenance,
+                    "zero_update_candidate": True,
+                },
+            )
+            atomic_torch_save(
+                baseline_payload, artifact / "checkpoint_epoch_0000.pth"
+            )
+            atomic_torch_save(baseline_payload, best_path)
     if resume and latest_checkpoint(artifact):
         checkpoint = load_checkpoint(
             latest_checkpoint(artifact),
@@ -1601,6 +1855,13 @@ def train_integration_phase(
             "maximum_rounds": maximum_rounds,
         },
     )
+    if zero_update_metrics is not None:
+        tracker.log(
+            zero_update_metrics,
+            global_step=0,
+            epoch=0,
+            event="zero_update_candidate",
+        )
     final_metrics: dict[str, Any] = dict(best_metrics)
     try:
         for epoch in range(start_epoch, int(phase["max_epochs"]) + 1):
@@ -1611,7 +1872,7 @@ def train_integration_phase(
             train_loader = _loader(
                 V13Dataset(train_records),
                 collator,
-                batch_size=int(settings["batch_size"]),
+                batch_size=phase_batch_size,
                 shuffle=True,
                 seed=seed + phase_index,
                 epoch=epoch,
@@ -1679,7 +1940,7 @@ def train_integration_phase(
             validation_loader = _loader(
                 V13Dataset(validation_records),
                 collator,
-                batch_size=int(settings["eval_batch_size"]),
+                batch_size=phase_eval_batch_size,
                 shuffle=False,
                 seed=seed,
                 epoch=0,
@@ -1687,7 +1948,7 @@ def train_integration_phase(
             )
             causal_batches = math.ceil(
                 int(settings["validation_causal_examples"])
-                / int(settings["eval_batch_size"])
+                / phase_eval_batch_size
             )
             validation = evaluate_joint_teacher_forcing(
                 model,
@@ -1772,6 +2033,9 @@ def train_integration_phase(
                 "train_task_classes": sorted(train_classes),
                 "validation_task_classes": sorted(allowed_classes),
                 "task_class_weights": task_class_weights,
+                "batch_size": phase_batch_size,
+                "eval_batch_size": phase_eval_batch_size,
+                "train_subset": train_subset,
                 "num_workers": phase_num_workers,
                 "recovery_data": recovery_data,
                 "timing": {
@@ -1863,10 +2127,22 @@ def train_integration_phase(
             "trainable_components": (
                 ["wake_gates", "wake_round_embeddings"]
                 if router_recovery
-                else (["wake_gates"] if phase_name == "hardened_wake" else None)
+                else (
+                    ["wake_gates"]
+                    if phase_name == "hardened_wake"
+                    else (
+                        ["message_fusion", "gpt_receivers"]
+                        if fusion_recovery
+                        else None
+                    )
+                )
             ),
             "halt_gate_frozen": (
-                True if phase_name == "hardened_wake" or router_recovery else None
+                True
+                if phase_name == "hardened_wake"
+                or router_recovery
+                or fusion_recovery
+                else None
             ),
         },
         "hardening_policy": hardening_policy,
