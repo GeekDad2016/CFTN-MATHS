@@ -50,7 +50,8 @@ if [[ -d .git && "${CFTN_SKIP_GIT_UPDATE:-0}" != "1" \
     exit 1
   fi
   echo "Updating ${expected_branch} from origin..."
-  git pull --ff-only origin "${expected_branch}"
+  git fetch origin "${expected_branch}"
+  git merge --ff-only "origin/${expected_branch}"
   export CFTN_BOOTSTRAP_REEXEC=1
   exec bash "${script_dir}/start_v2_runpod.sh" "$@"
 fi

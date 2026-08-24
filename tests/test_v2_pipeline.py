@@ -124,6 +124,9 @@ def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
     assert "PIP_CACHE_DIR" in script
     assert 'argument}" == "--no-wandb"' in script
     assert 'argument}" == "--preflight-only"' in script
+    assert 'git fetch origin "${expected_branch}"' in script
+    assert 'git merge --ff-only "origin/${expected_branch}"' in script
+    assert "git pull --ff-only" not in script
     assert "Preflight-only mode complete; training was not launched." in script
     assert "/workspace/volume" not in script
     assert "*.egg-info/" in (repository / ".gitignore").read_text(encoding="utf-8")
