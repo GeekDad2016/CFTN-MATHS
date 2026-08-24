@@ -18,7 +18,8 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "teacher_forced_token_accuracy" in PAGE
     assert "generation.accuracy" in PAGE
     assert "x!==null&&x!==undefined&&x!==''" in PAGE
-    assert "refreshes every 10 seconds" in PAGE
+    assert "refreshes every 30 seconds" in PAGE
+    assert "setInterval(load,30000)" in PAGE
 
 
 def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
