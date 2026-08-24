@@ -79,6 +79,27 @@ locally without downgrading PyTorch's SymPy.
 
 ## RunPod launch
 
+### One-command Pod reopen
+
+The persistent volume contains a safe bootstrap at `/workspace/cftn-start.sh`.
+After opening or replacing a Pod, run this once in the RunPod web terminal:
+
+```bash
+bash /workspace/cftn-start.sh
+```
+
+It restores the registered public SSH key from persistent storage, starts
+`sshd` when needed, fast-forwards `/workspace/CFTN-MATHS`, recreates the
+disposable `/opt` environment, and runs a GPU/storage/model preflight. Its
+default mode never starts training. Use `--access-only` to skip dependency and
+preflight setup, or `--launch` to explicitly launch/resume the V2 pipeline.
+The local connection template is also retained at
+`/workspace/cftn-text/ssh/README.txt`; substitute the current public IP and SSH
+port shown by RunPod because those endpoint values may change between Pods.
+
+The private SSH key remains only on the trusted Windows machine. The persistent
+volume stores only its non-secret public key.
+
 ### Existing pod / Git checkout (simple launch)
 
 On a new RunPod pod with the repository already cloned, the phone-friendly

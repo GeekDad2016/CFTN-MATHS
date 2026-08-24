@@ -120,7 +120,17 @@ if [[ ! -x "${venv_root}/bin/python" ]]; then
 fi
 python_bin="${venv_root}/bin/python"
 
-if [[ -z "${WANDB_API_KEY:-}" ]]; then
+wandb_required=1
+preflight_only=0
+for argument in "$@"; do
+  if [[ "${argument}" == "--no-wandb" ]]; then
+    wandb_required=0
+  elif [[ "${argument}" == "--preflight-only" ]]; then
+    preflight_only=1
+  fi
+done
+
+if [[ "${wandb_required}" == "1" && -z "${WANDB_API_KEY:-}" ]]; then
   if [[ -t 0 ]]; then
     echo "WANDB_API_KEY was not supplied as a RunPod environment variable."
     read -r -s -p "Paste the W&B API key (input is hidden): " WANDB_API_KEY
@@ -139,12 +149,14 @@ fi
 # Credentials copied through notebooks, PowerShell pipes, or secret editors can
 # carry a trailing CR/LF even when the visible key looks correct. W&B rejects
 # leading or trailing whitespace, so normalize it once at the process boundary.
-WANDB_API_KEY="$(printf '%s' "${WANDB_API_KEY}" | tr -d '[:space:]')"
-if [[ -z "${WANDB_API_KEY}" ]]; then
-  echo "WANDB_API_KEY contained only whitespace." >&2
-  exit 1
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+  WANDB_API_KEY="$(printf '%s' "${WANDB_API_KEY}" | tr -d '[:space:]')"
+  if [[ -z "${WANDB_API_KEY}" && "${wandb_required}" == "1" ]]; then
+    echo "WANDB_API_KEY contained only whitespace." >&2
+    exit 1
+  fi
+  export WANDB_API_KEY
 fi
-export WANDB_API_KEY
 
 echo "Installing CFTN-Text and all declared dependencies..."
 pip_install_args=()
@@ -177,6 +189,11 @@ echo "  W&B project/group: ${WANDB_PROJECT}/${WANDB_GROUP}"
 echo
 echo "Running CUDA, BF16, storage, configuration, and W&B preflight..."
 "${python_bin}" run_v2.py --preflight-only "$@"
+
+if [[ "${preflight_only}" == "1" ]]; then
+  echo "Preflight-only mode complete; training was not launched."
+  exit 0
+fi
 
 echo
 echo "Preflight passed. Starting or safely resuming the 19-stage V2 pipeline..."

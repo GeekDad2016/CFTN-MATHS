@@ -122,6 +122,9 @@ def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
     assert 'CFTN_STORAGE_ROOT:-/workspace/cftn-text' in script
     assert "CFTN_ALLOW_EPHEMERAL_STORAGE" in script
     assert "PIP_CACHE_DIR" in script
+    assert 'argument}" == "--no-wandb"' in script
+    assert 'argument}" == "--preflight-only"' in script
+    assert "Preflight-only mode complete; training was not launched." in script
     assert "/workspace/volume" not in script
     assert "*.egg-info/" in (repository / ".gitignore").read_text(encoding="utf-8")
 
@@ -131,6 +134,7 @@ def test_runpod_defaults_keep_all_durable_state_on_workspace_volume():
     durable_files = (
         ".env.example",
         "RUNPOD_V2.md",
+        "scripts/bootstrap_runpod_access.sh",
         "scripts/runpod_entrypoint.sh",
         "start_v2_runpod.sh",
         "tools/check_v2_heartbeat.py",
@@ -146,6 +150,22 @@ def test_runpod_defaults_keep_all_durable_state_on_workspace_volume():
     )
     assert "CFTN_REPOSITORY_ROOT:-/workspace/CFTN-MATHS" in entrypoint
     assert "verify_durable_mount" in entrypoint
+
+
+def test_persistent_bootstrap_is_safe_by_default_and_launch_is_explicit():
+    repository = Path(__file__).parents[1]
+    script = (repository / "scripts" / "bootstrap_runpod_access.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'mode="prepare"' in script
+    assert "--access-only" in script
+    assert "--launch" in script
+    assert 'start_v2_runpod.sh" --preflight-only --no-wandb' in script
+    assert 'mode}" == "launch"' in script
+    assert "/workspace/cftn-start.sh" in script
+    assert "id_ed25519_runpod_cftn.pub" in script
+    assert "ssh-ed25519 " not in script
+    assert "The default mode never starts training." in script
 
 
 def test_pipeline_lock_rejects_a_duplicate_and_releases_after_exit(tmp_path):
