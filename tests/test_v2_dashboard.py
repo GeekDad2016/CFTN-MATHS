@@ -17,6 +17,7 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Raw artifacts for every stage" in PAGE
     assert "teacher_forced_token_accuracy" in PAGE
     assert "generation.accuracy" in PAGE
+    assert "x!==null&&x!==undefined&&x!==''" in PAGE
     assert "refreshes every 10 seconds" in PAGE
 
 

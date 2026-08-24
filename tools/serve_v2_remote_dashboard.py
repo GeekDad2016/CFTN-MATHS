@@ -257,9 +257,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport"
 <div class="grid"><div class="card"><h2>Current stdout</h2><pre id="stdout"></pre></div><div class="card"><h2>Current stderr</h2><pre id="stderr"></pre></div></div>
 <script>
 const $=x=>document.getElementById(x), esc=x=>String(x??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const n=x=>Number.isFinite(Number(x))?Number(x).toLocaleString(undefined,{maximumFractionDigits:4}):'—';
-const pct=x=>Number.isFinite(Number(x))?(100*Number(x)).toFixed(2)+'%':'—';
-function dur(x){x=Number(x);if(!Number.isFinite(x))return '—';let h=Math.floor(x/3600),m=Math.floor((x%3600)/60),s=Math.floor(x%60);return (h?h+'h ':'')+(m?m+'m ':'')+s+'s'}
+const numeric=x=>x!==null&&x!==undefined&&x!==''&&Number.isFinite(Number(x));
+const n=x=>numeric(x)?Number(x).toLocaleString(undefined,{maximumFractionDigits:4}):'—';
+const pct=x=>numeric(x)?(100*Number(x)).toFixed(2)+'%':'—';
+function dur(x){if(!numeric(x))return '—';x=Number(x);let h=Math.floor(x/3600),m=Math.floor((x%3600)/60),s=Math.floor(x%60);return (h?h+'h ':'')+(m?m+'m ':'')+s+'s'}
 function tbl(rows,heads,raw=false){return rows?.length?'<div style="overflow:auto"><table><tr>'+heads.map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr>'+rows.map(r=>'<tr>'+r.map(x=>'<td'+(String(x).length>45?' class="wrap"':'')+'>'+(raw?x:esc(x))+'</td>').join('')+'</tr>').join('')+'</table></div>':'<span class="muted">None yet.</span>'}
 function get(o,path,fallback=null){for(const k of path.split('.')){if(o==null||!(k in o))return fallback;o=o[k]}return o}
 function latest(a){return a?.length?a[a.length-1]:{}}
