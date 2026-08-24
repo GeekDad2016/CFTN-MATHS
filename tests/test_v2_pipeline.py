@@ -119,7 +119,33 @@ def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
     assert "tr -d '[:space:]'" in script
     assert "WANDB_API_KEY contained only whitespace" in script
     assert "CFTN_V2_MULTI_DATA_ROOT" in script
+    assert 'CFTN_STORAGE_ROOT:-/workspace/cftn-text' in script
+    assert "CFTN_ALLOW_EPHEMERAL_STORAGE" in script
+    assert "PIP_CACHE_DIR" in script
+    assert "/workspace/volume" not in script
     assert "*.egg-info/" in (repository / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_runpod_defaults_keep_all_durable_state_on_workspace_volume():
+    repository = Path(__file__).parents[1]
+    durable_files = (
+        ".env.example",
+        "RUNPOD_V2.md",
+        "scripts/runpod_entrypoint.sh",
+        "start_v2_runpod.sh",
+        "tools/check_v2_heartbeat.py",
+        "tools/watch_v2_progress.py",
+    )
+    for relative_path in durable_files:
+        text = (repository / relative_path).read_text(encoding="utf-8")
+        assert "/workspace/volume" not in text, relative_path
+        assert "/workspace/cftn-text" in text, relative_path
+
+    entrypoint = (repository / "scripts/runpod_entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "CFTN_REPOSITORY_ROOT:-/workspace/CFTN-MATHS" in entrypoint
+    assert "verify_durable_mount" in entrypoint
 
 
 def test_pipeline_lock_rejects_a_duplicate_and_releases_after_exit(tmp_path):

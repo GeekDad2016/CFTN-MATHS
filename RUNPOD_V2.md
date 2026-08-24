@@ -90,7 +90,8 @@ bash start_v2_runpod.sh
 ```
 
 The bootstrap fast-forwards a clean `main` checkout, reopens its updated copy,
-sets all persistent `/workspace/volume/cftn-text` paths, installs the project
+verifies that both the checkout and durable state resolve to a non-root mount,
+sets all persistent `/workspace/cftn-text` paths, installs the project
 and dependencies, runs the Qwen revision/dense/chat-template plus
 CUDA/BF16/storage/W&B preflight, and starts the normal resumable launcher.
 The preflight downloads only Qwen configuration/tokenizer files, not model
@@ -103,6 +104,15 @@ second launcher cannot duplicate the run. The lock is released automatically
 if the process or pod dies; running `bash start_v2_runpod.sh` again validates
 completed artifacts and resumes retained checkpoints.
 
+On the registered pod, `/workspace` is the persistent RunPod volume (exposed
+as a FUSE-backed mount). Keep the Git checkout, datasets, Hugging Face and pip
+caches, checkpoints, W&B files, reports, and pipeline locks there. The default
+virtual environment remains under `/opt` because it is reproducible and local
+disk avoids high metadata latency; a replacement container recreates it from
+the committed `pyproject.toml`. The launcher refuses repository or storage
+paths on the ephemeral container root unless
+`CFTN_ALLOW_EPHEMERAL_STORAGE=1` is explicitly set for a disposable smoke test.
+
 Advanced path, W&B project/group/entity, Python executable, branch, and storage
 overrides remain available through the variables in `.env.example`. Set
 `CFTN_SKIP_GIT_UPDATE=1` only for an intentionally pinned checkout.
@@ -112,7 +122,7 @@ are recorded when present but never gate this fresh V2 run.
 
 ### Container plus authenticated monitoring API
 
-1. Build `Dockerfile.runpod` and attach a persistent volume at `/workspace/volume`.
+1. Build `Dockerfile.runpod` and attach persistent storage at `/workspace`.
 2. Add `WANDB_API_KEY` and a random `CFTN_CONTROL_API_TOKEN` (at least 32
    characters) as RunPod secrets. Do not put either value in the image, YAML,
    command line, or Git.

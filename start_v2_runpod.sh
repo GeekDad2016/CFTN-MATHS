@@ -55,11 +55,12 @@ if [[ -d .git && "${CFTN_SKIP_GIT_UPDATE:-0}" != "1" \
   exec bash "${script_dir}/start_v2_runpod.sh" "$@"
 fi
 
-storage_root="${CFTN_STORAGE_ROOT:-/workspace/volume/cftn-text}"
+storage_root="${CFTN_STORAGE_ROOT:-/workspace/cftn-text}"
 export CFTN_DATA_ROOT="${CFTN_DATA_ROOT:-${storage_root}/data/v2_broad_math_400k_r3}"
 export CFTN_V2_MULTI_DATA_ROOT="${CFTN_V2_MULTI_DATA_ROOT:-${storage_root}/data/v2_multi_specialist_r2}"
 export CFTN_ARTIFACT_ROOT="${CFTN_ARTIFACT_ROOT:-${storage_root}/artifacts/v2_broad_math_400k_r3}"
 export HF_HOME="${HF_HOME:-${storage_root}/cache/huggingface}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-${storage_root}/cache/pip}"
 export WANDB_DIR="${WANDB_DIR:-${CFTN_ARTIFACT_ROOT}/wandb}"
 export WANDB_PROJECT="${WANDB_PROJECT:-cftn-text-v2}"
 export WANDB_GROUP="${WANDB_GROUP:-scaled-multi-specialist-r3}"
@@ -67,15 +68,47 @@ export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 
 mkdir -p \
+  "${storage_root}" \
   "${CFTN_DATA_ROOT}" \
   "${CFTN_V2_MULTI_DATA_ROOT}" \
   "${CFTN_ARTIFACT_ROOT}" \
   "${HF_HOME}" \
+  "${PIP_CACHE_DIR}" \
   "${WANDB_DIR}"
 
-# Keep the virtual environment on the Pod's fast local disk. RunPod network
-# volumes are appropriate for source, data, caches, and checkpoints, but their
-# metadata latency can make installation into /workspace appear to hang.
+verify_durable_mount() {
+  local label="$1"
+  local path="$2"
+  local mount_target
+  local mount_type
+
+  if ! command -v findmnt >/dev/null 2>&1; then
+    if [[ "${CFTN_ALLOW_EPHEMERAL_STORAGE:-0}" == "1" ]]; then
+      echo "WARNING: findmnt is unavailable; durability check skipped for ${label}." >&2
+      return
+    fi
+    echo "findmnt is required to verify persistent RunPod storage for ${label}." >&2
+    exit 1
+  fi
+
+  mount_target="$(findmnt -n -o TARGET -T "${path}")"
+  mount_type="$(findmnt -n -o FSTYPE -T "${path}")"
+  if [[ "${mount_target}" == "/" \
+      && "${CFTN_ALLOW_EPHEMERAL_STORAGE:-0}" != "1" ]]; then
+    echo "Refusing ephemeral ${label} path ${path}; it resolves to the container root filesystem." >&2
+    echo "Use a /workspace path, or set CFTN_ALLOW_EPHEMERAL_STORAGE=1 only for a disposable smoke test." >&2
+    exit 1
+  fi
+  echo "  ${label} mount: ${mount_target} (${mount_type})"
+}
+
+echo "Verifying durable RunPod paths..."
+verify_durable_mount "repository" "${script_dir}"
+verify_durable_mount "storage" "${storage_root}"
+
+# Keep only the reproducible virtual environment on the Pod's fast local disk.
+# Source, data, caches, checkpoints, and reports are durable under /workspace;
+# a replacement container can recreate this environment from pyproject.toml.
 venv_root="${CFTN_VENV_ROOT:-/opt/cftn-v2-venv}"
 if [[ -e "${venv_root}" && ! -x "${venv_root}/bin/python" ]]; then
   echo "CFTN_VENV_ROOT exists but is not a usable virtual environment: ${venv_root}" >&2
@@ -134,9 +167,12 @@ echo "CFTN-Text V2 bootstrap"
 echo "  revision: ${revision}"
 echo "  Python: ${python_bin}"
 echo "  virtual environment: ${venv_root}"
+echo "  persistent storage: ${storage_root}"
 echo "  math data: ${CFTN_DATA_ROOT}"
 echo "  multi-specialist data: ${CFTN_V2_MULTI_DATA_ROOT}"
 echo "  artifacts: ${CFTN_ARTIFACT_ROOT}"
+echo "  Hugging Face cache: ${HF_HOME}"
+echo "  pip cache: ${PIP_CACHE_DIR}"
 echo "  W&B project/group: ${WANDB_PROJECT}/${WANDB_GROUP}"
 echo
 echo "Running CUDA, BF16, storage, configuration, and W&B preflight..."

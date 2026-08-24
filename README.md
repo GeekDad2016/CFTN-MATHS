@@ -266,7 +266,7 @@ resumable launch are combined into one phone-friendly command:
 bash start_v2_runpod.sh
 ```
 
-The launcher executes 17 resumable stages from broad-math data preparation
+The launcher executes 19 resumable stages from broad-math data preparation
 through the sealed multi-specialist causal report. It requires neither a V1.3
 checkpoint nor a V1.3 report because all V2 collaboration modules are trained
 afresh under the V2 revision.
