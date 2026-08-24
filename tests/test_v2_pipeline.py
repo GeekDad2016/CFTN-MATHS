@@ -50,6 +50,14 @@ def test_v2_plan_is_ordered_resumable_end_to_end():
     assert config["math_training"]["minimum_epochs"] == 60
     assert config["math_training"]["early_stop_patience"] == 10
     assert config["math_training"]["early_stopping_enabled"] is True
+    assert config["math_training"]["generation_validation"] == {
+        "enabled": True,
+        "every_epochs": 1,
+        "examples": 96,
+        "batch_size": 16,
+        "max_new_tokens": 512,
+        "failure_examples": 8,
+    }
     assert [
         phase["through_epoch"] for phase in config["data"]["curriculum"]["phases"]
     ] == [10, 30, 100]

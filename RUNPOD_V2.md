@@ -154,9 +154,20 @@ are recorded when present but never gate this fresh V2 run.
 
 To inspect V2 without asking Codex for another status check, run the dashboard
 on the trusted Windows machine. It opens read-only SSH sessions to the Pod and
-shows pipeline stage/history, data progress, V2 processes, A100 telemetry,
-checkpoint inventory, W&B run metadata, and current stage logs. It has no
-control endpoints and redacts sensitive JSON fields before serving the browser.
+shows pipeline stage/history, current epoch/batch/step/ETA, rolling training
+metrics, every completed validation epoch, accuracy and loss trend charts,
+curriculum state, early-stopping state, per-source/family/difficulty validation
+breakdowns, compact native-generation accuracy and failure examples, data
+progress, V2 processes, GPU telemetry, checkpoint inventory, W&B run metadata,
+raw stage artifacts, and current stage logs. It has no control endpoints and
+redacts sensitive JSON fields before serving the browser.
+
+The active R4 process was launched before cohort and per-epoch generation
+metrics were added. Its existing aggregate history is still displayed
+immediately; the additional breakdown and native-generation fields are emitted
+by newly started or explicitly resumed trainers. The final post-training
+checkpoint-selection and specialist evaluations remain larger independent
+checks and are also surfaced when their pipeline stages run.
 
 ```powershell
 cd C:\CFTN\ctfn_text_build

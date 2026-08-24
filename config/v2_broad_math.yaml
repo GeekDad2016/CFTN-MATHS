@@ -246,6 +246,16 @@ math_training:
   num_workers: 4
   report_every_steps: 250
   keep_latest_checkpoints: 12
+  # A compact native greedy-generation panel runs after each teacher-forced
+  # validation. The final checkpoint selector still performs its larger,
+  # independent 512-example generation comparison.
+  generation_validation:
+    enabled: true
+    every_epochs: 1
+    examples: 96
+    batch_size: 16
+    max_new_tokens: 512
+    failure_examples: 8
 
 bridge_training:
   batch_size: 12

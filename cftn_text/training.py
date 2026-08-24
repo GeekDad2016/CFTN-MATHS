@@ -31,6 +31,11 @@ from .data_generator import audit_manifest, file_sha256, prepare_manifests
 from .dataset import CFTNCollator, EquationDataset, MathCollator
 from .gpt_receiver import FrozenCausalLMTower
 from .math_tower import MathTower
+from .math_validation import (
+    evaluate_generation_panel,
+    summarize_teacher_forced_breakdowns,
+    update_teacher_forced_breakdowns,
+)
 from .metrics import masked_token_statistics, summarize_gate
 from .model import CFTNTextModel, causal_language_loss, optional_answer_loss
 from .tokenizer import ByteMathTokenizer
@@ -453,7 +458,7 @@ def evaluate_math_tower(
     dtype: torch.dtype | None,
     answer_head_weight: float,
     max_batches: int | None = None,
-) -> dict[str, float | int]:
+) -> dict[str, Any]:
     model.eval()
     loss_sum = 0.0
     lm_loss_sum = 0.0
@@ -463,6 +468,7 @@ def evaluate_math_tower(
     token_correct = 0
     token_total = 0
     sequence_correct = 0
+    breakdown_sums: dict[str, dict[str, dict[str, float | int]]] = {}
     for batch_index, raw_batch in enumerate(loader):
         if max_batches is not None and batch_index >= max_batches:
             break
@@ -490,6 +496,12 @@ def evaluate_math_tower(
         token_correct += correct
         token_total += total
         sequence_correct += sequence
+        update_teacher_forced_breakdowns(
+            breakdown_sums,
+            logits=output.logits,
+            labels=batch["math_labels"],
+            records=list(batch["records"]),
+        )
     if not examples:
         raise RuntimeError("math evaluation loader produced no examples")
     return {
@@ -501,6 +513,7 @@ def evaluate_math_tower(
         "answer_head_examples": answer_valid,
         "teacher_forced_token_accuracy": token_correct / max(1, token_total),
         "teacher_forced_sequence_accuracy": sequence_correct / examples,
+        "breakdowns": summarize_teacher_forced_breakdowns(breakdown_sums),
     }
 
 
@@ -717,6 +730,32 @@ def train_math_tower(
                 float(settings["answer_head_weight"]),
                 max_batches=max_batches,
             )
+            generation_settings = settings.get("generation_validation", {})
+            generation_validation: dict[str, Any] | None = None
+            if (
+                manifest.get("format") == "cftn_text_broad_math_v2"
+                and bool(generation_settings.get("enabled", False))
+                and epoch % max(1, int(generation_settings.get("every_epochs", 1)))
+                == 0
+            ):
+                generation_validation = evaluate_generation_panel(
+                    model,
+                    tokenizer,
+                    validation_dataset.records,
+                    maximum_examples=int(
+                        generation_settings.get("examples", 96)
+                    ),
+                    batch_size=int(generation_settings.get("batch_size", 16)),
+                    max_new_tokens=int(
+                        generation_settings.get("max_new_tokens", 512)
+                    ),
+                    failure_examples=int(
+                        generation_settings.get("failure_examples", 8)
+                    ),
+                    rows_path=artifact_dir
+                    / f"generation_validation_epoch_{epoch:04d}.jsonl",
+                )
+                validation["generation"] = generation_validation
             if (
                 manifest.get("format") == "cftn_text_broad_math_v2"
                 or not model.answer_head_enabled
