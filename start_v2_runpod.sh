@@ -57,14 +57,14 @@ if [[ -d .git && "${CFTN_SKIP_GIT_UPDATE:-0}" != "1" \
 fi
 
 storage_root="${CFTN_STORAGE_ROOT:-/workspace/cftn-text}"
-export CFTN_DATA_ROOT="${CFTN_DATA_ROOT:-${storage_root}/data/v2_broad_math_400k_r3}"
-export CFTN_V2_MULTI_DATA_ROOT="${CFTN_V2_MULTI_DATA_ROOT:-${storage_root}/data/v2_multi_specialist_r2}"
-export CFTN_ARTIFACT_ROOT="${CFTN_ARTIFACT_ROOT:-${storage_root}/artifacts/v2_broad_math_400k_r3}"
+export CFTN_DATA_ROOT="${CFTN_DATA_ROOT:-${storage_root}/data/v2_broad_math_400k_r4}"
+export CFTN_V2_MULTI_DATA_ROOT="${CFTN_V2_MULTI_DATA_ROOT:-${storage_root}/data/v2_multi_specialist_r3}"
+export CFTN_ARTIFACT_ROOT="${CFTN_ARTIFACT_ROOT:-${storage_root}/artifacts/v2_broad_math_400k_r4}"
 export HF_HOME="${HF_HOME:-${storage_root}/cache/huggingface}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-${storage_root}/cache/pip}"
 export WANDB_DIR="${WANDB_DIR:-${CFTN_ARTIFACT_ROOT}/wandb}"
 export WANDB_PROJECT="${WANDB_PROJECT:-cftn-text-v2}"
-export WANDB_GROUP="${WANDB_GROUP:-scaled-multi-specialist-r3}"
+export WANDB_GROUP="${WANDB_GROUP:-scaled-multi-specialist-r4}"
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 

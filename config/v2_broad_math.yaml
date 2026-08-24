@@ -1,8 +1,8 @@
 project:
-  name: cftn_text_v2_broad_math_400k_convergence_curriculum_r3
+  name: cftn_text_v2_broad_math_400k_context_and_routing_r4
   seed: 719
-  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}
-  data_root: ${CFTN_DATA_ROOT:-data/manifests/v2_broad_math_400k_r3}
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r4}
+  data_root: ${CFTN_DATA_ROOT:-data/manifests/v2_broad_math_400k_r4}
 
 prior_evidence:
   role: informational_provenance_only
@@ -21,8 +21,8 @@ data:
   heldout_language_examples: 10000
   extrapolation_examples: 12000
   compositional_examples: 10000
-  max_math_length: 1536
-  max_gpt_length: 768
+  max_math_length: 4096
+  max_gpt_length: 2048
   bridge_train_split: train
   bridge_validation_split: validation
   bridge_train_examples: 50000
@@ -202,12 +202,19 @@ gpt:
   receiver_layers: [11, 23, 35]
 
 math_tower:
+  # Proof-scale tower. Its external CFTN contract is tokenizer-independent:
+  # raw UTF-8 enters and a typed answer payload leaves. The byte tokenizer is
+  # this run's internal implementation and can later be replaced by a
+  # pretrained/distilled student's native tokenizer without changing routing.
+  tokenizer_kind: lossless_utf8_bytes_v1
+  request_contract: raw_utf8_problem_v1
+  result_contract: typed_answer_payload_v1
   layers: 8
   hidden_size: 384
   attention_heads: 6
   feed_forward_size: 1536
   dropout: 0.1
-  max_sequence_length: 1536
+  max_sequence_length: 4096
   receiver_layers: [2, 5]
   answer_head_mode: disabled
   answer_min: -4096
@@ -268,7 +275,7 @@ evaluation:
   maximum_generation_examples: 5000
   collaboration_maximum_examples: 2000
   generation_policy: full_context_v1
-  max_math_new_tokens: 1152
+  max_math_new_tokens: 2048
   max_gpt_new_tokens: 64
   bootstrap_samples: 10000
   specialist_splits:
@@ -323,7 +330,7 @@ gpt_calibration:
 
 wandb:
   project: ${WANDB_PROJECT:-cftn-text-v2}
-  group: ${WANDB_GROUP:-scaled-multi-specialist-r3}
+  group: ${WANDB_GROUP:-scaled-multi-specialist-r4}
   entity: ${WANDB_ENTITY:-}
   mode: online
   require_api_key_environment: true

@@ -233,4 +233,6 @@ def test_v2_recommended_400k_mix_and_sealed_mathqa_splits_are_fixed():
         "gsm_symbolic_p1": 5000,
         "gsm_symbolic_p2": 2492,
     }
-    assert config["data"]["max_math_length"] == 1536
+    assert config["data"]["max_math_length"] == 4096
+    assert config["math_tower"]["max_sequence_length"] == 4096
+    assert config["math_tower"]["tokenizer_kind"] == "lossless_utf8_bytes_v1"

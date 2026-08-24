@@ -31,9 +31,9 @@ DISPATCH_INTENTS = (
 CHECKPOINT_CONTRACT = "cftn_text_v2_typed_dispatch_contract_v1"
 
 
-def _broad_math_plan(prompt: str) -> DispatchPlan:
+def _native_math_plan(prompt: str, *, plan_kind: str) -> DispatchPlan:
     if not prompt:
-        raise DispatchError("broad-math dispatch cannot receive an empty prompt")
+        raise DispatchError("native math dispatch cannot receive an empty prompt")
     plan = DispatchPlan(
         prompt=prompt,
         calls=(
@@ -46,7 +46,20 @@ def _broad_math_plan(prompt: str) -> DispatchPlan:
             ),
         ),
         composition=Composition("return", ("math_0",)),
-        plan_kind="v2_broad_math",
+        plan_kind=plan_kind,
+    )
+    plan.validate()
+    return plan
+
+
+def _pure_language_plan(prompt: str) -> DispatchPlan:
+    if not prompt:
+        raise DispatchError("pure-language dispatch cannot receive an empty prompt")
+    plan = DispatchPlan(
+        prompt=prompt,
+        calls=(),
+        composition=Composition("none"),
+        plan_kind="v2_pure_language",
     )
     plan.validate()
     return plan
@@ -66,8 +79,17 @@ def compile_v2_intent(prompt: str, intent: str) -> DispatchPlan:
         raise DispatchError(f"unknown V2 dispatch intent: {intent}")
     if intent == "unsupported":
         raise DispatchError("V2 dispatcher rejected an unsupported prompt")
-    if intent == "broad_math":
-        return _broad_math_plan(prompt)
+    if intent == "pure_language":
+        # V2's frozen coordinator is the open-world fallback. Quotes, dates,
+        # and quantities are valid general-language content and must not be
+        # mistaken for specialist operands merely because they have spans.
+        return _pure_language_plan(prompt)
+    if intent in {"broad_math", "single_math"}:
+        # Preserve the complete prompt for both broad and registered one-tower
+        # math calls. This removes V1.3's signed-integer linear-equation
+        # compiler from the V2 single-math path while retaining that compiler
+        # for dependency-bearing legacy compositions.
+        return _native_math_plan(prompt, plan_kind=f"v2_{intent}")
     return compile_v1_3_intent(prompt, intent)
 
 

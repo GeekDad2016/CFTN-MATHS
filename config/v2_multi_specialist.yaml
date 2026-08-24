@@ -13,10 +13,10 @@ paths:
   base_config: config/v2_broad_math.yaml
   prior_v1_2_report: evidence/v1_2_final_report.json
   prior_v1_3_report: evidence/v1_3_final_report.json
-  math_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}/math_selected/math.selected.pth
-  math_evaluation_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}/evaluation_math_v2/report.json
-  data_root: ${CFTN_V2_MULTI_DATA_ROOT:-data/manifests/v2_multi_specialist_r2}
-  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}
+  math_checkpoint: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r4}/math_selected/math.selected.pth
+  math_evaluation_report: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r4}/evaluation_math_v2/report.json
+  data_root: ${CFTN_V2_MULTI_DATA_ROOT:-data/manifests/v2_multi_specialist_r3}
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r4}
 
 specialist_registry:
   maximum_slots: 12
@@ -153,7 +153,7 @@ data:
   joint_unseen_composition_examples: 10000
   maximum_string_length_train: 48
   maximum_string_length_extrapolation: 96
-  maximum_gpt_length: 384
+  maximum_gpt_length: 1024
   maximum_specialist_length: 512
   task_shares:
     pure_language: 0.15
@@ -165,7 +165,7 @@ data:
 gpt_interface:
   answer_protocol: first_nonempty_completion_line_v1
   generic_answer_cue: "Exact result:"
-  pure_language_prompt_style: archival_key_value_v1
+  pure_language_prompt_style: open_world_generalist_v2
   completion_terminator: "\n"
   prompt_transport: tokenizer_chat_template_v1
   calibration_max_new_tokens: 16
@@ -210,7 +210,7 @@ runtime:
 dispatcher:
   format: cftn_text_v2_hierarchical_dispatcher_v2
   artifact_directory: learned_dispatcher_v2
-  maximum_length: 2048
+  maximum_length: 4096
   confidence_threshold: 0.90
   epochs: 15
   patience: 4
@@ -220,8 +220,8 @@ dispatcher:
   semantic_encoder:
     source: frozen_coordinator_prepass
     pooling: attention_mask_mean_final_hidden_v1
-    maximum_length: 768
-    batch_size: 16
+    maximum_length: 1536
+    batch_size: 4
     use_chat_template: true
     cache_dtype: float16
   model:
@@ -267,8 +267,8 @@ answer_composer:
   attention_heads: 8
   decoder_layers: 2
   dropout: 0.10
-  maximum_source_positions: 64
-  maximum_target_positions: 48
+  maximum_source_positions: 512
+  maximum_target_positions: 256
 
 native_dispatch_evaluation:
   artifact_directory: native_dispatch_evaluation
@@ -435,6 +435,6 @@ monitoring:
 
 wandb:
   project: ${WANDB_PROJECT:-cftn-text-v2}
-  group: ${WANDB_GROUP:-scaled-multi-specialist-r3}
+  group: ${WANDB_GROUP:-scaled-multi-specialist-r4}
   mode: online
   require_api_key_environment: true

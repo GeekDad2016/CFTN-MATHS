@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+from fractions import Fraction
+from functools import lru_cache
+from math import lcm
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -25,6 +28,36 @@ TASK_CLASSES = (
 
 _ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 _LABELS = ("amber", "birch", "cobalt", "delta", "ember", "fable", "garnet")
+
+_PURE_LANGUAGE_TASKS = {
+    "train": (
+        ("Reply with exactly the word hello.", "hello"),
+        ("What is the capital of France? Return only the city name.", "Paris"),
+        (
+            "Translate the English greeting hello into French. Return one lowercase word.",
+            "bonjour",
+        ),
+        (
+            "What colour results from mixing blue and yellow? Return one lowercase word.",
+            "green",
+        ),
+        ("Give the opposite of hot. Return one lowercase word.", "cold"),
+        ("Which planet is called the Red Planet? Return only its name.", "Mars"),
+        (
+            "Repeat 'hello' exactly 2 times separated by one space. Return only the result.",
+            "hello hello",
+        ),
+    ),
+    "heldout": (
+        ("Respond using only this greeting: hello.", "hello"),
+        ("Name France's capital and output only that city.", "Paris"),
+        ("Render hello in French; emit one lowercase word.", "bonjour"),
+        ("Blue plus yellow makes which colour? Give one lowercase word.", "green"),
+        ("State the antonym of hot using one lowercase word.", "cold"),
+        ("Name the planet commonly known as the Red Planet.", "Mars"),
+        ("Write 'hello' twice with one space and nothing else.", "hello hello"),
+    ),
+}
 
 _STRING_TEMPLATES = {
     "train": {
@@ -235,19 +268,66 @@ def _math_oracle_problem(values: dict[str, int]) -> str:
     )
 
 
-def _joint_task_class(index: int) -> str:
-    # A ten-example cycle keeps the registered 20% top-level shares while
-    # dividing multi-specialist examples equally into parallel and sequential.
-    cycle = index % 10
-    if cycle < 2:
-        return "pure_language"
-    if cycle < 4:
-        return "explicit_math"
-    if cycle < 6:
-        return "exact_string"
-    if cycle < 8:
-        return "language_dependent_math"
-    return "multi_parallel" if cycle == 8 else "multi_sequential"
+@lru_cache(maxsize=32)
+def _joint_task_schedule(
+    share_items: tuple[tuple[str, str], ...],
+) -> tuple[str, ...]:
+    """Build an exact deterministic cycle from the configured task shares."""
+
+    shares = {name: Fraction(value) for name, value in share_items}
+    required = {
+        "pure_language",
+        "explicit_math",
+        "exact_string",
+        "language_dependent_math",
+        "multi_specialist",
+    }
+    if set(shares) != required or sum(shares.values(), Fraction()) != 1:
+        raise ValueError("joint task shares must define the registered unit mixture")
+    expanded = {
+        "pure_language": shares["pure_language"],
+        "explicit_math": shares["explicit_math"],
+        "exact_string": shares["exact_string"],
+        "language_dependent_math": shares["language_dependent_math"],
+        "multi_parallel": shares["multi_specialist"] / 2,
+        "multi_sequential": shares["multi_specialist"] / 2,
+    }
+    denominator = 1
+    for value in expanded.values():
+        denominator = lcm(denominator, value.denominator)
+    schedule = [
+        task_class
+        for task_class in TASK_CLASSES
+        for _ in range(int(expanded[task_class] * denominator))
+    ]
+    if len(schedule) != denominator:
+        raise ValueError("joint task shares cannot be represented exactly")
+    # Avoid class-homogeneous prefixes while remaining fully reproducible.
+    random.Random(0xC_F7_13).shuffle(schedule)
+    return tuple(schedule)
+
+
+def _joint_task_class(index: int, config: dict[str, Any]) -> str:
+    if (
+        config["gpt_interface"].get("pure_language_prompt_style")
+        == "archival_key_value_v1"
+    ):
+        cycle = int(index) % 10
+        if cycle < 2:
+            return "pure_language"
+        if cycle < 4:
+            return "explicit_math"
+        if cycle < 6:
+            return "exact_string"
+        if cycle < 8:
+            return "language_dependent_math"
+        return "multi_parallel" if cycle == 8 else "multi_sequential"
+    share_items = tuple(
+        (name, str(value))
+        for name, value in sorted(config["data"]["task_shares"].items())
+    )
+    schedule = _joint_task_schedule(share_items)
+    return schedule[int(index) % len(schedule)]
 
 
 def generate_joint_record(
@@ -255,7 +335,9 @@ def generate_joint_record(
 ) -> dict[str, Any]:
     rng = _rng(seed, "joint", split, index)
     rounds = int(config["runtime"]["maximum_callosal_rounds"])
-    task_class = _joint_task_class(index)
+    task_class = _joint_task_class(index, config)
+    if split == "joint_unseen_composition":
+        task_class = "multi_sequential"
     heldout = split == "joint_heldout_paraphrase"
     extrapolation = split == "joint_extrapolation"
     equation = _linear_equation(rng, extrapolation=extrapolation)
@@ -280,20 +362,38 @@ def generate_joint_record(
     metadata: dict[str, Any] = {"equation": equation, "string": string_meta}
 
     if task_class == "pure_language":
-        label = _LABELS[index % len(_LABELS)]
-        problem = (
-            f"The archival label is {label}. Ignore the colour red. Return the archival label."
-        )
-        gpt_prompt = (
-            f"Archival label: {label}\n"
-            "Colour: red\n"
-            "Requested archival label:"
-        )
-        value = label
+        if (
+            config["gpt_interface"].get("pure_language_prompt_style")
+            == "archival_key_value_v1"
+        ):
+            label = _LABELS[index % len(_LABELS)]
+            problem = (
+                f"The archival label is {label}. Ignore the colour red. "
+                "Return the archival label."
+            )
+            gpt_prompt = (
+                f"Archival label: {label}\n"
+                "Colour: red\n"
+                "Requested archival label:"
+            )
+            value = label
+        else:
+            family = "heldout" if heldout else "train"
+            problem, value = _PURE_LANGUAGE_TASKS[family][
+                index % len(_PURE_LANGUAGE_TASKS[family])
+            ]
+            gpt_prompt = (
+                f"Problem: {problem}\n"
+                f"{config['gpt_interface']['generic_answer_cue']}"
+            )
         required = []
         required_by_round = [[] for _ in range(rounds)]
         specialist_targets = _round_targets([], [], rounds)
         specialist_oracle_problems = _round_prompts([], [], rounds)
+        if config["gpt_interface"].get("pure_language_prompt_style") != (
+            "archival_key_value_v1"
+        ):
+            metadata["dispatch_intent"] = "pure_language"
     elif task_class == "explicit_math":
         a, b, c, x = (equation[key] for key in ("a", "b", "c", "x"))
         problem = f"Solve {a}*x + ({b}) = {c}. Return x."
@@ -358,7 +458,8 @@ def generate_joint_record(
         # ``multi_sequential`` occupies index 9 of every ten-record cycle, so
         # testing ``index % 2`` made every generated example string->math.
         # Alternate by the cycle number instead.
-        if (index // 10) % 2:
+        sequential_cycle = index if split == "joint_unseen_composition" else index // 10
+        if sequential_cycle % 2:
             count = text.count(char)
             a = rng.choice([value for value in range(-12, 13) if value])
             x = rng.randint(-30, 30)
@@ -429,14 +530,6 @@ def generate_joint_record(
         # parity changes either operation or operand.
         metadata["counterfactual_pair_id"] = f"cf-{index // 2:08d}"
         metadata["counterfactual_member"] = index % 2
-    if split == "joint_unseen_composition" and task_class != "multi_sequential":
-        task_class = "multi_sequential"
-        return generate_joint_record(
-            seed=seed + 99_991,
-            split=split,
-            index=index * 10 + 9,
-            config=config,
-        )
     if task_class != "pure_language":
         gpt_prompt = (
             f"Problem: {problem}\n"

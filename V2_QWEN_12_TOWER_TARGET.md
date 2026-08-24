@@ -25,10 +25,11 @@ trained or accepted.
   not load or execute a second Qwen model.
 
 The exact Qwen parameter count reconstructed from the published config is
-4,022,468,096. The current two active towers, CFTN integration modules, Qwen
-receivers, and dispatcher add 67,057,762 parameters, giving a current V2 target
-skeleton of **4,089,525,858 parameters (4.090B)**. Only math and string are
-active today.
+4,022,468,096. R4 expands the proof math tower from 1,536 to 4,096 lossless
+byte tokens and expands the optional answer-composer buffers. The exact
+post-change resident count is recorded by the RunPod architecture audit before
+training; it remains approximately **4.091B**. Only math and string are active
+today.
 
 For a 32B resident target, reserving the coordinator, dispatcher, and present
 non-tower integration leaves approximately 27.945B parameters for twelve
@@ -36,6 +37,104 @@ expert towers, or **2.329B per tower on average**. The final allocation should
 be heterogeneous: exact byte/string and deterministic tool wrappers should
 remain small, leaving more capacity for math, code, science, retrieval, and
 long-context experts.
+
+## Math tower: proof run versus scale-up target
+
+The R4 run deliberately keeps the current scratch CFTN math architecture so
+the V1.3 mechanism result can be tested without simultaneously replacing the
+specialist family. It is not the final high-capability math model.
+
+Current R4 proof tower:
+
+- approximately 19.02M parameters after the larger positional table;
+- a lossless 260-token UTF-8 byte vocabulary;
+- a 4,096-byte-token context instead of the former 1,536-token ceiling;
+- free-form tagged text answers, with the integer categorical head disabled;
+- fractions, assignments, systems, symbolic expressions, word problems,
+  elementary calculus, probability, polynomial and number-theory data;
+- a raw-UTF-8 request and typed-answer result contract. Byte tokenization is an
+  internal implementation choice, not part of the CFTN routing protocol;
+- open-world non-specialist prompts fall back to the frozen coordinator. They
+  are not rejected merely because they lie outside the old archival grammar;
+- configured joint task shares are now consumed by the generator exactly:
+  15% pure language, 15% explicit math, 15% exact string, 20%
+  language-dependent math and 35% multi-specialist, with the final share split
+  equally between parallel and sequential examples.
+
+The larger context removes a hard rejection boundary, but it does not by
+itself create long-context or graduate-level competence. Context utilization,
+standalone generation and native routed generation remain measured gates.
+
+### Later 4B CFTN-native math student
+
+The production scale-up target is an approximately 4B dense math student, not
+a 9B teacher embedded as the deployed tower. Strong pretrained models are
+training-only teachers. Their weights are absent from the final artifact.
+
+The practical route is:
+
+1. define the final CFTN-native student interface and a shared or explicitly
+   registered tower-local tokenizer;
+2. initialize from a compatible dense approximately 4B base where licensing
+   and architecture permit; a random 4B initialization on one Pod is not a
+   credible route to broad language and mathematical competence;
+3. continue pretraining on audited mathematical text and notation;
+4. perform sequence-level and, where vocabularies align, logit-level
+   distillation from stronger dense teachers;
+5. retain only teacher outputs that pass deterministic arithmetic, SymPy,
+   numerical substitution, unit tests or Lean verification as appropriate;
+6. use verifier-guided preference optimization or RL only after supervised
+   behavior and answer formatting are stable;
+7. freeze the accepted student, train fresh CFTN request/return bridges and
+   receivers, and rerun every causal and no-harm control;
+8. export the student under `towers.math.*` together with coordinator,
+   dispatcher, other towers, bridges, receivers and gates in the unified CFTN
+   weights artifact.
+
+Changing from the byte proof tower to a pretrained-initialized student changes
+the tower internals and therefore requires fresh evidence. V1.3 still supports
+the typed request/result bus, deterministic composition, explicit dispatch,
+hard gating and causal-ablation methodology. It does **not** pre-approve new
+tokenization, hidden-state bridges, receiver locations, standalone competence,
+native routing accuracy or checkpoint serialization.
+
+### Cumulative school-to-research curriculum
+
+Promotion is cumulative: each stage mixes 25-30% replay from earlier stages
+and must pass both old and new sealed panels before advancing.
+
+1. arithmetic: signed numbers, fractions, decimals, ratios, units and
+   estimation;
+2. school algebra and geometry: equations, inequalities, functions,
+   coordinate and Euclidean geometry;
+3. precalculus and competition foundations: combinatorics, probability,
+   number theory and proof-style problems;
+4. calculus and differential equations: symbolic and numerical methods with
+   domain/constant checks;
+5. undergraduate linear algebra, discrete mathematics, statistics and
+   numerical analysis;
+6. proof-oriented real/complex analysis, abstract algebra and topology;
+7. graduate algebra, analysis, geometry, probability, optimization and
+   mathematical physics, partitioned by auditable subject panels;
+8. formal theorem proving with Lean/mathlib and explicit proof checking;
+9. tool-integrated reasoning with typed Python, SymPy and Lean calls;
+10. verifier-guided RL on tasks with reliable automatic rewards.
+
+Candidate scale-up sources include
+[`nvidia/OpenMathReasoning`](https://huggingface.co/datasets/nvidia/OpenMathReasoning),
+[`AI-MO/NuminaMath-1.5`](https://huggingface.co/datasets/AI-MO/NuminaMath-1.5),
+OpenR1's Math datasets,
+[`HuggingFaceTB/finemath`](https://huggingface.co/datasets/HuggingFaceTB/finemath),
+Proof-Pile-2 and
+[`mathlib-initiative/mathlib-tactics`](https://huggingface.co/datasets/mathlib-initiative/mathlib-tactics).
+Every source requires a pinned revision, provenance and license audit, deduped
+held-out problems and contamination checks. "PhD level" means verified
+graduate-course and formal-proof performance; it is not a claim of novel
+research ability.
+
+With a 32B resident budget, a 4B coordinator, 4B math tower and approximately
+0.1-0.5B of shared routing/integration leave roughly 23.5-23.9B for the other
+eleven towers, about 2.1B each on average before heterogeneous allocation.
 
 ## Tower registry and Hugging Face data
 

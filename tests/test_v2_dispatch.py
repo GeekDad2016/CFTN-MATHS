@@ -70,6 +70,23 @@ def test_v2_broad_math_dispatch_is_an_exact_lossless_prompt_copy():
     }
 
 
+def test_v2_single_math_uses_the_same_lossless_native_contract():
+    prompt = "Solve (3/4)*x + (-5/6) = 7/3."
+    plan = compile_v2_intent(prompt, "single_math")
+    call = plan.call_for(0, "math")
+    assert call is not None
+    assert call.operation == "solve_native"
+    assert compile_specialist_request(plan, call, {}) == prompt
+
+
+def test_v2_pure_language_accepts_quotes_and_numbers_without_waking_a_tower():
+    prompt = "Repeat 'hello' exactly 2 times and explain the wording."
+    plan = compile_v2_intent(prompt, "pure_language")
+    assert plan.calls == ()
+    assert plan.composition.kind == "none"
+    assert compose_dispatch_results(plan, {}) is None
+
+
 @pytest.mark.parametrize(
     ("intent", "prompt", "expected_specialists"),
     [
@@ -111,6 +128,13 @@ def test_v2_semantic_training_controls_cover_every_intent_without_oracle_fields(
     assert all(
         isinstance(prompt, str) and prompt and semantic_prompt
         for prompt, _, semantic_prompt in rows
+    )
+    pure_prompts = [prompt for prompt, intent, _ in rows if intent == "pure_language"]
+    assert any("capital of France" in prompt for prompt in pure_prompts)
+    assert all(
+        "leaves change colour" not in prompt
+        for prompt, intent, _ in rows
+        if intent == "unsupported"
     )
 
 

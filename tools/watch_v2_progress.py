@@ -535,15 +535,15 @@ def watch_v2_progress(
 ) -> dict[str, Any]:
     artifact = artifact_root or os.environ.get(
         "CFTN_ARTIFACT_ROOT",
-        "/workspace/cftn-text/artifacts/v2_broad_math_400k_r3",
+        "/workspace/cftn-text/artifacts/v2_broad_math_400k_r4",
     )
     data = data_root or os.environ.get(
         "CFTN_DATA_ROOT",
-        "/workspace/cftn-text/data/v2_broad_math_400k_r3",
+        "/workspace/cftn-text/data/v2_broad_math_400k_r4",
     )
     multi_data = multi_data_root or os.environ.get(
         "CFTN_V2_MULTI_DATA_ROOT",
-        "/workspace/cftn-text/data/v2_multi_specialist_r2",
+        "/workspace/cftn-text/data/v2_multi_specialist_r3",
     )
     previous: dict[str, Any] | None = None
     notebook = False

@@ -23,11 +23,11 @@ DEFAULT_PORT = 18480
 DEFAULT_USER = "root"
 DEFAULT_REMOTE_REPOSITORY = "/workspace/CFTN-MATHS"
 DEFAULT_ARTIFACT_ROOT = (
-    "/workspace/cftn-text/artifacts/v2_broad_math_400k_r3"
+    "/workspace/cftn-text/artifacts/v2_broad_math_400k_r4"
 )
-DEFAULT_DATA_ROOT = "/workspace/cftn-text/data/v2_broad_math_400k_r3"
+DEFAULT_DATA_ROOT = "/workspace/cftn-text/data/v2_broad_math_400k_r4"
 DEFAULT_MULTI_DATA_ROOT = (
-    "/workspace/cftn-text/data/v2_multi_specialist_r2"
+    "/workspace/cftn-text/data/v2_multi_specialist_r3"
 )
 STATE_FORMAT = "cftn_text_v2_heartbeat_state_v1"
 

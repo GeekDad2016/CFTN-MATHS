@@ -205,11 +205,28 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
     shares = config["data"].get("task_shares", {})
     if abs(sum(float(value) for value in shares.values()) - 1.0) > 1e-8:
         raise ValueError("V1.3 joint task shares must sum to one")
+    if raw.get("format") == V2_REVISION_FORMAT:
+        expected_share_names = {
+            "pure_language",
+            "explicit_math",
+            "exact_string",
+            "language_dependent_math",
+            "multi_specialist",
+        }
+        if set(shares) != expected_share_names or any(
+            float(value) <= 0.0 for value in shares.values()
+        ):
+            raise ValueError("V2 joint task shares must define every positive class")
     interface = config["gpt_interface"]
     if interface.get("answer_protocol") != "first_nonempty_completion_line_v1":
         raise ValueError("V1.3 requires the registered first-line GPT answer protocol")
-    if interface.get("pure_language_prompt_style") != "archival_key_value_v1":
-        raise ValueError("V1.3 pure-language prompt style differs from preregistration")
+    expected_prompt_style = (
+        "open_world_generalist_v2"
+        if raw.get("format") == V2_REVISION_FORMAT
+        else "archival_key_value_v1"
+    )
+    if interface.get("pure_language_prompt_style") != expected_prompt_style:
+        raise ValueError("pure-language prompt style differs from preregistration")
     if str(interface.get("generic_answer_cue")) != "Exact result:":
         raise ValueError("V1.3 generic GPT answer cue differs from preregistration")
     if str(interface.get("completion_terminator")) != "\n":

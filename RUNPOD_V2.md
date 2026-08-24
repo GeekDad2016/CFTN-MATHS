@@ -55,7 +55,8 @@ The 400,000-example training split is fixed before optimization:
 | MathQA official train split | 29,837 | natural word problems with source-native operation programs and answer choices |
 | GSM8K official train split | 7,473 | natural multi-step word problems |
 
-The training mechanism is unchanged: the byte-level causal Transformer learns
+The R4 proof tower retains the byte-level causal Transformer but expands its
+hard context boundary from 1,536 to 4,096 lossless UTF-8 byte tokens. It learns
 the next byte of a complete target trace under teacher forcing and is judged by
 free greedy generation. V2.1 records preserve `raw_problem`, `native_program`,
 `execution_trace`, and the final answer. Project-generated records retain exact
@@ -64,6 +65,14 @@ formal `<program>`. A source that publishes only question/answer pairs remains
 truthfully answer-only rather than receiving an invented derivation. Data
 preparation computes the exact byte-token length of every sequence and fails
 before training if any record exceeds the configured context.
+
+The external tower interface is raw UTF-8 text in and a typed answer payload
+out; byte tokenization is internal to this proof tower. This preserves a later
+upgrade path to a distilled approximately 4B math student with a tower-local
+tokenizer without changing the dispatcher or answer-bus protocol. Ordinary
+general-language prompts are handled by the frozen coordinator, including
+greetings, factual questions and translation; only malformed attempts to
+invoke hidden or inactive CFTN internals are labelled unsupported.
 
 GSM8K test, MathQA validation/test, and all three configured GSM-Symbolic
 variants are evaluation-only.

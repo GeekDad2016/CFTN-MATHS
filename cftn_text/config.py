@@ -140,6 +140,15 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("V2 curriculum through_epoch values must increase")
         if through_epochs[-1] != int(config["math_training"]["max_epochs"]):
             raise ValueError("the final V2 curriculum phase must reach max_epochs")
+        tower = config["math_tower"]
+        if tower.get("tokenizer_kind") != "lossless_utf8_bytes_v1":
+            raise ValueError("V2 proof math tower must register its byte tokenizer")
+        if tower.get("request_contract") != "raw_utf8_problem_v1":
+            raise ValueError("V2 math request contract must preserve the raw prompt")
+        if tower.get("result_contract") != "typed_answer_payload_v1":
+            raise ValueError("V2 math result contract is not recognized")
+        if int(tower["max_sequence_length"]) < 4096:
+            raise ValueError("V2 proof math context must be at least 4096 byte tokens")
     elif format_name == "cftn_text_linear_equations_v1_1":
         bands = data.get("numeric_curriculum_bands", [])
         if len(bands) < 2:

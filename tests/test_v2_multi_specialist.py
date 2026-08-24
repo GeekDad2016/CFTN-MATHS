@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from types import ModuleType
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from cftn_text.gpt_receiver import (
     validate_dense_causal_lm_config,
 )
 from cftn_text.v1_3_config import audit_v1_2_pass, load_v1_3_config
+from cftn_text.v1_3_data import generate_joint_record
 from cftn_text.config import load_config
 from cftn_text.v1_3_training import gpt_interface_config, hardening_acceptance
 from tools.run_v2_experiment import Stage, _coordinator_preflight, _is_complete
@@ -117,6 +119,35 @@ def test_v2_uses_fresh_training_and_reserves_twelve_slot_target(tmp_path):
         "multi_parallel",
         "multi_sequential",
     }
+    assert config["gpt_interface"]["pure_language_prompt_style"] == (
+        "open_world_generalist_v2"
+    )
+
+
+def test_v2_joint_generator_uses_registered_task_shares_exactly():
+    config = load_v1_3_config(ROOT / "config" / "v2_multi_specialist.yaml")
+    records = [
+        generate_joint_record(
+            seed=int(config["revision"]["seed"]),
+            split="joint_train",
+            index=index,
+            config=config,
+        )
+        for index in range(40)
+    ]
+    counts = Counter(record["task_class"] for record in records)
+    assert counts == {
+        "pure_language": 6,
+        "explicit_math": 6,
+        "exact_string": 6,
+        "language_dependent_math": 8,
+        "multi_parallel": 7,
+        "multi_sequential": 7,
+    }
+    pure = [record for record in records if record["task_class"] == "pure_language"]
+    assert all(record["metadata"]["dispatch_intent"] == "pure_language" for record in pure)
+    assert all("archival label" not in record["problem"].casefold() for record in pure)
+    assert all(record["gpt_prompt"].startswith("Problem: ") for record in pure)
 
 
 def test_v2_gpt_receivers_use_the_multi_specialist_bridge_dimensions():
