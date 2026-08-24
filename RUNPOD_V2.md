@@ -150,6 +150,26 @@ overrides remain available through the variables in `.env.example`. Set
 No V1.2 or V1.3 report variable is required. Existing reports in `evidence/`
 are recorded when present but never gate this fresh V2 run.
 
+### Local browser dashboard over SSH
+
+To inspect V2 without asking Codex for another status check, run the dashboard
+on the trusted Windows machine. It opens read-only SSH sessions to the Pod and
+shows pipeline stage/history, data progress, V2 processes, A100 telemetry,
+checkpoint inventory, W&B run metadata, and current stage logs. It has no
+control endpoints and redacts sensitive JSON fields before serving the browser.
+
+```powershell
+cd C:\CFTN\ctfn_text_build
+py -3 -m tools.serve_v2_remote_dashboard `
+  --ssh-host 154.54.102.47 --ssh-port 16777 `
+  --identity-file C:\Users\adria\.ssh\id_ed25519_runpod_cftn `
+  --host 0.0.0.0 --port 8789
+```
+
+Open `http://localhost:8789` on this machine, or use its LAN IP with port
+`8789` from another device after allowing that port through Windows Firewall.
+The IP and SSH port are Pod-specific; replace them after a Pod replacement.
+
 ### Container plus authenticated monitoring API
 
 1. Build `Dockerfile.runpod` and attach persistent storage at `/workspace`.
