@@ -7,6 +7,10 @@ from tools.serve_v2_remote_dashboard import PAGE, REMOTE_PROBE, RemoteProbe
 
 def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Current step" in PAGE
+    assert "Math curriculum" in PAGE
+    assert "Training assessment" in PAGE
+    assert "Acceptable to continue — watch validation" in PAGE
+    assert "validation covers all difficulty levels" in PAGE
     assert "Validation trend" in PAGE
     assert "Latest validation breakdown" in PAGE
     assert "Generation validation" in PAGE
@@ -20,6 +24,9 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert '"stage_artifacts"' in REMOTE_PROBE
     assert 'read_jsonl(stage_root / "metrics.jsonl")' in REMOTE_PROBE
     assert '"data_manifest"' in REMOTE_PROBE
+    assert '"training_contract"' in REMOTE_PROBE
+    assert '"curriculum": config.get("data", {}).get("curriculum", {})' in REMOTE_PROBE
+    assert '"minimum_epochs"' in REMOTE_PROBE
     assert '"[redacted]"' in REMOTE_PROBE
     assert 'name in sensitive_names or name.endswith(sensitive_suffixes)' in REMOTE_PROBE
 

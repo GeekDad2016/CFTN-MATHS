@@ -156,7 +156,10 @@ To inspect V2 without asking Codex for another status check, run the dashboard
 on the trusted Windows machine. It opens read-only SSH sessions to the Pod and
 shows pipeline stage/history, current epoch/batch/step/ETA, rolling training
 metrics, every completed validation epoch, accuracy and loss trend charts,
-curriculum state, early-stopping state, per-source/family/difficulty validation
+the full curriculum schedule with live phase/transition progress and sampling
+reuse, an evidence-based learning/generalization assessment distinct from
+infrastructure health, early-stopping state, per-source/family/difficulty
+validation
 breakdowns, compact native-generation accuracy and failure examples, data
 progress, V2 processes, GPU telemetry, checkpoint inventory, W&B run metadata,
 raw stage artifacts, and current stage logs. It has no control endpoints and
