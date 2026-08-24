@@ -229,6 +229,13 @@ source-native programs/traces where available; it does not replace learning
 with a symbolic solver. GSM8K-test, MathQA validation/test, and GSM-Symbolic
 remain sealed generalization benchmarks.
 
+The frozen coordinator's standalone math competence is measured separately on
+a deterministic difficulty/source/family-balanced panel. The reproducible
+evaluator, prompt controls, 2026-08-24 results, and resulting curriculum
+hardening plan are documented in
+[V2_QWEN_MATH_BASELINE.md](V2_QWEN_MATH_BASELINE.md). This diagnostic does not
+change or substitute for the active math-tower run.
+
 The math answer head is disabled and checkpoint selection is based first on
 validation greedy-generation accuracy. Both native towers are frozen during
 integration. V2 trains fresh request/return bridges and receivers, then learns
