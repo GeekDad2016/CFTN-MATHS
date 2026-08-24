@@ -1,0 +1,178 @@
+{
+  "format": "cftn_text_v2_qwen_math_gap_panel_v1",
+  "created_utc": "2026-08-24T21:15:00Z",
+  "purpose": "Repeat the exact frozen-Qwen panel on the trained math expert and compare accuracy, latency, token work, GPU memory, and monetary cost.",
+  "dataset": {
+    "manifest_sha256": "8a3753e6746e4ff5dff805dabe749ff9fd8952bc2a013123ed31ff4ebbb13d1d",
+    "split": "validation",
+    "split_sha256": "3435081070f9aff9444e30dfe97e99f76c900ceef6a808ae4dc479843fe16cc6"
+  },
+  "qwen": {
+    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
+    "revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+    "architecture": "dense",
+    "parameter_count": 4022468096,
+    "precision": "bfloat16",
+    "all_parameters_frozen": true
+  },
+  "record_ids_sha256": "d2a879d368ad20d54349873186c5f0fa65a75b61875cc631d034c27fdece6666",
+  "record_ids": [
+    "cb56a2d61ca082236c75e0cc7ddb592c634e7c34ace203756ffa327960935528",
+    "c19ff36af3e95c33fcd3898b30b572e32e81c97054097150d294893de9cb5539",
+    "99819bd46dda81eb3e28c29d2fc455b46bb8b5022c541f660be27ccfcfc10e37",
+    "94e50e8107d1ebb1cd0a248515012ce7588347d47bccf0fcb21f0e458fa8be4e",
+    "ddc06c7af4f2e999447eedec09ab4ce0909801aa60587a1a5ae92abff8f187ad",
+    "65f0970f0f379ffdaf6bf6f5cd48db6f0200c76d37d4a4f4c9863af5ddcf6517",
+    "74bb92d77ee803783b77559aa2ea8f741f6d645dffd3af19876b826539e47243",
+    "0bb9430ca774004c3e5ad3834ff7e163d434a4f5f0b3a25bb1db83f8144737f2",
+    "32258db4fc190c6ca59a90808fb102a71f43a0ab3b147f6a3db2c3fd9047c597",
+    "2bfbf9bbc68099b518d4bc8746d840d28ea529a263972799f6863b7b89dd0754",
+    "65ebbf3caae97d0c046132925f9f548b844999c24bfde8451ab9dd05a04eaf24",
+    "a1f0521949a477a83fb6ee9368a2d66a8ae82176c13f5f47c10ed0cb8172e2f7",
+    "16cafc8b0af897a7047369c7823cb74da9e285ccd2b5172937a72d2db6693f7a",
+    "a66220ba737e6fccd6d613ace4498e9f4c52a584b05b5340f035a7e3227c1b81",
+    "2caea455e04afb2949ceffb22947f74368624976b1492bc1d1f13e1b98c88211",
+    "adb988c464efd6e3c29aca136c18e90f3661a4433871d25187f8dbb09f1e01b0",
+    "7bacb401e58db996aaf22daeb3dc68468a61879ec1c3a7e86e33358007ae124f",
+    "9cc11a1014bdf91330f5852a8e5bc1e6e39a7b593764233e959dc813a21ca023",
+    "44ed31f120c9eb4a51f3ea129ac59cbd02a1052d110ead417c9bebc8008e3489",
+    "0842e77d7aacc63fe9a40ad0f11de05566fb63fe0e724324190baf2d8425c332",
+    "a44c39c6148857c76ff55626f1b54097f91a8e9dd9d1bfdb7add60689cb55c54",
+    "27023d3fb573a4e3060ccb201ca6f9f60748dfa1132bc195c18948bed6129361",
+    "b54469108e98d7aae6cb9ec80af30240a2b8517db1f9cc58b58fafe40a0eb3c5",
+    "5d8ee811b8b23616e2da0eccac3ddea77254b6b70ba2dd5437727b1675622004",
+    "b581b62005ff086fcf290674090b8bf40da27b3782c5442b66c6e636e9341cf1",
+    "c1ed9f9d24c4184c7e3cfee02591a1b30f45c7eb842e9e1c9e3028a2304a4135",
+    "b6baa6aa484bc01267e56af5b1a3138318364d6ac3e5f0f77cda98d7ef437513",
+    "5e1fc240f2df0a3483199ae07143b005a20c3780bce90d6f43c3bda405ff8480",
+    "fd90044a7dcc1999941c7c21676f64c786b9f61990342435f4cc83b70f0bebca",
+    "1bb40715637cd83169395feb14a944c005b5caed822b247296a42316fadb5b5c",
+    "2225724830ea6acf7e80146747f2b1cce91cff3be321a04a28682c37a39a6137",
+    "fb9b917d6079fac2f87e157c742d3cd315c8e577e3accf894e87ff4bd6fb3ca9",
+    "e448aa391ec1a9620adf971b4f4af15704dfddd6014ccd23604b54cc1f17b265",
+    "b5885bd74ac6455875c700098785376c3316a9c58236040c5e8a16e2a3fe60d9",
+    "23b016c342ac72e62bce0530ad5e61dd06449c78a436e79cd5bb886aa93c109b",
+    "046913c3b8d3d6a0d06c517dc50cf5f336c60ad0753598b4b271fd7b0d55241d"
+  ],
+  "challenge_cases": [
+    {
+      "record_id": "44ed31f120c9eb4a51f3ea129ac59cbd02a1052d110ead417c9bebc8008e3489",
+      "source": "deepmind_mathematics",
+      "family": "algebra__polynomial_roots",
+      "difficulty": 2,
+      "problem": "Factor -4*q**5/9 - 3208*q**4/9 + 326516*q**3/3 + 4952080*q**2/9 + 7951408*q/9 + 1327360/3.",
+      "expected_answer": "-4*(q - 240)*(q + 1)*(q + 2)**2*(q + 1037)/9",
+      "classification": "persistent_at_2048_tokens",
+      "qwen_outcomes": {
+        "brief_reasoning_512": "no_answer_tag_at_token_cap",
+        "brief_reasoning_2048": "no_answer_tag_at_token_cap"
+      }
+    },
+    {
+      "record_id": "0842e77d7aacc63fe9a40ad0f11de05566fb63fe0e724324190baf2d8425c332",
+      "source": "deepmind_mathematics",
+      "family": "algebra__polynomial_roots_composed",
+      "difficulty": 2,
+      "problem": "Let z(d) be the first derivative of -3*d**5/20 - 7*d**4/4 + 17*d**3/2 - 27*d**2/2 + 15*d + 54. Let t(y) be the first derivative of z(y). Factor t(s).",
+      "expected_answer": "-3*(s - 1)**2*(s + 9)",
+      "classification": "persistent_at_2048_tokens",
+      "qwen_outcomes": {
+        "brief_reasoning_512": "no_answer_tag_at_token_cap",
+        "brief_reasoning_2048": "no_answer_tag_at_token_cap"
+      }
+    },
+    {
+      "record_id": "27023d3fb573a4e3060ccb201ca6f9f60748dfa1132bc195c18948bed6129361",
+      "source": "deepmind_mathematics",
+      "family": "algebra__sequence_nth_term",
+      "difficulty": 2,
+      "problem": "What is the g'th term of -5216, -10412, -15604, -20798, -26000, -31216, -36452?",
+      "expected_answer": "-g**3 + 8*g**2 - 5213*g - 10",
+      "classification": "persistent_at_2048_tokens",
+      "qwen_outcomes": {
+        "brief_reasoning_512": "no_answer_tag_at_token_cap",
+        "brief_reasoning_2048": "no_answer_tag_at_token_cap"
+      }
+    },
+    {
+      "record_id": "5d8ee811b8b23616e2da0eccac3ddea77254b6b70ba2dd5437727b1675622004",
+      "source": "deepmind_mathematics",
+      "family": "arithmetic__add_or_sub_in_base",
+      "difficulty": 2,
+      "problem": "In base 4, what is 300 - -11032030?",
+      "expected_answer": "11032330",
+      "classification": "resolved_only_with_larger_budget",
+      "qwen_outcomes": {
+        "brief_reasoning_512": "no_answer_tag_at_token_cap",
+        "brief_reasoning_2048": "correct"
+      }
+    }
+  ],
+  "archival_qwen_runs": {
+    "brief_reasoning_512": {
+      "examples": 36,
+      "correct": 32,
+      "accuracy": 0.8888888888888888,
+      "valid_answers": 32,
+      "batch_size": 4,
+      "elapsed_seconds": 106.20678234100342,
+      "peak_cuda_memory_mib": 8142.83642578125,
+      "concurrent_math_training": true
+    },
+    "brief_reasoning_2048": {
+      "examples": 36,
+      "correct": 33,
+      "accuracy": 0.9166666666666666,
+      "valid_answers": 33,
+      "batch_size": 4,
+      "elapsed_seconds": 314.28683042526245,
+      "peak_cuda_memory_mib": 9096.8564453125,
+      "concurrent_math_training": true
+    },
+    "answer_only_256": {
+      "examples": 36,
+      "correct": 12,
+      "accuracy": 0.3333333333333333,
+      "valid_answers": 30,
+      "batch_size": 4,
+      "elapsed_seconds": 76.17824864387512,
+      "peak_cuda_memory_mib": 7978.68017578125,
+      "concurrent_math_training": true
+    }
+  },
+  "comparison_contract": {
+    "accuracy_panel": "full_36_records",
+    "focused_panel": "four_challenge_cases",
+    "same_gpu_required": true,
+    "exclusive_idle_gpu_required_for_timing": true,
+    "greedy_decoding": true,
+    "max_new_tokens": 2048,
+    "single_request_batch_size": 1,
+    "throughput_batch_sizes": [1, 4],
+    "warmup_runs": 1,
+    "measured_repetitions": 3,
+    "scorer": "extract_answer_tag_plus_sympy_equivalence_v1",
+    "required_measurements": [
+      "correct_answers",
+      "valid_answer_rate",
+      "cold_model_load_seconds",
+      "generation_seconds",
+      "latency_ms_mean_p50_p95",
+      "prompt_tokens",
+      "generated_tokens",
+      "generated_tokens_per_second",
+      "peak_cuda_memory_mib",
+      "checkpoint_bytes",
+      "parameter_count",
+      "gpu_hourly_usd_at_measurement_time",
+      "estimated_cost_per_run_usd",
+      "estimated_cost_per_correct_answer_usd"
+    ],
+    "notes": [
+      "Run Qwen and the expert sequentially with no trainer or other GPU workload.",
+      "Report cold-load cost separately from warmed request latency.",
+      "The archival timings above are provenance only because the active math trainer shared the GPU.",
+      "Retain every generation row and checkpoint/model hash with the comparison report."
+    ]
+  }
+}

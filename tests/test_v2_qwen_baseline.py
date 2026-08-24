@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from cftn_text.v2_qwen_baseline import (
     difficulty_balanced_panel,
+    fixed_record_panel,
+    load_qwen_gap_panel,
     qwen_math_messages,
 )
 
@@ -63,3 +65,22 @@ def test_difficulty_balanced_panel_rejects_undersized_cohort():
         assert "difficulty 1" in str(exc)
     else:
         raise AssertionError("undersized difficulty cohort was accepted")
+
+
+def test_fixed_record_panel_preserves_requested_order():
+    records = [_record(index, 2, "family") for index in range(4)]
+
+    selected = fixed_record_panel(records, ["r-2-3", "r-2-1"])
+
+    assert [record["record_id"] for record in selected] == ["r-2-3", "r-2-1"]
+
+
+def test_repository_qwen_gap_panel_is_self_consistent():
+    panel = load_qwen_gap_panel("benchmarks/v2_qwen_math_gap_panel.json")
+
+    assert len(panel["record_ids"]) == 36
+    assert len(panel["challenge_cases"]) == 4
+    assert sum(
+        item["classification"] == "persistent_at_2048_tokens"
+        for item in panel["challenge_cases"]
+    ) == 3

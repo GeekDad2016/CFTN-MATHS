@@ -21,6 +21,20 @@ def main() -> None:
         choices=("brief_reasoning", "answer_only"),
         default="brief_reasoning",
     )
+    parser.add_argument(
+        "--panel-manifest",
+        help="immutable gap-panel JSON; replaces difficulty-balanced selection",
+    )
+    parser.add_argument(
+        "--panel-subset",
+        choices=("full", "challenge"),
+        default="full",
+    )
+    parser.add_argument(
+        "--gpu-hourly-usd",
+        type=float,
+        help="optional current GPU hourly price for estimated run cost",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output-root", required=True)
     parser.add_argument(
@@ -36,6 +50,9 @@ def main() -> None:
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
         prompt_mode=args.prompt_mode,
+        panel_manifest=args.panel_manifest,
+        panel_subset=args.panel_subset,
+        gpu_hourly_usd=args.gpu_hourly_usd,
         device_name=args.device,
         local_files_only=not args.allow_download,
         output_root=args.output_root,

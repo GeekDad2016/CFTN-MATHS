@@ -45,6 +45,44 @@ correct conditional routing can still be valuable even when Qwen is capable:
 a specialist may provide a shorter, cheaper, more reliably typed execution
 path.
 
+## Preserved expert-comparison panel
+
+The exact 36-record panel, the four Qwen budget failures, their expected
+answers, dataset hashes, and the future accuracy/latency/cost protocol are
+committed in
+[`benchmarks/v2_qwen_math_gap_panel.json`](benchmarks/v2_qwen_math_gap_panel.json).
+Three cases remained unresolved at 2,048 tokens; one base-4 arithmetic case
+failed at 512 tokens but passed at 2,048 and is retained as a budget-sensitivity
+control.
+
+Once the expert checkpoint is selected, run both engines sequentially on an
+otherwise idle instance of the same GPU. Use batch size 1 for request latency,
+batch sizes 1 and 4 for throughput, one warmup, three measured repetitions,
+and the same 2,048-token cap and symbolic-equivalence scorer. Record cold model
+load separately from warmed generation time. The archived Qwen timings are not
+the final cost baseline because the active math trainer shared the GPU during
+this diagnostic.
+
+The frozen-Qwen challenge subset can be reproduced directly:
+
+```bash
+python -m tools.evaluate_v2_qwen_baseline \
+  --config config/v2_broad_math.yaml \
+  --panel-manifest benchmarks/v2_qwen_math_gap_panel.json \
+  --panel-subset challenge \
+  --batch-size 1 \
+  --max-new-tokens 2048 \
+  --prompt-mode brief_reasoning \
+  --device cuda \
+  --gpu-hourly-usd CURRENT_RUNPOD_RATE \
+  --output-root /workspace/cftn-text/diagnostics/qwen_math_gap_recheck
+```
+
+The evaluator reports model-load and generation time separately, prompt and
+generated token work, token throughput, peak CUDA memory, and optional dollar
+cost from the supplied hourly rate. The trained expert must use the same record
+IDs and write the same measurements plus its checkpoint hash and size.
+
 ## Curriculum decision
 
 Do not mutate the active, hash-sealed V2 run. Its scratch-trained 19M-parameter
