@@ -26,10 +26,10 @@ trained or accepted.
 
 The exact Qwen parameter count reconstructed from the published config is
 4,022,468,096. R4 expands the proof math tower from 1,536 to 4,096 lossless
-byte tokens and expands the optional answer-composer buffers. The exact
-post-change resident count is recorded by the RunPod architecture audit before
-training; it remains approximately **4.091B**. Only math and string are active
-today.
+byte tokens and expands the optional answer-composer buffers. The proof math
+tower now has exactly 19,023,489 parameters, and all current non-Qwen modules
+together add 68,208,738 parameters. The resulting resident skeleton is exactly
+**4,090,676,834 parameters (4.091B)**. Only math and string are active today.
 
 For a 32B resident target, reserving the coordinator, dispatcher, and present
 non-tower integration leaves approximately 27.945B parameters for twelve
