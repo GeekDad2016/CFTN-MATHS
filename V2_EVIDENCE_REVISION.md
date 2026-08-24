@@ -88,6 +88,97 @@ run. Activating it requires a new sealed config that defines:
 - direction-disabled, shuffled-message, no-harm, recurrence, and compute arms;
 - backward-regression tests for math and exact-string behavior.
 
+## Current parameter footprint
+
+The configured V2 architecture was instantiated and counted directly on
+2026-08-24. Counts are unique model parameters, not checkpoint bytes or the
+sum of parameters activated on every request.
+
+For comparison, the confirmed V1.3 model plus its learned dispatcher contains
+155,369,206 parameters (0.155B). V2 raises the configured resident total to
+179,208,224 parameters (0.179B), primarily through the larger math/string
+specialists and wider integration modules.
+
+| Component | Parameters |
+| --- | ---: |
+| Frozen GPT-2 language workspace | 124,439,808 |
+| Broad-math tower | 18,040,449 |
+| Exact-string tower | 16,070,273 |
+| Learned typed dispatcher | 116,106 |
+| Retained bridges, receivers, fusion, gates, halt, and answer composer | 20,541,588 |
+| **Total resident V2 architecture** | **179,208,224 (0.179B)** |
+| **Accepted typed-runtime core** | **158,666,636 (0.159B)** |
+
+The accepted typed runtime core is GPT-2, both native specialists, and the
+dispatcher. The other 20.54M parameters remain in the current model for
+checkpoint compatibility and causal diagnostics, but deterministic typed
+composition does not depend on the learned answer composer or latent request
+path. Conditional execution means active parameters per request are lower than
+resident parameters whenever only one specialist, or no specialist, is used.
+
+## Capability-tower roadmap
+
+New towers must be introduced as small, falsifiable capability probes before
+they receive substantial parameter or data budgets. A candidate tower should
+not be scaled until it passes all of the following: standalone competence,
+lossless typed-request equivalence, held-out dispatch and unsupported-request
+rejection, native end-to-end accuracy, causal benefit under ablation, no harm
+to unrelated tasks, parallel composition, sequential composition, and measured
+conditional-compute savings.
+
+Recommended order:
+
+| Phase | Candidate tower | Probe size | Small capability proof before scaling |
+| --- | --- | ---: | --- |
+| V2 extension | Code and program execution | 100M-300M | Short programs, algorithm traces, unit-test repair, exact execution outputs, and explicit failure/timeout results. This is the recommended use of `extension_1`. |
+| Early expansion | Structured data and tools | 50M-200M | Typed JSON/CSV/table projection, filtering, joins, aggregation, schema validation, and constrained API/tool calls. |
+| Early expansion | Retrieval and evidence | 100M-300M | Closed-corpus retrieval, quotation-span provenance, multi-document comparison, citation correctness, and abstention when evidence is absent. |
+| Reasoning expansion | Logic and planning | 100M-500M | Constraint satisfaction, temporal ordering, scheduling, state tracking, plan validation, and replanning after a failed action. |
+| Knowledge expansion | Science | 300M-1B | Verifiable physics, chemistry, and biology problems, with units, equations, and evidence separated from unsupported recall. |
+| Context expansion | Long-document analysis | 300M-1B | Long-range entity tracking, document comparison, extraction, summarization with provenance, and contradiction detection. |
+| Language expansion | Multilingual | 300M-1B | Translation, cross-lingual retrieval, language identification, and preservation of names, numbers, and formatting. |
+| Modality expansion | Vision and spatial reasoning | 500M-2B | OCR, diagrams, charts, geometry, visual question answering, and image-grounded typed outputs. Add only after text dispatch remains stable with more specialists. |
+
+Exact string/byte operations should remain a small deterministic specialist;
+they are a precision and composition control, not a place where billions of
+parameters are likely to buy useful capability. Likewise, retrieval indices,
+interpreters, calculators, and API executors should be treated as tools behind
+typed contracts when deterministic execution is more reliable than learned
+weights.
+
+## Path to a 32B aggregate system
+
+`32B combined` means resident parameters across the coordinator, specialists,
+and integration modules. It does not mean that all 32B should be activated for
+every request. Relative to the current 0.179B V2 configuration, a 32B system is
+about 179 times larger, so it should be reached by staged replacement and
+scaling rather than by widening the current two towers in one jump.
+
+A useful planning envelope is a 7B generalist coordinator plus a 1B allowance
+for typed dispatch, adapters, modality projections, and integration. That
+leaves 24B for specialists:
+
+| Specialist count | Average specialist size | Aggregate total |
+| ---: | ---: | ---: |
+| 4 | 6B | 32B |
+| 6 | 4B | 32B |
+| 8 | 3B | 32B |
+| 12 | 2B | 32B |
+
+The recommended balanced target is **7B coordinator + six approximately 4B
+specialists + up to 1B integration = 32B**. It offers enough depth per expert
+without making the dispatcher choose among an unnecessarily fragmented set of
+tiny experts. A heterogeneous alternative could allocate the same envelope to
+larger math and code towers, medium science/reasoning/retrieval towers, and
+small exact-operation/tool towers. Exact sizes must be recomputed from sealed
+configs because vocabulary, context embeddings, tied weights, receivers, and
+modality projections all affect the total.
+
+Scaling gates should be enforced at approximately 0.2B, 1B, 4B, 8B, 16B, and
+32B aggregate sizes. At each gate, scale only the components whose standalone
+and routed learning curves are still improving; otherwise add missing
+capabilities or better data instead of parameters.
+
 ## Ordered pipeline
 
 1. prepare and hash broad-math data;
