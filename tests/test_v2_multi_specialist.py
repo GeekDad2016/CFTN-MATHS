@@ -59,6 +59,20 @@ def test_v2_uses_fresh_training_and_reserves_one_inactive_specialist(tmp_path):
     assert config["integration_training"]["phases"][-1][
         "trainable_components"
     ] == ["wake_gates"]
+    assert config["dispatcher"]["confidence_threshold"] == 0.90
+    assert config["dispatcher"]["acceptance"][
+        "minimum_registered_accuracy"
+    ] == 1.0
+    assert config["native_dispatch_evaluation"][
+        "specialist_generation_policy"
+    ] == "full_context_v1"
+    assert config["native_dispatch_evaluation"]["examples_by_class"].keys() == {
+        "explicit_math",
+        "exact_string",
+        "language_dependent_math",
+        "multi_parallel",
+        "multi_sequential",
+    }
 
 
 def test_v2_gpt_receivers_use_the_multi_specialist_bridge_dimensions():

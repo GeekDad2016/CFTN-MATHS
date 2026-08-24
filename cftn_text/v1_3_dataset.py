@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .tokenizer import ByteMathTokenizer, SequenceTooLongError, pad_1d
+from .v1_3_answer_bus import extract_answer_payload, registered_answer_bus
 from .v1_3_data import JOINT_SCHEMA, STRING_SCHEMA, load_v1_3_records
 
 
@@ -123,6 +124,7 @@ class V13JointCollator:
     ) -> dict[str, torch.Tensor]:
         input_sequences: list[list[int]] = []
         label_sequences: list[list[int]] = []
+        answer_sequences: list[list[int]] = []
         prefix_lengths: list[int] = []
         for record in records:
             target = record["specialist_targets_by_round"][specialist][round_index]
@@ -133,10 +135,15 @@ class V13JointCollator:
             if target is None:
                 sequence = prefix
                 labels = [-100] * len(sequence)
+                answer_ids: list[int] = []
             else:
                 target_ids = self.math_tokenizer.encode(str(target), add_eos=True)
                 sequence = prefix + target_ids
                 labels = [-100] * len(prefix) + target_ids
+                answer = extract_answer_payload(str(target), strict=True)
+                if answer is None:
+                    raise ValueError("specialist target contains no answer payload")
+                answer_ids = self.math_tokenizer.encode(answer)
             if len(sequence) > self.maximum_specialist_length:
                 raise SequenceTooLongError(
                     f"{specialist} round {round_index + 1} sequence has "
@@ -144,15 +151,21 @@ class V13JointCollator:
                 )
             input_sequences.append(sequence)
             label_sequences.append(labels)
+            answer_sequences.append(answer_ids)
             prefix_lengths.append(len(prefix))
         input_ids, attention_mask = pad_1d(
             input_sequences, self.math_tokenizer.pad_token_id
         )
         labels, _ = pad_1d(label_sequences, -100)
+        answer_ids, answer_attention_mask = pad_1d(
+            answer_sequences, self.math_tokenizer.pad_token_id
+        )
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
+            "answer_ids": answer_ids,
+            "answer_attention_mask": answer_attention_mask,
             "prefix_lengths": torch.tensor(prefix_lengths, dtype=torch.long),
         }
 
@@ -162,6 +175,8 @@ class V13JointCollator:
         gpt_prefixes: list[list[int]] = []
         gpt_sequences: list[list[int]] = []
         gpt_labels: list[list[int]] = []
+        answer_decoder_inputs: list[list[int]] = []
+        answer_labels: list[list[int]] = []
         wake_targets = torch.zeros(
             (len(records), self.maximum_rounds, len(self.specialist_names)),
             dtype=torch.float32,
@@ -185,6 +200,19 @@ class V13JointCollator:
             gpt_prefixes.append(prompt_ids)
             gpt_sequences.append(combined)
             gpt_labels.append([-100] * len(prompt_ids) + target_ids)
+            answer_target_ids = self.math_tokenizer.encode(str(record["gpt_target"]))
+            answer_decoder_inputs.append(
+                [self.math_tokenizer.bos_token_id, *answer_target_ids]
+            )
+            registered_answer_labels = [
+                *answer_target_ids,
+                self.math_tokenizer.eos_token_id,
+            ]
+            answer_labels.append(
+                registered_answer_labels
+                if record["required_specialists"]
+                else [-100] * len(registered_answer_labels)
+            )
             required_by_round = record["required_specialists_by_round"]
             if len(required_by_round) != self.maximum_rounds:
                 raise ValueError("required-specialist rounds differ from configuration")
@@ -218,6 +246,55 @@ class V13JointCollator:
             gpt_sequences, int(self.gpt_pad_id)
         )
         padded_gpt_labels, _ = pad_1d(gpt_labels, -100)
+        padded_answer_decoder_inputs, answer_decoder_attention_mask = pad_1d(
+            answer_decoder_inputs, self.math_tokenizer.pad_token_id
+        )
+        padded_answer_labels, _ = pad_1d(answer_labels, -100)
+        override_entries = [record.get("answer_bus_override") for record in records]
+        answer_bus_override = None
+        if any(value is not None for value in override_entries):
+            token_sequences: list[list[int]] = []
+            specialist_sequences: list[list[int]] = []
+            round_sequences: list[list[int]] = []
+            position_sequences: list[list[int]] = []
+            for record, entries in zip(records, override_entries):
+                resolved = entries
+                if resolved is None:
+                    resolved = [
+                        {"round": round_index, "specialist": specialist, "payload": payload}
+                        for round_index, specialist, payload in registered_answer_bus(record)
+                    ]
+                tokens: list[int] = []
+                specialists: list[int] = []
+                rounds: list[int] = []
+                positions: list[int] = []
+                for entry in resolved:
+                    specialist = str(entry["specialist"])
+                    round_index = int(entry["round"])
+                    if specialist not in self.specialist_names:
+                        raise ValueError("answer-bus override has an unknown specialist")
+                    if round_index < 0 or round_index >= self.maximum_rounds:
+                        raise ValueError("answer-bus override has an invalid round")
+                    payload_ids = self.math_tokenizer.encode(str(entry["payload"]))
+                    tokens.extend(payload_ids)
+                    specialists.extend([self.specialist_names.index(specialist)] * len(payload_ids))
+                    rounds.extend([round_index] * len(payload_ids))
+                    positions.extend(range(len(payload_ids)))
+                token_sequences.append(tokens)
+                specialist_sequences.append(specialists)
+                round_sequences.append(rounds)
+                position_sequences.append(positions)
+            override_ids, override_mask = pad_1d(token_sequences, self.math_tokenizer.pad_token_id)
+            override_specialists, _ = pad_1d(specialist_sequences, 0)
+            override_rounds, _ = pad_1d(round_sequences, 0)
+            override_positions, _ = pad_1d(position_sequences, 0)
+            answer_bus_override = {
+                "token_ids": override_ids,
+                "attention_mask": override_mask.to(dtype=torch.bool),
+                "specialist_ids": override_specialists,
+                "round_ids": override_rounds,
+                "position_ids": override_positions,
+            }
         specialist_batches = {
             name: [
                 self._specialist_batch(records, name, round_index)
@@ -225,16 +302,115 @@ class V13JointCollator:
             ]
             for name in self.specialist_names
         }
-        return {
+        result = {
             "gpt_prepass_input_ids": gpt_prepass_ids,
             "gpt_prepass_attention_mask": gpt_prepass_mask,
             "gpt_input_ids": gpt_input_ids,
             "gpt_attention_mask": gpt_attention_mask,
             "gpt_labels": padded_gpt_labels,
+            "answer_decoder_input_ids": padded_answer_decoder_inputs,
+            "answer_decoder_attention_mask": answer_decoder_attention_mask,
+            "answer_labels": padded_answer_labels,
+            "answer_composer_eligible": torch.tensor(
+                [bool(record["required_specialists"]) for record in records],
+                dtype=torch.bool,
+            ),
             "specialists": specialist_batches,
             "wake_targets": wake_targets,
             "halt_targets": halt_targets,
             "task_classes": [str(record["task_class"]) for record in records],
+            "records": records,
+        }
+        if answer_bus_override is not None:
+            result["answer_bus_override"] = answer_bus_override
+        return result
+
+
+class V13JointInferenceCollator(V13JointCollator):
+    """Build a generation batch without specialist, route, halt, or answer labels.
+
+    Runtime records need only the public prompt fields. This prevents native
+    dispatcher evaluation from accidentally consuming registered oracle
+    prompts, wake targets, specialist targets, or completion targets.
+    """
+
+    def _neutral_specialist_batch(
+        self, records: list[dict[str, Any]], specialist: str
+    ) -> dict[str, torch.Tensor]:
+        prefixes = [
+            self.math_tokenizer.encode_generation_prefix(
+                self.neutral_workspaces[specialist], self.maximum_specialist_length
+            )
+            for _ in records
+        ]
+        input_ids, attention_mask = pad_1d(
+            prefixes, self.math_tokenizer.pad_token_id
+        )
+        labels = torch.full_like(input_ids, -100)
+        empty = [[] for _ in records]
+        answer_ids, answer_attention_mask = pad_1d(
+            empty, self.math_tokenizer.pad_token_id
+        )
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+            "answer_ids": answer_ids,
+            "answer_attention_mask": answer_attention_mask.to(dtype=torch.bool),
+            "prefix_lengths": torch.tensor(
+                [len(prefix) for prefix in prefixes], dtype=torch.long
+            ),
+        }
+
+    def __call__(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        if any(record.get("schema_version") != JOINT_SCHEMA for record in records):
+            raise ValueError("V1.3 inference collator received a non-joint record")
+        gpt_prefixes = [
+            _external_encode(self.gpt_tokenizer, self.gpt_prompt(record))
+            for record in records
+        ]
+        if any(len(prefix) > self.maximum_gpt_length for prefix in gpt_prefixes):
+            raise SequenceTooLongError(
+                "V1.3 inference prompt exceeds the configured GPT context"
+            )
+        gpt_ids, gpt_mask = pad_1d(gpt_prefixes, int(self.gpt_pad_id))
+        gpt_labels = torch.full_like(gpt_ids, -100)
+        answer_decoder_ids = torch.full(
+            (len(records), 1), self.math_tokenizer.bos_token_id, dtype=torch.long
+        )
+        answer_decoder_mask = torch.ones_like(answer_decoder_ids, dtype=torch.bool)
+        specialist_batches = {
+            name: [
+                self._neutral_specialist_batch(records, name)
+                for _ in range(self.maximum_rounds)
+            ]
+            for name in self.specialist_names
+        }
+        return {
+            "gpt_prepass_input_ids": gpt_ids,
+            "gpt_prepass_attention_mask": gpt_mask,
+            "gpt_input_ids": gpt_ids,
+            "gpt_attention_mask": gpt_mask,
+            "gpt_labels": gpt_labels,
+            "answer_decoder_input_ids": answer_decoder_ids,
+            "answer_decoder_attention_mask": answer_decoder_mask,
+            "answer_labels": torch.full_like(answer_decoder_ids, -100),
+            "answer_composer_eligible": torch.zeros(
+                len(records), dtype=torch.bool
+            ),
+            "specialists": specialist_batches,
+            "wake_targets": torch.zeros(
+                len(records),
+                self.maximum_rounds,
+                len(self.specialist_names),
+                dtype=torch.float32,
+            ),
+            "halt_targets": torch.full(
+                (len(records), self.maximum_rounds), -100.0, dtype=torch.float32
+            ),
+            "task_classes": [
+                str(record.get("task_class", "unknown")) for record in records
+            ],
             "records": records,
         }
 

@@ -7,7 +7,9 @@ only as historical provenance.
 
 ## What V2 trains
 
-- Frozen GPT-2 remains the general-language workspace and final responder.
+- Frozen GPT-2 remains the general-language workspace and answers requests
+  that need no specialist. Specialist-backed answers use typed deterministic
+  result composition rather than asking GPT to reproduce exact payload bytes.
 - A broad byte-level math tower is trained from scratch on the fixed 400,000
   example curriculum and selected by validation-only greedy generation.
 - A larger byte-level exact-string tower is trained from scratch on 200,000
@@ -19,6 +21,9 @@ only as historical provenance.
 - Three callosal rounds permit sequential cooperation and a learned halt gate.
 - Hard mode physically skips inactive specialist execution in the sealed
   evaluation.
+- A separately trained value-invariant dispatcher selects a finite typed call
+  graph from the public user prompt. It routes broad math, one-specialist,
+  parallel, and both sequential dependency orders without task labels.
 
 The native specialists see neutral workspaces during joint training. GPT must
 communicate task-relevant information to a required specialist, and return
@@ -43,12 +48,31 @@ separate transition with these executable safeguards:
 6. use no warmup and cap gate LR at `5e-7` (floor `2.5e-7`);
 7. reject checkpoints that violate false-wake, exact-set, precision, recall,
    baseline-regression, always-open, or always-closed guards;
-8. prevent any ineligible checkpoint from becoming the selected Stage 15
+8. prevent any ineligible checkpoint from becoming the selected Stage 16
    checkpoint or entering the final causal evaluation.
 
 The soft-to-hard baseline is diagnostic rather than a training gate inherited
 from V1.3. V2 measures its own thresholding loss because its towers, bridges,
 receivers, and gates are newly trained.
+
+The later V1.3 native confirmation also showed that high answer-bus format
+validity does not guarantee task transfer: a learned answer decoder trained on
+clean buses failed on native tower outputs. V2 therefore carries forward the
+confirmed repair as an executable contract:
+
+1. the learned component predicts only a finite intent/call graph;
+2. quoted values, numeric operands, and broad-math prompts are immutable source
+   spans, never generated arguments;
+3. each typed call is rendered into the target specialist's independently
+   validated native interface;
+4. result dependencies are explicit and may only refer to an earlier round;
+5. exact specialist payloads are composed deterministically by typed result
+   references;
+6. unsupported, structurally invalid, or low-confidence requests fail closed;
+7. dispatcher validation covers the registered grammar, held-out paraphrases,
+   broad-math language, and independent semantic/unsupported controls;
+8. a native end-to-end panel runs with only public prompt fields and must prove
+   that no task, wake, target, or oracle-specialist metadata reached runtime.
 
 ## Reserved third specialist
 
@@ -73,17 +97,20 @@ run. Activating it requires a new sealed config that defines:
 4. evaluate sealed standalone math generation;
 5. record whether later math-data scaling is justified (never auto-scale);
 6. prepare and hash multi-specialist/string data;
-7. calibrate frozen GPT on pure-language prompts;
-8. train the larger exact-string specialist for at most 30 epochs;
-9. seal native specialist competence and task-matched coverage;
-10. train one-round single-specialist capacity for 8 epochs;
-11. train dense mixed messages for 12 epochs;
-12. train dense recurrent cooperation for 12 epochs;
-13. train supervised soft wakes for 10 epochs;
-14. evaluate the selected soft checkpoint in hard mode with zero updates;
-15. harden only wake gates for at most 10 epochs, with the halt gate frozen;
-16. run the sealed causal, no-harm, recurrence, routing, and compute suite;
-17. assemble `v2_final_report.json` and `V2_EXPERIMENT_RESULTS.md`.
+7. train and seal the learned constrained dispatcher;
+8. calibrate frozen GPT on pure-language prompts;
+9. train the larger exact-string specialist for at most 30 epochs;
+10. seal native specialist competence and task-matched coverage;
+11. train one-round single-specialist capacity for 8 epochs;
+12. train dense mixed messages for 12 epochs;
+13. train dense recurrent cooperation for 12 epochs;
+14. train supervised soft wakes for 10 epochs;
+15. evaluate the selected soft checkpoint in hard mode with zero updates;
+16. harden only wake gates for at most 10 epochs, with the halt gate frozen;
+17. run native typed dispatch and deterministic composition with oracle metadata
+    removed from runtime records;
+18. run the sealed causal, no-harm, recurrence, routing, and compute suite;
+19. assemble `v2_final_report.json` and `V2_EXPERIMENT_RESULTS.md`.
 
 ## Acceptance and claim boundary
 
@@ -92,6 +119,9 @@ wake, wake precision/recall, exact per-round required sets, positive
 multi-specialist synergy, causal loss under required direction/message
 ablations, low irrelevant-specialist effect, hard-vs-dense preservation,
 conditional-compute reduction, sequential accuracy, and multi-round gain.
+It additionally requires passing dispatcher accuracy/coverage on every sealed
+panel and passing native end-to-end typed dispatch, request completion, answer
+bus validity, task accuracy, no-oracle, and deterministic-composition gates.
 
 Competence-conditioned scores prevent missing specialist knowledge from being
 misreported as a bridge failure. Diagnostic paraphrase, extrapolation,

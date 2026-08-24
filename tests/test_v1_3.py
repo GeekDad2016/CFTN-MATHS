@@ -11,17 +11,43 @@ from cftn_text.data_generator import file_sha256
 from cftn_text.gpt_receiver import FrozenGPT2Tower
 from cftn_text.math_tower import MathTower
 from cftn_text.tokenizer import ByteMathTokenizer
+from cftn_text.v1_3_answer_bus import (
+    TypedAnswerComposer,
+    compose_registered_answer,
+    extract_answer_payload,
+)
 from cftn_text.v1_3_config import (
     V13PrerequisiteError,
     audit_v1_2_pass,
     load_v1_3_config,
 )
-from cftn_text.v1_3_data import generate_joint_record, generate_string_record
-from cftn_text.v1_3_dataset import V13JointCollator
+from cftn_text.v1_3_data import (
+    generate_joint_record,
+    generate_string_record,
+    joint_string_operation,
+)
+from cftn_text.v1_3_dataset import V13JointCollator, V13JointInferenceCollator
+from cftn_text.v1_3_dispatch import (
+    DISPATCH_INTENTS,
+    DispatchError,
+    compile_specialist_request,
+    compile_v1_3_intent,
+    compose_dispatch_results,
+    dispatch_intent_from_plan,
+    dispatch_v1_3_prompt,
+)
+from cftn_text.v1_3_learned_dispatch import (
+    ByteIntentClassifier,
+    LearnedV13Dispatcher,
+    encode_dispatch_prompts,
+    load_learned_dispatcher,
+    save_learned_dispatcher_checkpoint,
+)
 from cftn_text.v1_3_evaluation import (
     _arm_metrics,
     _oracle_specialist_items,
     extract_completion_answer,
+    generate_joint_batch,
     resolve_specialist_generation_budget,
 )
 from cftn_text.v1_3_model import V13MultiTowerModel
@@ -38,6 +64,16 @@ from tools.run_v1_3_experiment import Stage, _completion_is_valid, command_plan
 from tools.wait_then_run_v1_3 import pipeline_command
 from tools.recover_v1_3_hard_binary import select_adapter_continuation_source
 from tools.recover_v1_3_fusion import PHASE_NAME, configure_fusion_recovery
+from tools.recover_v1_3_answer_bus import (
+    PHASE_NAME as ANSWER_BUS_PHASE_NAME,
+    configure_answer_bus_recovery,
+)
+from tools.continue_v1_3_fusion import (
+    PHASE_NAME as FUSION_CONTINUATION_PHASE_NAME,
+    configure_fusion_continuation,
+    evaluate_late_improvement,
+)
+from tools.continue_v1_3_native_answer_bus import audit_validation_class_coverage
 
 
 ROOT = Path(__file__).parents[1]
@@ -139,6 +175,11 @@ def test_v1_3_data_is_deterministic_balanced_and_sequential():
         "multi_parallel",
         "multi_sequential",
     ]
+    parallel = records[8]
+    expected_reversal = parallel["gpt_target"].split("|", 1)[1]
+    assert parallel["metadata"]["string"]["operation"] == "reverse"
+    assert parallel["metadata"]["string"]["value"] == expected_reversal
+    assert joint_string_operation(parallel) == "reverse"
     pure = records[0]
     assert pure["gpt_prompt"].endswith("Requested archival label:")
     assert pure["gpt_target"] == "amber"
@@ -170,6 +211,123 @@ def test_v1_3_data_is_deterministic_balanced_and_sequential():
     assert len(string_items) == len(string_locations) == 1
     assert "For an integer x" in math_items[0]["problem"]
     assert "zero-based indexing" in string_items[0]["problem"]
+
+
+def test_joint_string_operation_repairs_legacy_metadata_from_target():
+    record = generate_joint_record(
+        seed=719, split="joint_validation", index=8, config=_config()
+    )
+    record["metadata"]["string"].pop("operation", None)
+    record["metadata"]["string"]["value"] = "stale-count-or-index-value"
+    assert joint_string_operation(record) == "reverse"
+
+    exact = generate_joint_record(
+        seed=719, split="joint_validation", index=4, config=_config()
+    )
+    exact["metadata"]["string"].pop("operation", None)
+    assert joint_string_operation(exact) in {"count", "index", "reverse"}
+
+
+def test_answer_payload_extraction_is_lossless_and_fail_closed():
+    assert extract_answer_payload("trace<answer>a|b c</answer>") == "a|b c"
+    with pytest.raises(ValueError, match="exactly one"):
+        extract_answer_payload("<answer>a</answer><answer>b</answer>")
+    assert extract_answer_payload("malformed", strict=False) is None
+
+
+def test_registered_answer_bus_has_a_perfect_deterministic_composer_ceiling():
+    config = _config()
+    for index in range(12):
+        record = generate_joint_record(
+            seed=719, split="joint_validation", index=index, config=config
+        )
+        composed = compose_registered_answer(record)
+        if record["task_class"] == "pure_language":
+            assert composed is None
+        else:
+            assert composed == record["gpt_target"]
+
+
+def test_joint_collator_can_supply_a_typed_native_answer_bus_override():
+    config = _config()
+    record = generate_joint_record(
+        seed=719, split="joint_validation", index=2, config=config
+    )
+    specialist = record["required_specialists_by_round"][0][0]
+    record["answer_bus_override"] = [
+        {"round": 0, "specialist": specialist, "payload": "native-near-miss"}
+    ]
+    collator = V13JointCollator(
+        ByteMathTokenizer(),
+        ByteExternalTokenizer(),
+        maximum_gpt_length=config["data"]["maximum_gpt_length"],
+        maximum_specialist_length=config["data"]["maximum_specialist_length"],
+        maximum_rounds=config["runtime"]["maximum_callosal_rounds"],
+        neutral_workspaces=config["runtime"]["neutral_workspaces"],
+    )
+    override = collator([record])["answer_bus_override"]
+    active = override["attention_mask"][0]
+    assert ByteMathTokenizer().decode(override["token_ids"][0][active].tolist()) == "native-near-miss"
+    assert override["round_ids"][0][active].eq(0).all()
+
+
+def test_native_answer_bus_holdout_requires_protocol_validation_classes():
+    records = [{"task_class": name} for name in (
+        "pure_language",
+        "explicit_math",
+        "exact_string",
+        "language_dependent_math",
+        "multi_parallel",
+        "multi_sequential",
+    )]
+    counts = audit_validation_class_coverage(records)
+    assert counts["pure_language"] == 1
+    with pytest.raises(RuntimeError, match="pure_language"):
+        audit_validation_class_coverage(records[1:])
+    with pytest.raises(RuntimeError, match="differs from calibration"):
+        audit_validation_class_coverage(
+            records, expected_pure_language_examples=1000
+        )
+
+
+def test_typed_answer_composer_has_finite_pointer_copy_gradients():
+    torch.manual_seed(29)
+    tokenizer = ByteMathTokenizer()
+    composer = TypedAnswerComposer(
+        prompt_width=16,
+        hidden_size=16,
+        specialist_count=2,
+        maximum_rounds=2,
+        attention_heads=4,
+        decoder_layers=1,
+        dropout=0.0,
+        maximum_source_positions=32,
+        maximum_target_positions=16,
+    )
+    source = tokenizer.encode("abc|cba")
+    target = tokenizer.encode("cba")
+    source_ids = torch.tensor([source], dtype=torch.long)
+    source_mask = torch.ones_like(source_ids)
+    result = composer(
+        prompt_context=torch.randn(1, 16),
+        source_token_ids=source_ids,
+        source_attention_mask=source_mask,
+        source_specialist_ids=torch.zeros_like(source_ids),
+        source_round_ids=torch.zeros_like(source_ids),
+        source_position_ids=torch.arange(len(source)).unsqueeze(0),
+        decoder_input_ids=torch.tensor(
+            [[tokenizer.bos_token_id, *target]], dtype=torch.long
+        ),
+        decoder_attention_mask=torch.ones(1, len(target) + 1, dtype=torch.long),
+    )
+    labels = torch.tensor([[*target, tokenizer.eos_token_id]], dtype=torch.long)
+    loss = torch.nn.functional.nll_loss(
+        result.log_probabilities.flatten(0, 1), labels.flatten()
+    )
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert composer.pointer_query.weight.grad is not None
+    assert bool(composer.pointer_query.weight.grad.abs().sum().gt(0))
 
 
 def test_recovery_derivation_balances_preserved_sequential_records():
@@ -481,6 +639,61 @@ def test_fusion_recovery_trains_only_fusion_and_gpt_receivers():
     )
 
 
+def test_answer_bus_recovery_trains_only_composer():
+    model, batch = _tiny_model_and_batch()
+    model.set_trainable_phase("oracle_hard_answer_bus_recovery")
+    model.train()
+    trainable = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert trainable
+    assert all(name.startswith("answer_composer.") for name in trainable)
+    assert model.answer_composer.training is True
+    assert model.message_fusion.training is False
+    assert model.gpt_tower.receivers.training is False
+
+    _output, loss, components = v1_3_objective(
+        model,
+        batch,
+        wake_mode="oracle",
+        maximum_rounds=2,
+        settings=_config()["integration_training"],
+        global_step=1,
+        objective_mode="oracle_hard_answer_bus",
+        conditional_execution=True,
+        apply_halt=False,
+    )
+    assert torch.isfinite(loss)
+    loss.backward()
+    gradients = {
+        name
+        for name, parameter in model.named_parameters()
+        if parameter.grad is not None and bool(parameter.grad.abs().sum().gt(0))
+    }
+    assert gradients
+    assert all(name.startswith("answer_composer.") for name in gradients)
+    assert components["oracle_hard_answer_bus"] == pytest.approx(1.0)
+
+
+def test_fusion_continuation_trains_only_fusion_and_gpt_receivers():
+    model, _batch = _tiny_model_and_batch()
+    model.set_trainable_phase(FUSION_CONTINUATION_PHASE_NAME)
+    model.train()
+    trainable = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert trainable
+    assert all(
+        name.startswith(("message_fusion.", "gpt_tower.receivers."))
+        for name in trainable
+    )
+    assert model.message_fusion.training is True
+    assert model.gpt_tower.receivers.training is True
+    assert model.request_bridges.training is False
+    assert model.return_bridges.training is False
+    assert model.specialist_receivers.training is False
+
+
 def test_recovery_subset_is_deterministic_and_class_stratified():
     records = [
         {"record_id": f"math-{index}", "task_class": "explicit_math"}
@@ -527,6 +740,70 @@ def test_fusion_recovery_configuration_pins_optimizer_and_source(tmp_path: Path)
     assert phase["source_checkpoint_sha256"] == file_sha256(source)
     assert phase["train_examples_by_class"]["multi_parallel"] == 10_000
     assert config["integration_training"]["phases"][-1] is phase
+
+
+def test_answer_bus_recovery_configuration_is_isolated_and_fail_closed(tmp_path: Path):
+    config = copy.deepcopy(_config())
+    source = tmp_path / "source.pth"
+    source.write_bytes(b"protected fusion epoch four")
+    phase = configure_answer_bus_recovery(config, source)
+    assert phase["name"] == ANSWER_BUS_PHASE_NAME
+    assert phase["objective_mode"] == "oracle_hard_answer_bus"
+    assert phase["selection_mode"] == "answer_bus_recovery"
+    assert phase["minimum_epochs"] == 10
+    assert phase["max_epochs"] == 50
+    assert phase["source_checkpoint_sha256"] == file_sha256(source)
+    assert phase["zero_update_candidate"] is False
+    assert set(phase["train_task_classes"]) == {
+        "explicit_math",
+        "exact_string",
+        "language_dependent_math",
+        "multi_parallel",
+        "multi_sequential",
+    }
+    assert config["answer_composer"]["maximum_target_positions"] == 48
+    assert config["integration_training"]["phases"][-1] is phase
+
+
+def test_fusion_continuation_configuration_guarantees_fifty_epochs(tmp_path: Path):
+    config = copy.deepcopy(_config())
+    source = tmp_path / "source.pth"
+    source.write_bytes(b"accepted fusion source")
+    phase = configure_fusion_continuation(config, source)
+    assert phase["name"] == FUSION_CONTINUATION_PHASE_NAME
+    assert phase["minimum_epochs"] == 50
+    assert phase["max_epochs"] == 100
+    assert phase["early_stop_patience"] == 5
+    assert phase["selection_min_delta"] == pytest.approx(2.0e-4)
+    assert phase["fusion_learning_rate"] == pytest.approx(2.5e-5)
+    assert phase["receiver_learning_rate"] == pytest.approx(1.25e-7)
+    assert phase["source_checkpoint_sha256"] == file_sha256(source)
+
+
+def test_fusion_continuation_requires_meaningful_late_improvement():
+    def row(epoch: int, selection: float) -> dict:
+        return {
+            "epoch": epoch,
+            "selection_metric": selection,
+            "checkpoint_eligible": True,
+            "hardening_acceptance": {"gates": {"pass": True}},
+        }
+
+    metrics = [row(0, 1.0), row(4, 1.0025), row(5, 1.0026)]
+    too_small = evaluate_late_improvement(
+        metrics,
+        {"best_metrics": row(5, 1.0026)},
+        minimum_delta=2.0e-4,
+    )
+    assert too_small["triggered"] is False
+
+    improved = evaluate_late_improvement(
+        [*metrics, row(6, 1.0030)],
+        {"best_metrics": row(6, 1.0030)},
+        minimum_delta=2.0e-4,
+    )
+    assert improved["triggered"] is True
+    assert improved["selection_delta"] == pytest.approx(5.0e-4)
 
 
 def test_protocol_aware_adapter_selection_rewards_real_focus_improvement():
@@ -745,6 +1022,279 @@ def test_v1_3_full_context_generation_policy_uses_tower_limit():
     assert resolve_specialist_generation_budget(config, tower, "full_context_v1") == 256
     with pytest.raises(ValueError, match="unsupported specialist generation policy"):
         resolve_specialist_generation_budget(config, tower, "unknown")
+
+
+def test_v1_3_generation_rejects_unknown_lossless_request_mode():
+    model, batch = _tiny_model_and_batch()
+    with pytest.raises(ValueError, match="unsupported lossless request mode"):
+        generate_joint_batch(
+            model,
+            batch,
+            ByteMathTokenizer(),
+            ByteExternalTokenizer(),
+            wake_mode="oracle",
+            maximum_rounds=1,
+            max_specialist_new_tokens=1,
+            max_gpt_new_tokens=1,
+            lossless_request_mode="unknown",
+        )
+
+
+def test_v1_3_typed_dispatcher_fails_closed_in_generation():
+    model, batch = _tiny_model_and_batch()
+    batch["records"] = [
+        {"problem": "an unregistered request"} for _ in batch["records"]
+    ]
+    results = generate_joint_batch(
+        model,
+        batch,
+        ByteMathTokenizer(),
+        ByteExternalTokenizer(),
+        wake_mode="hard",
+        maximum_rounds=1,
+        max_specialist_new_tokens=1,
+        max_gpt_new_tokens=1,
+        lossless_request_mode="typed_dispatcher_no_latent",
+    )
+    assert all(result["generation"] == "" for result in results)
+    assert all(result["dispatch_plan"] is None for result in results)
+    assert all(result["dispatch_error"] for result in results)
+
+
+@pytest.mark.parametrize("index", range(10))
+def test_v1_3_dispatcher_compiles_registered_prompt_without_oracle_metadata(index: int):
+    config = _config()
+    record = generate_joint_record(
+        seed=int(config["revision"]["seed"]),
+        split="joint_validation",
+        index=index,
+        config=config,
+    )
+    plan = dispatch_v1_3_prompt(record["problem"])
+    actual_routes = [
+        [
+            specialist
+            for specialist in ("math", "string")
+            if plan.call_for(round_index, specialist) is not None
+        ]
+        for round_index in range(int(config["runtime"]["maximum_callosal_rounds"]))
+    ]
+    assert actual_routes == record["required_specialists_by_round"]
+    results: dict[str, str] = {}
+    for call in sorted(plan.calls, key=lambda value: value.round_index):
+        request = compile_specialist_request(plan, call, results)
+        expected = record["specialist_oracle_problems_by_round"][call.specialist][
+            call.round_index
+        ]
+        assert request == expected
+        target = record["specialist_targets_by_round"][call.specialist][
+            call.round_index
+        ]
+        payload = extract_answer_payload(target, strict=True)
+        assert payload is not None
+        results[call.result_id] = payload
+    assert compose_dispatch_results(plan, results) == (
+        record["gpt_target"] if plan.calls else None
+    )
+    serialized = json.dumps(plan.to_dict(), sort_keys=True)
+    assert "specialist_oracle" not in serialized
+    assert "gpt_target" not in serialized
+
+
+def test_v1_3_dispatcher_supports_both_sequential_dependency_orders():
+    config = _config()
+    plans = []
+    for index in (9, 19):
+        record = generate_joint_record(
+                seed=int(config["revision"]["seed"]),
+            split="joint_validation",
+            index=index,
+            config=config,
+        )
+        plans.append(dispatch_v1_3_prompt(record["problem"]))
+    assert {plan.plan_kind for plan in plans} == {
+        "math_then_string",
+        "string_then_math",
+    }
+    for plan in plans:
+        second = next(call for call in plan.calls if call.round_index == 1)
+        with pytest.raises(DispatchError, match="unavailable"):
+            compile_specialist_request(plan, second, {})
+
+
+@pytest.mark.parametrize(
+    "split",
+    (
+        "joint_train",
+        "joint_validation",
+        "joint_heldout_paraphrase",
+        "joint_extrapolation",
+        "joint_counterfactual",
+        "joint_unseen_composition",
+    ),
+)
+def test_v1_3_dispatcher_covers_registered_split_grammars(split: str):
+    config = _config()
+    for index in range(20):
+        record = generate_joint_record(
+            seed=int(config["revision"]["seed"]),
+            split=split,
+            index=index,
+            config=config,
+        )
+        plan = dispatch_v1_3_prompt(record["problem"])
+        results: dict[str, str] = {}
+        for call in sorted(plan.calls, key=lambda value: value.round_index):
+            assert compile_specialist_request(plan, call, results) == (
+                record["specialist_oracle_problems_by_round"][call.specialist][
+                    call.round_index
+                ]
+            )
+            target = record["specialist_targets_by_round"][call.specialist][
+                call.round_index
+            ]
+            payload = extract_answer_payload(target, strict=True)
+            assert payload is not None
+            results[call.result_id] = payload
+        assert compose_dispatch_results(plan, results) == (
+            record["gpt_target"] if plan.calls else None
+        )
+
+
+def test_v1_3_dispatcher_fails_closed_on_unknown_prompt():
+    with pytest.raises(DispatchError, match="outside"):
+        dispatch_v1_3_prompt("Please maybe do some mathematics with an unknown format.")
+
+
+def test_v1_3_inference_collator_requires_no_oracle_or_answer_fields():
+    config = _config()
+    record = generate_joint_record(
+        seed=int(config["revision"]["seed"]),
+        split="joint_validation",
+        index=8,
+        config=config,
+    )
+    runtime_record = {
+        key: record[key]
+        for key in ("schema_version", "record_id", "problem", "gpt_prompt")
+    }
+    collator = V13JointInferenceCollator(
+        ByteMathTokenizer(),
+        ByteExternalTokenizer(),
+        maximum_gpt_length=int(config["data"]["maximum_gpt_length"]),
+        maximum_specialist_length=int(config["data"]["maximum_specialist_length"]),
+        maximum_rounds=int(config["runtime"]["maximum_callosal_rounds"]),
+        neutral_workspaces=config["runtime"]["neutral_workspaces"],
+    )
+    batch = collator([runtime_record])
+    assert not batch["wake_targets"].bool().any()
+    assert not batch["answer_composer_eligible"].any()
+    assert batch["records"] == [runtime_record]
+    assert batch["task_classes"] == ["unknown"]
+    for rounds in batch["specialists"].values():
+        for specialist_batch in rounds:
+            assert (specialist_batch["labels"] == -100).all()
+            assert specialist_batch["answer_ids"].shape == (1, 0)
+
+
+@pytest.mark.parametrize("index", range(20))
+def test_v1_3_constrained_learned_intent_compiler_preserves_exact_operands(index: int):
+    config = _config()
+    record = generate_joint_record(
+        seed=int(config["revision"]["seed"]),
+        split="joint_heldout_paraphrase",
+        index=index,
+        config=config,
+    )
+    oracle_plan = dispatch_v1_3_prompt(record["problem"])
+    intent = dispatch_intent_from_plan(oracle_plan)
+    assert intent in DISPATCH_INTENTS
+    plan = compile_v1_3_intent(record["problem"], intent)
+    actual_routes = [
+        [
+            specialist
+            for specialist in ("math", "string")
+            if plan.call_for(round_index, specialist) is not None
+        ]
+        for round_index in range(int(config["runtime"]["maximum_callosal_rounds"]))
+    ]
+    assert actual_routes == record["required_specialists_by_round"]
+    results: dict[str, str] = {}
+    for call in sorted(plan.calls, key=lambda value: value.round_index):
+        request = compile_specialist_request(plan, call, results)
+        assert request
+        target = record["specialist_targets_by_round"][call.specialist][
+            call.round_index
+        ]
+        payload = extract_answer_payload(target, strict=True)
+        assert payload is not None
+        results[call.result_id] = payload
+    assert compose_dispatch_results(plan, results) == (
+        record["gpt_target"] if plan.calls else None
+    )
+
+
+def test_v1_3_learned_intent_compiler_handles_unregistered_math_wording():
+    prompt = "Could you determine the integer when -7 times it plus 13 reaches -29?"
+    plan = compile_v1_3_intent(prompt, "single_math")
+    call = plan.call_for(0, "math")
+    assert call is not None
+    assert compile_specialist_request(plan, call, {}) == (
+        "For an integer x, -7 times x together with 13 gives -29. Determine x."
+    )
+
+
+def test_v1_3_learned_intent_compiler_rejects_unsupported_intent():
+    with pytest.raises(DispatchError, match="rejected an unsupported prompt"):
+        compile_v1_3_intent("Sort 'cab' alphabetically.", "unsupported")
+
+
+def test_v1_3_learned_dispatcher_checkpoint_round_trip(tmp_path: Path):
+    torch.manual_seed(719)
+    prompts = [
+        "Solve 2*x + (3) = 7. Return x.",
+        "Reverse 'abcdef'.",
+    ]
+    input_ids, attention_mask = encode_dispatch_prompts(prompts, maximum_length=128)
+    model = ByteIntentClassifier(embedding_size=8, channels=8, kernels=(3,), dropout=0.0)
+    logits = model(input_ids, attention_mask)
+    assert logits.shape == (2, len(DISPATCH_INTENTS))
+    checkpoint = tmp_path / "dispatcher.pth"
+    save_learned_dispatcher_checkpoint(
+        checkpoint,
+        model,
+        maximum_length=128,
+        confidence_threshold=0.0,
+        metadata={"test": True},
+    )
+    loaded = load_learned_dispatcher(checkpoint)
+    assert loaded.predict_intents(prompts) == LearnedV13Dispatcher(
+        model,
+        maximum_length=128,
+        confidence_threshold=0.0,
+    ).predict_intents(prompts)
+
+
+def test_v1_3_learned_dispatcher_encoding_hides_operand_values():
+    prompts = [
+        "Resolve 4*x+(16)=56 and flip 'abcdef'.",
+        "Resolve -14*x+(11)=151 and flip 'zyx'.",
+    ]
+    input_ids, attention_mask = encode_dispatch_prompts(
+        prompts, maximum_length=128
+    )
+    assert torch.equal(input_ids[0], input_ids[1])
+    assert torch.equal(attention_mask[0], attention_mask[1])
+
+    label_ids, label_mask = encode_dispatch_prompts(
+        [
+            "The registry name amber is requested.",
+            "The registry name cobalt is requested.",
+        ],
+        maximum_length=128,
+    )
+    assert torch.equal(label_ids[0], label_ids[1])
+    assert torch.equal(label_mask[0], label_mask[1])
 
 
 def test_v1_3_primary_metrics_are_competence_conditioned():

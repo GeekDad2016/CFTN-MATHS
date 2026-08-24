@@ -127,6 +127,7 @@ def _string_problem(
         substring=substring,
     )
     metadata = {
+        "operation": operation,
         "source_string": text,
         "character": char,
         "replacement": replacement,
@@ -340,6 +341,13 @@ def generate_joint_record(
         required = ["math", "string"]
         required_by_round = [["math", "string"]] + [[] for _ in range(rounds - 1)]
         reverse_trace = f"<work>REVERSE({text})={reversed_text}</work>{_answer(reversed_text)}"
+        # ``string_meta`` is created before the joint task class is selected.
+        # Multi-parallel always overrides that provisional operation with a
+        # reversal, so keep the registered metadata aligned with the actual
+        # specialist target and GPT completion target.
+        metadata["string"].update(
+            {"operation": "reverse", "value": reversed_text}
+        )
         specialist_targets = _round_targets([_math_trace(equation)], [reverse_trace], rounds)
         specialist_oracle_problems = _round_prompts(
             [_math_oracle_problem(equation)], [f"Reverse '{text}'."], rounds
@@ -452,6 +460,48 @@ def generate_joint_record(
     }
     record["record_id"] = _record_id(record)
     return record
+
+
+def joint_string_operation(record: dict[str, Any]) -> str | None:
+    """Return the effective string operation for old and repaired joint rows.
+
+    Historical V1.3 manifests predate the explicit ``operation`` metadata and
+    some multi-parallel rows retained provisional count/index metadata.  The
+    specialist target is the authoritative fallback because it is the tensor
+    contract actually consumed by integration training.
+    """
+
+    task_class = str(record.get("task_class", ""))
+    if task_class == "multi_parallel":
+        return "reverse"
+    metadata = record.get("metadata", {})
+    if isinstance(metadata, dict):
+        string_metadata = metadata.get("string", {})
+        if isinstance(string_metadata, dict):
+            operation = string_metadata.get("operation")
+            if isinstance(operation, str) and operation:
+                return operation.lower()
+    targets = record.get("specialist_targets_by_round", {})
+    if not isinstance(targets, dict):
+        return None
+    string_targets = targets.get("string", [])
+    if not isinstance(string_targets, list):
+        return None
+    for target in string_targets:
+        if not isinstance(target, str):
+            continue
+        work = target.upper()
+        for marker, operation in (
+            ("<WORK>REVERSE(", "reverse"),
+            ("<WORK>COUNT(", "count"),
+            ("<WORK>INDEX0(", "index"),
+            ("<WORK>LEN(", "length"),
+            ("<WORK>CONTAINS(", "contains"),
+            ("<WORK>SUBSTITUTE(", "substitute"),
+        ):
+            if marker in work:
+                return operation
+    return None
 
 
 def _write_jsonl(records: Iterable[dict[str, Any]], path: Path) -> int:

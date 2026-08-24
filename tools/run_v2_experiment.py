@@ -200,6 +200,24 @@ def command_plan(
             Path(revision["paths"]["data_root"]) / "manifest.json",
         ),
         Stage(
+            "train_learned_dispatcher",
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "tools.train_v2_dispatcher",
+                "--config",
+                config_path,
+                "--device",
+                device,
+            ],
+            root
+            / str(revision["dispatcher"]["artifact_directory"])
+            / "summary.json",
+            root / str(revision["dispatcher"]["artifact_directory"]),
+            int(revision["dispatcher"]["epochs"]),
+        ),
+        Stage(
             "calibrate_frozen_gpt_language",
             [
                 sys.executable,
@@ -306,6 +324,24 @@ def command_plan(
     stages.extend(
         [
             Stage(
+                "evaluate_native_typed_dispatch",
+                [
+                    sys.executable,
+                    "-u",
+                    "-m",
+                    "tools.evaluate_v2_native_dispatch",
+                    "--config",
+                    config_path,
+                    "--device",
+                    device,
+                ],
+                root
+                / str(
+                    revision["native_dispatch_evaluation"]["artifact_directory"]
+                )
+                / "report.json",
+            ),
+            Stage(
                 "evaluate_sealed_causal_suite",
                 [
                     sys.executable,
@@ -377,8 +413,28 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
         try:
             with stage.completion_path.open("r", encoding="utf-8") as handle:
                 summary = json.load(handle)
-            if summary.get("state") != "completed":
+            if (
+                config.get("_meta")
+                and stage.name.startswith("train_")
+                and stage.name != "train_math"
+                and summary.get("revision_sha256")
+                != _multi_revision(config)["_meta"]["sha256"]
+            ):
                 return False
+            if summary.get("state") != "completed":
+                if stage.name != "train_learned_dispatcher" or summary.get(
+                    "state"
+                ) != "passed":
+                    return False
+            if stage.name == "train_learned_dispatcher":
+                checkpoint = Path(str(summary.get("checkpoint", "")))
+                return (
+                    summary.get("acceptance", {}).get("gates", {}).get("pass")
+                    is True
+                    and checkpoint.is_file()
+                    and file_sha256(checkpoint)
+                    == summary.get("checkpoint_sha256")
+                )
             if stage.name == "train_hardened_wake":
                 contract = summary.get("optimizer_contract", {})
                 selected_metrics = summary.get("best_metrics") or summary.get(
@@ -403,6 +459,21 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
             report = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return False
+    multi_revision_reports = {
+        "calibrate_frozen_gpt_language",
+        "seal_native_specialists",
+        "evaluate_zero_update_hard_baseline",
+        "evaluate_native_typed_dispatch",
+        "evaluate_sealed_causal_suite",
+        "assemble_v2_evidence",
+    }
+    if (
+        config.get("_meta")
+        and stage.name in multi_revision_reports
+        and report.get("revision_sha256")
+        != _multi_revision(config)["_meta"]["sha256"]
+    ):
+        return False
     if stage.name == "select_math_checkpoint":
         selected = report.get("selected", {})
         path = Path(str(selected.get("path", "")))
@@ -423,6 +494,15 @@ def _is_complete(stage: Stage, config: dict[str, Any]) -> bool:
             and report.get("optimizer_updates") == 0
             and report.get("trainable_parameters") == 0
             and report.get("full_validation") is True
+        )
+    if stage.name == "evaluate_native_typed_dispatch":
+        return (
+            report.get("format")
+            == "cftn_text_v2_native_typed_dispatch_evaluation_v1"
+            and report.get("state") == "passed"
+            and report.get("oracle_metadata_visible_to_runtime") is False
+            and report.get("deterministic_answer_composition") is True
+            and report.get("acceptance", {}).get("gates", {}).get("pass") is True
         )
     if stage.name == "evaluate_sealed_causal_suite":
         return report.get("state") == "completed"
@@ -730,11 +810,19 @@ def main(argv: list[str] | None = None) -> None:
         "single_pipeline_lock": str(
             (_project_path(config, "artifact_root") / "pipeline.lock").resolve()
         ),
-        "training_contract": "scaled_v1_3_multi_specialist_with_conditional_execution",
+        "training_contract": "scaled_multi_specialist_with_typed_learned_dispatch_v2",
         "bridge_initialization": "fresh_contextual_bridges_zero_initialized_receivers",
         "prior_reports_gate_training": False,
         "active_specialists": revision["runtime"]["specialist_names"],
         "reserved_specialist_slots": revision["specialist_registry"]["reserved"],
+        "dispatch_contract": {
+            "learned_finite_graph": True,
+            "value_invariant_source_spans": True,
+            "lossless_typed_requests": True,
+            "deterministic_result_composition": True,
+            "unsupported_and_low_confidence_fail_closed": True,
+            "oracle_metadata_visible_to_runtime": False,
+        },
         "hardening_contract": {
             "zero_update_hard_baseline": True,
             "trainable_components": revision["integration_training"]["phases"][-1][

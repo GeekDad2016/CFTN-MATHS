@@ -11,6 +11,7 @@ from .bridges import BridgeOutput, ContextualMessageBridge, GatedCrossReceiver
 from .gpt_receiver import FrozenGPT2Tower
 from .math_tower import MathTower, MathTowerOutput
 from .model import causal_language_loss
+from .v1_3_answer_bus import TypedAnswerComposer
 from .v1_3_fusion import SpecialistAwareMessageFusion
 
 
@@ -86,6 +87,14 @@ class V13ModelOutput:
     halt_loss: torch.Tensor
     compute_loss: torch.Tensor
     gpt_logits: torch.Tensor
+    answer_composer_log_probabilities: torch.Tensor
+    answer_composer_loss: torch.Tensor
+    answer_bus_token_ids: torch.Tensor
+    answer_bus_attention_mask: torch.Tensor
+    answer_bus_specialist_ids: torch.Tensor
+    answer_bus_round_ids: torch.Tensor
+    answer_bus_position_ids: torch.Tensor
+    answer_prompt_context: torch.Tensor
     rounds: list[V13RoundOutput]
 
 
@@ -149,6 +158,28 @@ class V13MultiTowerModel(nn.Module):
             heads=int(bridge["attention_heads"]),
             dropout=float(bridge["dropout"]),
         )
+        composer = dict(config.get("answer_composer", {}))
+        composer_hidden = int(composer.get("hidden_size", message_width))
+        self.answer_composer = TypedAnswerComposer(
+            prompt_width=gpt_tower.hidden_size,
+            hidden_size=composer_hidden,
+            specialist_count=len(self.specialist_names),
+            maximum_rounds=int(config["runtime"]["maximum_callosal_rounds"]),
+            attention_heads=int(
+                composer.get("attention_heads", bridge["attention_heads"])
+            ),
+            decoder_layers=int(composer.get("decoder_layers", 2)),
+            dropout=float(composer.get("dropout", bridge["dropout"])),
+            maximum_source_positions=int(
+                composer.get(
+                    "maximum_source_positions",
+                    config["data"]["maximum_specialist_length"],
+                )
+            ),
+            maximum_target_positions=int(
+                composer.get("maximum_target_positions", 64)
+            ),
+        )
         self.specialist_receivers = nn.ModuleDict()
         for name in self.specialist_names:
             tower = self.specialists[name]
@@ -197,6 +228,9 @@ class V13MultiTowerModel(nn.Module):
             "oracle_hard_adapter_recovery",
             "oracle_hard_adapter_continuation",
             "oracle_hard_fusion_recovery",
+            "oracle_hard_fusion_continuation",
+            "oracle_hard_answer_bus_recovery",
+            "oracle_hard_answer_bus_native_continuation",
             "hard_router_recovery",
         }
         if phase not in allowed:
@@ -204,10 +238,19 @@ class V13MultiTowerModel(nn.Module):
         self.trainable_phase = phase
         for parameter in self.parameters():
             parameter.requires_grad_(False)
-        if phase == "oracle_hard_fusion_recovery":
+        if phase in {
+            "oracle_hard_fusion_recovery",
+            "oracle_hard_fusion_continuation",
+        }:
             for modules in (self.message_fusion, self.gpt_tower.receivers):
                 for parameter in modules.parameters():
                     parameter.requires_grad_(True)
+        elif phase in {
+            "oracle_hard_answer_bus_recovery",
+            "oracle_hard_answer_bus_native_continuation",
+        }:
+            for parameter in self.answer_composer.parameters():
+                parameter.requires_grad_(True)
         elif phase not in {"hardened_wake", "hard_router_recovery"}:
             for modules in (
                 self.request_bridges,
@@ -240,6 +283,8 @@ class V13MultiTowerModel(nn.Module):
             "hardened_wake",
             "hard_router_recovery",
             "oracle_hard_fusion_recovery",
+            "oracle_hard_fusion_continuation",
+            "oracle_hard_answer_bus_recovery",
         }:
             for modules in (
                 self.request_bridges,
@@ -247,9 +292,17 @@ class V13MultiTowerModel(nn.Module):
                 self.specialist_receivers,
             ):
                 modules.eval()
-            if self.trainable_phase != "oracle_hard_fusion_recovery":
+            if self.trainable_phase not in {
+                "oracle_hard_fusion_recovery",
+                "oracle_hard_fusion_continuation",
+            }:
                 self.gpt_tower.receivers.eval()
                 self.message_fusion.eval()
+        if self.trainable_phase not in {
+            "oracle_hard_answer_bus_recovery",
+            "oracle_hard_answer_bus_native_continuation",
+        }:
+            self.answer_composer.eval()
         return self
 
     def trainable_parameter_count(self) -> int:
@@ -263,6 +316,7 @@ class V13MultiTowerModel(nn.Module):
             "specialist_receivers.",
             "gpt_tower.receivers.",
             "message_fusion.",
+            "answer_composer.",
             "wake_gates.",
             "wake_round_embeddings.",
             "halt_gate.",
@@ -287,6 +341,10 @@ class V13MultiTowerModel(nn.Module):
         if not any(name.startswith("message_fusion.") for name in state):
             optional_legacy.update(
                 name for name in expected if name.startswith("message_fusion.")
+            )
+        if not any(name.startswith("answer_composer.") for name in state):
+            optional_legacy.update(
+                name for name in expected if name.startswith("answer_composer.")
             )
         missing = sorted(expected.difference(state).difference(optional_legacy))
         unexpected = sorted(set(state).difference(expected))
@@ -503,6 +561,11 @@ class V13MultiTowerModel(nn.Module):
             raise ValueError(f"unknown specialists in ablation: {sorted(unknown)}")
         accumulated_returns: list[torch.Tensor] = []
         accumulated_return_masks: list[torch.Tensor] = []
+        answer_bus_token_parts: list[torch.Tensor] = []
+        answer_bus_mask_parts: list[torch.Tensor] = []
+        answer_bus_specialist_parts: list[torch.Tensor] = []
+        answer_bus_round_parts: list[torch.Tensor] = []
+        answer_bus_position_parts: list[torch.Tensor] = []
         round_outputs: list[V13RoundOutput] = []
         specialist_losses: list[torch.Tensor] = []
         wake_logits_all: list[torch.Tensor] = []
@@ -582,6 +645,30 @@ class V13MultiTowerModel(nn.Module):
                 gated_return = returned.message * activation[:, None, None]
                 if name in return_shuffle and gated_return.shape[0] > 1:
                     gated_return = gated_return.roll(1, dims=0)
+                answer_ids = specialist_batch["answer_ids"]
+                answer_mask = specialist_batch["answer_attention_mask"].to(
+                    dtype=torch.bool
+                )
+                answer_mask = answer_mask & active_rows.unsqueeze(1)
+                if name in return_shuffle and answer_ids.shape[0] > 1:
+                    answer_ids = answer_ids.roll(1, dims=0)
+                    answer_mask = answer_mask.roll(1, dims=0)
+                if answer_ids.shape[1] > 0:
+                    answer_bus_token_parts.append(answer_ids)
+                    answer_bus_mask_parts.append(answer_mask)
+                    answer_bus_specialist_parts.append(
+                        torch.full_like(answer_ids, specialist_index)
+                    )
+                    answer_bus_round_parts.append(
+                        torch.full_like(answer_ids, round_index)
+                    )
+                    answer_bus_position_parts.append(
+                        torch.arange(
+                            answer_ids.shape[1], device=answer_ids.device
+                        )
+                        .unsqueeze(0)
+                        .expand_as(answer_ids)
+                    )
                 requests[name] = BridgeOutput(
                     message=gated_request,
                     gate=request.gate * activation[:, None, None],
@@ -646,6 +733,59 @@ class V13MultiTowerModel(nn.Module):
             receive_enabled=not disable_all_communication,
             gate_mode=self.gate_mode,
         )
+        batch_size = int(batch["gpt_input_ids"].shape[0])
+        if answer_bus_token_parts:
+            answer_bus_token_ids = torch.cat(answer_bus_token_parts, dim=1)
+            answer_bus_attention_mask = torch.cat(answer_bus_mask_parts, dim=1)
+            answer_bus_specialist_ids = torch.cat(
+                answer_bus_specialist_parts, dim=1
+            )
+            answer_bus_round_ids = torch.cat(answer_bus_round_parts, dim=1)
+            answer_bus_position_ids = torch.cat(answer_bus_position_parts, dim=1)
+        else:
+            empty_shape = (batch_size, 0)
+            answer_bus_token_ids = torch.zeros(
+                empty_shape, dtype=torch.long, device=gpt_output.logits.device
+            )
+            answer_bus_attention_mask = torch.zeros(
+                empty_shape, dtype=torch.bool, device=gpt_output.logits.device
+            )
+            answer_bus_specialist_ids = answer_bus_token_ids.clone()
+            answer_bus_round_ids = answer_bus_token_ids.clone()
+            answer_bus_position_ids = answer_bus_token_ids.clone()
+        override = batch.get("answer_bus_override")
+        if override is not None:
+            answer_bus_token_ids = override["token_ids"]
+            answer_bus_attention_mask = override["attention_mask"]
+            answer_bus_specialist_ids = override["specialist_ids"]
+            answer_bus_round_ids = override["round_ids"]
+            answer_bus_position_ids = override["position_ids"]
+        answer_prompt_context = _masked_mean(
+            gpt_hidden, batch["gpt_prepass_attention_mask"]
+        )
+        composer = self.answer_composer(
+            prompt_context=answer_prompt_context,
+            source_token_ids=answer_bus_token_ids,
+            source_attention_mask=answer_bus_attention_mask,
+            source_specialist_ids=answer_bus_specialist_ids,
+            source_round_ids=answer_bus_round_ids,
+            source_position_ids=answer_bus_position_ids,
+            decoder_input_ids=batch["answer_decoder_input_ids"],
+            decoder_attention_mask=batch["answer_decoder_attention_mask"],
+        )
+        answer_labels = batch["answer_labels"]
+        answer_valid = answer_labels.ne(-100)
+        answer_composer_loss = (
+            F.nll_loss(
+                composer.log_probabilities.reshape(
+                    -1, composer.log_probabilities.shape[-1]
+                ),
+                answer_labels.reshape(-1),
+                ignore_index=-100,
+            )
+            if bool(answer_valid.any())
+            else composer.log_probabilities.sum() * 0.0
+        )
         gpt_loss = _safe_causal_loss(gpt_output.logits, batch["gpt_labels"])
         specialist_loss = torch.stack(specialist_losses).mean()
         stacked_wake_logits = torch.stack(wake_logits_all, dim=1)
@@ -702,5 +842,13 @@ class V13MultiTowerModel(nn.Module):
             halt_loss=halt_loss,
             compute_loss=compute_loss,
             gpt_logits=gpt_output.logits,
+            answer_composer_log_probabilities=composer.log_probabilities,
+            answer_composer_loss=answer_composer_loss,
+            answer_bus_token_ids=answer_bus_token_ids,
+            answer_bus_attention_mask=answer_bus_attention_mask,
+            answer_bus_specialist_ids=answer_bus_specialist_ids,
+            answer_bus_round_ids=answer_bus_round_ids,
+            answer_bus_position_ids=answer_bus_position_ids,
+            answer_prompt_context=answer_prompt_context,
             rounds=round_outputs,
         )

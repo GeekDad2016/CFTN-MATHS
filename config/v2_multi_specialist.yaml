@@ -100,6 +100,67 @@ runtime:
     math: "<workspace:math><latent-request>"
     string: "<workspace:string><latent-request>"
 
+# V2 routes natural prompts through a learned finite graph classifier.  The
+# classifier never predicts operands: quoted values, numbers, and broad-math
+# prompts are copied from immutable source spans and validated before a tower
+# can run. Unknown or low-confidence prompts fail closed.
+dispatcher:
+  format: cftn_text_v2_learned_dispatcher_v1
+  artifact_directory: learned_dispatcher_v2
+  maximum_length: 2048
+  confidence_threshold: 0.90
+  epochs: 8
+  patience: 3
+  batch_size: 256
+  learning_rate: 0.002
+  weight_decay: 0.0001
+  broad_train_examples: 100000
+  joint_train_examples: 100000
+  semantic_train_examples: 45000
+  registered_validation_examples: 5000
+  registered_heldout_examples: 5000
+  broad_validation_examples: 5000
+  broad_heldout_examples: 5000
+  semantic_holdout_examples: 5000
+  acceptance:
+    minimum_registered_accuracy: 1.0
+    minimum_registered_coverage: 1.0
+    minimum_broad_accuracy: 0.995
+    minimum_broad_coverage: 0.995
+    minimum_semantic_accuracy: 0.995
+    minimum_semantic_coverage: 0.995
+
+# Retained for checkpoint shape compatibility and optional learned-composer
+# diagnostics. The accepted production path composes typed result references
+# deterministically, so answer text cannot be corrupted by a second decoder.
+answer_composer:
+  hidden_size: 256
+  attention_heads: 8
+  decoder_layers: 2
+  dropout: 0.10
+  maximum_source_positions: 64
+  maximum_target_positions: 48
+
+native_dispatch_evaluation:
+  artifact_directory: native_dispatch_evaluation
+  specialist_generation_policy: full_context_v1
+  examples_by_class:
+    explicit_math: 64
+    exact_string: 300
+    language_dependent_math: 64
+    multi_parallel: 192
+    multi_sequential: 128
+  task_acceptance:
+    minimum_answer_bus_valid_rate: 0.95
+    minimum_explicit_math_accuracy: 0.95
+    minimum_language_dependent_math_accuracy: 0.95
+    minimum_exact_string_reverse_accuracy: 0.85
+    minimum_multi_parallel_accuracy: 0.85
+    minimum_multi_sequential_accuracy: 0.90
+  dispatch_acceptance:
+    minimum_plan_valid_rate: 0.99
+    minimum_completion_rate: 0.95
+
 string_training:
   batch_size: 256
   eval_batch_size: 256

@@ -114,6 +114,55 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
             raise ValueError("the reserved specialist must not be trained")
         if any(name in specialists for name in (item.get("name") for item in reserved)):
             raise ValueError("active and reserved specialist slots overlap")
+        for section in (
+            "dispatcher",
+            "answer_composer",
+            "native_dispatch_evaluation",
+        ):
+            if not isinstance(config.get(section), dict):
+                raise ValueError(f"V2 configuration requires {section}")
+        dispatcher = config["dispatcher"]
+        if dispatcher.get("format") != "cftn_text_v2_learned_dispatcher_v1":
+            raise ValueError("V2 dispatcher format is not recognized")
+        if not 0.5 < float(dispatcher.get("confidence_threshold", 0.0)) < 1.0:
+            raise ValueError("V2 dispatcher confidence threshold must be within (0.5, 1)")
+        if int(dispatcher.get("maximum_length", 0)) < int(
+            config["data"]["maximum_specialist_length"]
+        ):
+            raise ValueError("V2 dispatcher must cover the specialist prompt limit")
+        dispatch_acceptance = dispatcher.get("acceptance", {})
+        required_dispatch_gates = {
+            "minimum_registered_accuracy",
+            "minimum_registered_coverage",
+            "minimum_broad_accuracy",
+            "minimum_broad_coverage",
+            "minimum_semantic_accuracy",
+            "minimum_semantic_coverage",
+        }
+        if not required_dispatch_gates.issubset(dispatch_acceptance):
+            raise ValueError("V2 dispatcher acceptance contract is incomplete")
+        if any(
+            not 0.0 < float(dispatch_acceptance[key]) <= 1.0
+            for key in required_dispatch_gates
+        ):
+            raise ValueError("V2 dispatcher acceptance thresholds must be in (0, 1]")
+        native_dispatch = config["native_dispatch_evaluation"]
+        if native_dispatch.get("specialist_generation_policy") != "full_context_v1":
+            raise ValueError("V2 native dispatch must use full-context specialist generation")
+        required_classes = {
+            "explicit_math",
+            "exact_string",
+            "language_dependent_math",
+            "multi_parallel",
+            "multi_sequential",
+        }
+        if set(native_dispatch.get("examples_by_class", {})) != required_classes:
+            raise ValueError("V2 native dispatch panel does not cover every specialist class")
+        if any(
+            int(value) < 1
+            for value in native_dispatch["examples_by_class"].values()
+        ):
+            raise ValueError("V2 native dispatch class panels cannot be empty")
     rounds = int(config["runtime"].get("maximum_callosal_rounds", 0))
     if rounds < 2 or rounds > 3:
         raise ValueError("V1.3 maximum_callosal_rounds must be 2 or 3")

@@ -174,6 +174,8 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
     native = _load(native_path)
     evaluation = _load(evaluation_path)
     hard_transition_baseline = None
+    dispatcher_summary = None
+    native_dispatch = None
     if is_v2:
         baseline_path = root / "hard_transition_baseline" / "report.json"
         hard_transition_baseline = _load(baseline_path)
@@ -183,6 +185,32 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
             or hard_transition_baseline.get("full_validation") is not True
         ):
             raise RuntimeError("V2 report requires a sealed zero-update hard baseline")
+        dispatcher_path = (
+            root / str(config["dispatcher"]["artifact_directory"]) / "summary.json"
+        )
+        native_dispatch_path = (
+            root
+            / str(config["native_dispatch_evaluation"]["artifact_directory"])
+            / "report.json"
+        )
+        dispatcher_summary = _load(dispatcher_path)
+        native_dispatch = _load(native_dispatch_path)
+        if (
+            dispatcher_summary.get("state") != "passed"
+            or dispatcher_summary.get("acceptance", {})
+            .get("gates", {})
+            .get("pass")
+            is not True
+        ):
+            raise RuntimeError("V2 report requires a passing learned dispatcher")
+        if (
+            native_dispatch.get("state") != "passed"
+            or native_dispatch.get("acceptance", {}).get("gates", {}).get("pass")
+            is not True
+            or native_dispatch.get("oracle_metadata_visible_to_runtime") is not False
+            or native_dispatch.get("deterministic_answer_composition") is not True
+        ):
+            raise RuntimeError("V2 report requires passing native typed dispatch")
     if calibration.get("pass") is not True:
         raise RuntimeError("V1.3 report refuses a failed GPT calibration precondition")
     if native.get("gates", {}).get("pass") is not True:
@@ -392,6 +420,20 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
                     "pass"
                 )
                 is True,
+                "learned_dispatcher": bool(dispatcher_summary)
+                and dispatcher_summary.get("acceptance", {})
+                .get("gates", {})
+                .get("pass")
+                is True,
+                "native_typed_dispatch": bool(native_dispatch)
+                and native_dispatch.get("acceptance", {})
+                .get("gates", {})
+                .get("pass")
+                is True,
+                "runtime_has_no_oracle_metadata": bool(native_dispatch)
+                and native_dispatch.get("oracle_metadata_visible_to_runtime") is False,
+                "deterministic_answer_composition": bool(native_dispatch)
+                and native_dispatch.get("deterministic_answer_composition") is True,
             }
         )
     gates["pass"] = all(gates.values())
@@ -437,6 +479,18 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "hardening_collapse_guard_clear": (
                     "The selected hard checkpoint passed no-harm and exact-routing guards."
+                ),
+                "learned_dispatcher": (
+                    "The value-invariant finite-graph dispatcher passed registered, broad-math, and semantic holdouts."
+                ),
+                "native_typed_dispatch": (
+                    "The learned dispatcher, specialists, and deterministic result composer passed end to end."
+                ),
+                "runtime_has_no_oracle_metadata": (
+                    "Runtime records exposed only the public prompt and GPT prefix, never task or wake labels."
+                ),
+                "deterministic_answer_composition": (
+                    "Typed result references were composed deterministically without a second answer decoder."
                 ),
             }
         )
@@ -566,6 +620,19 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
             "evaluation": _load(math_evaluation_path),
             "scale_decision": _load(scale_path),
         }
+        report["typed_dispatch"] = {
+            "dispatcher_training": dispatcher_summary,
+            "native_end_to_end": native_dispatch,
+            "architecture": {
+                "finite_learned_call_graph": True,
+                "operand_values_are_immutable_source_spans": True,
+                "broad_math_request_is_exact_prompt_copy": True,
+                "specialist_requests_are_typed_and_lossless": True,
+                "result_composition_is_deterministic": True,
+                "unsupported_or_low_confidence_requests_fail_closed": True,
+                "oracle_metadata_visible_to_runtime": False,
+            },
+        }
         report["training_contract"] = {
             "gpt_weights_frozen": True,
             "native_specialists_frozen_during_integration": True,
@@ -585,6 +652,9 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
             )
             is True,
             "reserved_extension_is_inactive": True,
+            "dispatcher_trained_separately_from_specialists": True,
+            "typed_dispatch_native_gate_required": True,
+            "deterministic_answer_composition": True,
         }
     result_filename = "V2_EXPERIMENT_RESULTS.md" if is_v2 else "V1_3_EXPERIMENT_RESULTS.md"
     artifact_document = root / result_filename

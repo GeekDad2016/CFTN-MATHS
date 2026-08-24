@@ -16,6 +16,7 @@ STAGE_DIRECTORIES = {
     "train_math": "math",
     "select_math_checkpoint": "math_checkpoint_selection",
     "evaluate_math": "evaluation_math_v2",
+    "train_learned_dispatcher": "learned_dispatcher_v2",
     "calibrate_frozen_gpt_language": "gpt_language_calibration",
     "train_exact_string_specialist": "string_specialist",
     "seal_native_specialists": "native_specialist_evaluation",
@@ -25,11 +26,13 @@ STAGE_DIRECTORIES = {
     "train_supervised_soft_wake": "supervised_soft_wake",
     "evaluate_zero_update_hard_baseline": "hard_transition_baseline",
     "train_hardened_wake": "hardened_wake",
+    "evaluate_native_typed_dispatch": "native_dispatch_evaluation",
     "evaluate_sealed_causal_suite": "sealed_evaluation",
 }
 
 EPOCH_LIMITS = {
     "train_math": 100,
+    "train_learned_dispatcher": 8,
     "train_exact_string_specialist": 30,
     "train_single_specialist_capacity": 8,
     "train_dense_mixed_messages": 12,
@@ -51,6 +54,10 @@ IMPORTANT_VALIDATION_KEYS = (
     "pure_language_false_wake_rate",
     "causal_message_loss_gap",
     "accuracy",
+    "coverage_at_threshold",
+    "correct_and_accepted_rate",
+    "dispatch_plan_valid_rate",
+    "dispatch_completion_rate",
     "valid_rate",
     "trace_exact_rate",
 )

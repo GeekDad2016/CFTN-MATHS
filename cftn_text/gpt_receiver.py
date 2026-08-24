@@ -177,6 +177,7 @@ class FrozenGPT2Tower(nn.Module):
         eos_token_id: int,
         max_new_tokens: int,
         *,
+        message_mask: torch.Tensor | None = None,
         receive_enabled: bool = True,
         gate_mode: str = "contextual",
     ) -> list[list[int]]:
@@ -211,9 +212,14 @@ class FrozenGPT2Tower(nn.Module):
                 prefix, dtype=torch.long, device=device
             )
             attention_mask[row, maximum_prefix - len(prefix) :] = 1
-        message_mask = torch.ones(
-            messages.shape[:2], dtype=torch.long, device=device
-        )
+        if message_mask is None:
+            message_mask = torch.ones(
+                messages.shape[:2], dtype=torch.long, device=device
+            )
+        elif message_mask.shape != messages.shape[:2]:
+            raise ValueError("generation message mask shape differs from messages")
+        else:
+            message_mask = message_mask.to(device=device, dtype=torch.long)
         generated: list[list[int]] = [[] for _ in prefix_ids]
         finished = torch.zeros(batch, dtype=torch.bool, device=device)
         for _ in range(int(max_new_tokens)):

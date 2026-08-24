@@ -6,7 +6,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import torch
 
@@ -18,9 +18,17 @@ from .math_tower import MathTower
 from .metrics import paired_bootstrap_interval
 from .tokenizer import ByteMathTokenizer, pad_1d
 from .training import load_data_contract, load_gpt_components, precision_dtype, resolve_device
+from .v1_3_answer_bus import extract_answer_payload
 from .v1_3_config import audit_v1_2_pass
 from .v1_3_data import SPECIALISTS, audit_v1_3_manifest
 from .v1_3_dataset import V13Dataset, V13JointCollator, move_v1_3_batch
+from .v1_3_dispatch import (
+    DispatchError,
+    DispatchPlan,
+    compile_specialist_request,
+    compose_dispatch_results,
+    dispatch_v1_3_prompt,
+)
 from .v1_3_model import V13MultiTowerModel, _masked_mean
 from .v1_3_training import build_string_tower, build_v1_3_model, load_v1_3_data_contract
 from .wandb_support import initialize_wandb
@@ -260,6 +268,8 @@ def _latent_specialist_generation(
     *,
     max_new_tokens: int,
     return_enabled: bool,
+    lossless_request_texts: list[str] | None = None,
+    latent_request_enabled: bool = True,
 ) -> tuple[torch.Tensor, list[str], int]:
     tower = model.specialists[name]
     active_indices = activation.ge(model.wake_threshold).nonzero(as_tuple=False).flatten()
@@ -272,8 +282,17 @@ def _latent_specialist_generation(
         return returned_full, generations, 0
     prefixes: list[list[int]] = []
     for row in active_indices.tolist():
-        length = int(specialist_batch["prefix_lengths"][row])
-        prefixes.append(specialist_batch["input_ids"][row, :length].tolist())
+        if lossless_request_texts is None:
+            length = int(specialist_batch["prefix_lengths"][row])
+            prefixes.append(specialist_batch["input_ids"][row, :length].tolist())
+        else:
+            if len(lossless_request_texts) != batch_size:
+                raise ValueError("lossless request panel does not match batch size")
+            prefixes.append(
+                tokenizer.encode_generation_prefix(
+                    str(lossless_request_texts[row]), tower.max_sequence_length
+                )
+            )
     sequences = [list(prefix) for prefix in prefixes]
     prefix_lengths = torch.tensor(
         [len(value) for value in sequences], device=request_message.device
@@ -289,7 +308,7 @@ def _latent_specialist_generation(
             prefix_lengths,
             message=selected_request,
             receivers=model.specialist_receivers[name],
-            receive_enabled=True,
+            receive_enabled=latent_request_enabled,
             gate_mode=model.gate_mode,
         )
         lengths = mask.sum(dim=1) - 1
@@ -315,7 +334,7 @@ def _latent_specialist_generation(
         prefix_lengths,
         message=selected_request,
         receivers=model.specialist_receivers[name],
-        receive_enabled=True,
+        receive_enabled=latent_request_enabled,
         gate_mode=model.gate_mode,
     )
     if return_enabled:
@@ -352,6 +371,11 @@ def generate_joint_batch(
     wrong_specialist: bool = False,
     all_closed: bool = False,
     fixed_open: bool = False,
+    use_answer_composer: bool = False,
+    max_answer_new_tokens: int | None = None,
+    lossless_request_mode: str = "disabled",
+    deterministic_answer_composition: bool = False,
+    typed_dispatcher: Callable[[str], DispatchPlan] | None = None,
 ) -> list[dict[str, Any]]:
     old_gate_mode = model.gate_mode
     model.set_gate_mode("fixed_open" if fixed_open else "contextual")
@@ -361,10 +385,52 @@ def generate_joint_batch(
     unknown = (disabled | request_disabled | return_disabled).difference(SPECIALISTS)
     if unknown:
         raise ValueError(f"unknown specialists in generation arm: {sorted(unknown)}")
+    if lossless_request_mode not in {
+        "disabled",
+        "raw_problem",
+        "raw_problem_no_latent",
+        "oracle_specialist_problem_no_latent",
+        "typed_dispatcher_no_latent",
+        "learned_dispatcher_no_latent",
+    }:
+        raise ValueError(f"unsupported lossless request mode: {lossless_request_mode}")
+    dispatcher_enabled = lossless_request_mode in {
+        "typed_dispatcher_no_latent",
+        "learned_dispatcher_no_latent",
+    }
+    if lossless_request_mode == "learned_dispatcher_no_latent" and typed_dispatcher is None:
+        raise ValueError("learned dispatcher mode requires a dispatcher checkpoint")
+    dispatcher_function = typed_dispatcher or dispatch_v1_3_prompt
+    dispatch_plans: list[DispatchPlan | None] = []
+    dispatch_results: list[dict[str, str]] = []
+    dispatch_errors: list[str | None] = []
+    dispatch_requests: list[list[dict[str, object]]] = []
+    if dispatcher_enabled:
+        for record in batch["records"]:
+            try:
+                plan = dispatcher_function(str(record["problem"]))
+                dispatch_plans.append(plan)
+                dispatch_errors.append(None)
+            except (DispatchError, KeyError) as exc:
+                dispatch_plans.append(None)
+                dispatch_errors.append(str(exc))
+            dispatch_results.append({})
+            dispatch_requests.append([])
+    raw_request_texts = (
+        [str(record["problem"]) for record in batch["records"]]
+        if lossless_request_mode in {"raw_problem", "raw_problem_no_latent"}
+        else None
+    )
     gpt_hidden = model.gpt_tower.prepass(
         batch["gpt_prepass_input_ids"], batch["gpt_prepass_attention_mask"]
     )
     accumulated: list[torch.Tensor] = []
+    accumulated_masks: list[torch.Tensor] = []
+    answer_bus_token_parts: list[torch.Tensor] = []
+    answer_bus_mask_parts: list[torch.Tensor] = []
+    answer_bus_specialist_parts: list[torch.Tensor] = []
+    answer_bus_round_parts: list[torch.Tensor] = []
+    answer_bus_position_parts: list[torch.Tensor] = []
     specialist_generations = {
         name: [[] for _ in range(int(batch["gpt_prepass_input_ids"].shape[0]))]
         for name in SPECIALISTS
@@ -387,22 +453,33 @@ def generate_joint_batch(
         for round_index in range(int(maximum_rounds)):
             pooled = _masked_mean(gpt_hidden, batch["gpt_prepass_attention_mask"])
             wake_logits = model.wake_gates(pooled)
-            targets = batch["wake_targets"][:, round_index]
+            if dispatcher_enabled:
+                targets = torch.zeros_like(wake_logits)
+                for row, plan in enumerate(dispatch_plans):
+                    if plan is None:
+                        continue
+                    for specialist_index, name in enumerate(SPECIALISTS):
+                        if plan.call_for(round_index, name) is not None:
+                            targets[row, specialist_index] = 1.0
+            else:
+                targets = batch["wake_targets"][:, round_index]
             if wrong_specialist:
                 targets = targets.flip(dims=(-1,))
+                effective_mode = "oracle"
+            elif dispatcher_enabled:
                 effective_mode = "oracle"
             else:
                 effective_mode = wake_mode
             probabilities, activations = model._wake_activation(
                 wake_logits, targets, effective_mode
             )
-            if apply_hard_halt:
+            if apply_hard_halt and not dispatcher_enabled:
                 activations = activations * (~halted).to(activations.dtype).unsqueeze(1)
             if all_closed:
                 activations = torch.zeros_like(activations)
             round_returns: list[torch.Tensor] = []
             for specialist_index, name in enumerate(SPECIALISTS):
-                activation = activations[:, specialist_index]
+                activation = activations[:, specialist_index].clone()
                 if name in disabled:
                     activation = torch.zeros_like(activation)
                 request = model.request_bridges[name](
@@ -416,6 +493,47 @@ def generate_joint_batch(
                     request = torch.zeros_like(request)
                 if shuffled_messages and request.shape[0] > 1:
                     request = request.roll(1, dims=0)
+                specialist_request_texts = raw_request_texts
+                if lossless_request_mode == "oracle_specialist_problem_no_latent":
+                    specialist_request_texts = [
+                        str(
+                            record["specialist_oracle_problems_by_round"][name][
+                                round_index
+                            ]
+                            or ""
+                        )
+                        for record in batch["records"]
+                    ]
+                elif dispatcher_enabled:
+                    specialist_request_texts = []
+                    for row, plan in enumerate(dispatch_plans):
+                        call = (
+                            plan.call_for(round_index, name)
+                            if plan is not None
+                            else None
+                        )
+                        if call is None:
+                            specialist_request_texts.append("")
+                            continue
+                        try:
+                            request_text = compile_specialist_request(
+                                plan, call, dispatch_results[row]
+                            )
+                            specialist_request_texts.append(request_text)
+                            dispatch_requests[row].append(
+                                {
+                                    "round": round_index,
+                                    "specialist": name,
+                                    "operation": call.operation,
+                                    "request": request_text,
+                                    "result_id": call.result_id,
+                                }
+                            )
+                        except DispatchError as exc:
+                            specialist_request_texts.append("")
+                            activation[row] = 0.0
+                            dispatch_errors[row] = str(exc)
+                    activations[:, specialist_index] = activation
                 returned, generated, executions = _latent_specialist_generation(
                     model,
                     name,
@@ -425,23 +543,102 @@ def generate_joint_batch(
                     math_tokenizer,
                     max_new_tokens=max_specialist_new_tokens,
                     return_enabled=name not in return_disabled and not all_closed,
+                    lossless_request_texts=specialist_request_texts,
+                    latent_request_enabled=(
+                        lossless_request_mode
+                        not in {
+                            "raw_problem_no_latent",
+                            "oracle_specialist_problem_no_latent",
+                            "typed_dispatcher_no_latent",
+                            "learned_dispatcher_no_latent",
+                        }
+                    ),
                 )
                 if shuffled_messages and returned.shape[0] > 1:
                     returned = returned.roll(1, dims=0)
                 if swap_first_round_returns and round_index == 0 and returned.shape[0] > 1:
                     returned = returned.roll(1, dims=0)
                 round_returns.append(returned)
+                return_active = activation.ge(model.wake_threshold)
+                if name in return_disabled or all_closed:
+                    return_active = torch.zeros_like(return_active, dtype=torch.bool)
+                if shuffled_messages and return_active.shape[0] > 1:
+                    return_active = return_active.roll(1, dims=0)
+                if (
+                    swap_first_round_returns
+                    and round_index == 0
+                    and return_active.shape[0] > 1
+                ):
+                    return_active = return_active.roll(1, dims=0)
+                accumulated_masks.append(
+                    return_active.unsqueeze(1).expand(-1, returned.shape[1])
+                )
+                answer_sequences: list[list[int]] = []
+                for row, text in enumerate(generated):
+                    payload = extract_answer_payload(text, strict=False)
+                    if dispatcher_enabled and bool(
+                        activation[row].ge(model.wake_threshold)
+                    ):
+                        plan = dispatch_plans[row]
+                        call = (
+                            plan.call_for(round_index, name)
+                            if plan is not None
+                            else None
+                        )
+                        if call is not None and payload is not None:
+                            dispatch_results[row][call.result_id] = payload
+                        elif call is not None and dispatch_errors[row] is None:
+                            dispatch_errors[row] = (
+                                f"{name} round {round_index + 1} returned no complete answer"
+                            )
+                    answer_sequences.append(
+                        math_tokenizer.encode(payload)
+                        if payload is not None and bool(activation[row].ge(model.wake_threshold))
+                        else []
+                    )
+                answer_ids, answer_mask = pad_1d(
+                    answer_sequences, math_tokenizer.pad_token_id
+                )
+                answer_ids = answer_ids.to(returned.device)
+                answer_mask = answer_mask.to(returned.device, dtype=torch.bool)
+                if name in return_disabled or all_closed:
+                    answer_mask.zero_()
+                if shuffled_messages and answer_ids.shape[0] > 1:
+                    answer_ids = answer_ids.roll(1, dims=0)
+                    answer_mask = answer_mask.roll(1, dims=0)
+                if (
+                    swap_first_round_returns
+                    and round_index == 0
+                    and answer_ids.shape[0] > 1
+                ):
+                    answer_ids = answer_ids.roll(1, dims=0)
+                    answer_mask = answer_mask.roll(1, dims=0)
+                if answer_ids.shape[1] > 0:
+                    answer_bus_token_parts.append(answer_ids)
+                    answer_bus_mask_parts.append(answer_mask)
+                    answer_bus_specialist_parts.append(
+                        torch.full_like(answer_ids, specialist_index)
+                    )
+                    answer_bus_round_parts.append(
+                        torch.full_like(answer_ids, round_index)
+                    )
+                    answer_bus_position_parts.append(
+                        torch.arange(answer_ids.shape[1], device=answer_ids.device)
+                        .unsqueeze(0)
+                        .expand_as(answer_ids)
+                    )
                 active_executions += activation.ge(model.wake_threshold).long()
                 active_by_specialist[name] += activation.ge(model.wake_threshold).long()
                 for row, text in enumerate(generated):
                     specialist_generations[name][row].append(text)
             accumulated.extend(round_returns)
             combined = torch.cat(accumulated, dim=1)
-            mask = torch.ones(combined.shape[:2], dtype=torch.long, device=combined.device)
+            mask = torch.cat(accumulated_masks, dim=1)
+            fused = model.message_fusion(combined, mask, rounds=round_index + 1)
             update = model.gpt_tower(
                 batch["gpt_prepass_input_ids"],
                 batch["gpt_prepass_attention_mask"],
-                message=combined,
+                message=fused,
                 message_mask=mask,
                 receive_enabled=not all_closed,
                 gate_mode=model.gate_mode,
@@ -457,6 +654,8 @@ def generate_joint_batch(
                 wake_rows[row]["activations"].append(activations[row].tolist())
                 wake_rows[row]["halt_probabilities"].append(float(halt_probabilities[row]))
         combined = torch.cat(accumulated, dim=1)
+        mask = torch.cat(accumulated_masks, dim=1)
+        combined = model.message_fusion(combined, mask, rounds=int(maximum_rounds))
         prefixes = [
             ids[mask.bool()].tolist()
             for ids, mask in zip(
@@ -468,14 +667,106 @@ def generate_joint_batch(
             combined,
             int(gpt_tokenizer.eos_token_id),
             int(max_gpt_new_tokens),
+            message_mask=mask,
             receive_enabled=not all_closed,
             gate_mode=model.gate_mode,
         )
+        answer_generations: list[str | None] = [None] * len(prefixes)
+        deterministic_generations: list[str | None] = [None] * len(prefixes)
+        answer_bus_valid = [False] * len(prefixes)
+        if use_answer_composer and answer_bus_token_parts:
+            answer_bus_token_ids = torch.cat(answer_bus_token_parts, dim=1)
+            answer_bus_attention_mask = torch.cat(answer_bus_mask_parts, dim=1)
+            answer_bus_specialist_ids = torch.cat(answer_bus_specialist_parts, dim=1)
+            answer_bus_round_ids = torch.cat(answer_bus_round_parts, dim=1)
+            answer_bus_position_ids = torch.cat(answer_bus_position_parts, dim=1)
+            answer_bus_valid = answer_bus_attention_mask.any(dim=1).tolist()
+            generation_limit = (
+                model.answer_composer.maximum_target_positions
+                if max_answer_new_tokens is None
+                else min(
+                    int(max_answer_new_tokens),
+                    model.answer_composer.maximum_target_positions,
+                )
+            )
+            answer_ids = model.answer_composer.generate(
+                prompt_context=_masked_mean(
+                    gpt_hidden, batch["gpt_prepass_attention_mask"]
+                ),
+                source_token_ids=answer_bus_token_ids,
+                source_attention_mask=answer_bus_attention_mask,
+                source_specialist_ids=answer_bus_specialist_ids,
+                source_round_ids=answer_bus_round_ids,
+                source_position_ids=answer_bus_position_ids,
+                max_new_tokens=generation_limit,
+            )
+            answer_generations = [math_tokenizer.decode(ids) for ids in answer_ids]
+        if dispatcher_enabled:
+            for row, plan in enumerate(dispatch_plans):
+                if plan is None:
+                    answer_bus_valid[row] = False
+                    continue
+                deterministic_generations[row] = compose_dispatch_results(
+                    plan, dispatch_results[row]
+                )
+                answer_bus_valid[row] = deterministic_generations[row] is not None
+                if (
+                    deterministic_generations[row] is None
+                    and plan.composition.kind != "none"
+                    and dispatch_errors[row] is None
+                ):
+                    dispatch_errors[row] = "dispatch composition is incomplete"
+        elif deterministic_answer_composition:
+            for row in range(len(prefixes)):
+                entries: list[tuple[int, int, str]] = []
+                for round_index in range(int(maximum_rounds)):
+                    for specialist_index, name in enumerate(SPECIALISTS):
+                        text = specialist_generations[name][row][round_index]
+                        payload = extract_answer_payload(text, strict=False)
+                        if payload is not None:
+                            entries.append((round_index, specialist_index, payload))
+                if entries:
+                    final_round = max(round_index for round_index, _, _ in entries)
+                    final_entries = sorted(
+                        (entry for entry in entries if entry[0] == final_round),
+                        key=lambda entry: entry[1],
+                    )
+                    deterministic_generations[row] = "|".join(
+                        payload for _, _, payload in final_entries
+                    )
+                    answer_bus_valid[row] = True
         results: list[dict[str, Any]] = []
         for row, token_ids in enumerate(generated_ids):
+            gpt_generation = gpt_tokenizer.decode(token_ids, skip_special_tokens=True)
+            answer_generation = answer_generations[row]
+            deterministic_generation = deterministic_generations[row]
+            composed_generation = (
+                deterministic_generation
+                if deterministic_answer_composition or dispatcher_enabled
+                else answer_generation
+            )
+            if dispatcher_enabled:
+                plan = dispatch_plans[row]
+                if plan is not None and plan.composition.kind == "none":
+                    final_generation = gpt_generation
+                elif answer_bus_valid[row]:
+                    final_generation = composed_generation
+                else:
+                    final_generation = ""
+            else:
+                final_generation = (
+                    composed_generation
+                    if (use_answer_composer or deterministic_answer_composition)
+                    and answer_bus_valid[row]
+                    else gpt_generation
+                )
             results.append(
                 {
-                    "generation": gpt_tokenizer.decode(token_ids, skip_special_tokens=True),
+                    "generation": final_generation,
+                    "gpt_generation": gpt_generation,
+                    "answer_composer_generation": answer_generation,
+                    "deterministic_answer_generation": deterministic_generation,
+                    "answer_bus_valid": bool(answer_bus_valid[row]),
                     "specialist_generations": {
                         name: specialist_generations[name][row] for name in SPECIALISTS
                     },
@@ -484,6 +775,18 @@ def generate_joint_batch(
                     "active_specialist_executions_by_name": {
                         name: int(active_by_specialist[name][row]) for name in SPECIALISTS
                     },
+                    "lossless_request_mode": lossless_request_mode,
+                    "dispatch_plan": (
+                        dispatch_plans[row].to_dict()
+                        if dispatcher_enabled and dispatch_plans[row] is not None
+                        else None
+                    ),
+                    "dispatch_requests": (
+                        dispatch_requests[row] if dispatcher_enabled else []
+                    ),
+                    "dispatch_error": (
+                        dispatch_errors[row] if dispatcher_enabled else None
+                    ),
                 }
             )
         return results

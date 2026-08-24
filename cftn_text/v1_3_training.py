@@ -45,6 +45,7 @@ from .v1_3_data import (
     SPECIALISTS,
     audit_v1_3_manifest,
     generate_joint_record,
+    joint_string_operation,
     prepare_v1_3_manifests,
 )
 from .v1_3_dataset import (
@@ -479,6 +480,21 @@ def _per_example_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tenso
     return (losses * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
 
 
+def _per_example_answer_loss(
+    log_probabilities: torch.Tensor, labels: torch.Tensor
+) -> torch.Tensor:
+    if log_probabilities.shape[:2] != labels.shape:
+        raise ValueError("answer-composer logits and labels have different shapes")
+    valid = labels.ne(-100)
+    losses = F.nll_loss(
+        log_probabilities.float().reshape(-1, log_probabilities.shape[-1]),
+        labels.reshape(-1),
+        reduction="none",
+        ignore_index=-100,
+    ).reshape(labels.shape)
+    return (losses * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+
+
 def _preservation_kl(
     current: torch.Tensor, baseline: torch.Tensor, labels: torch.Tensor, rows: torch.Tensor
 ) -> torch.Tensor:
@@ -513,9 +529,11 @@ def v1_3_objective(
         or (objective_mode == "auto" and wake_mode == "hard_straight_through")
     )
     oracle_hard_fusion = objective_mode == "oracle_hard_fusion"
+    oracle_hard_answer_bus = objective_mode == "oracle_hard_answer_bus"
     oracle_hard_adapter = objective_mode in {
         "oracle_hard_adapter",
         "oracle_hard_fusion",
+        "oracle_hard_answer_bus",
     }
     weighted_task_loss = task_class_weights is not None and not routing_calibration_only
     compute_weight = (
@@ -532,11 +550,15 @@ def v1_3_objective(
         loss_weights={
             "task": (
                 0.0
-                if routing_calibration_only or weighted_task_loss
+                if routing_calibration_only
+                or weighted_task_loss
+                or oracle_hard_answer_bus
                 else float(configured["task"])
             ),
             "specialist": (
-                0.0 if routing_calibration_only else float(configured["specialist"])
+                0.0
+                if routing_calibration_only or oracle_hard_answer_bus
+                else float(configured["specialist"])
             ),
             "wake_required_set": (
                 float(configured["wake_required_set"])
@@ -551,8 +573,9 @@ def v1_3_objective(
             "active_compute": compute_weight,
         },
     )
-    total = output.loss
+    total = output.answer_composer_loss if oracle_hard_answer_bus else output.loss
     weighted_gpt = output.gpt_loss
+    weighted_answer = output.answer_composer_loss
     if weighted_task_loss:
         row_weights = torch.tensor(
             [float(task_class_weights.get(value, 1.0)) for value in batch["task_classes"]],
@@ -561,9 +584,21 @@ def v1_3_objective(
         )
         if bool(row_weights.le(0).any()):
             raise ValueError("task-class loss weights must be positive")
-        per_example_gpt = _per_example_loss(output.gpt_logits, batch["gpt_labels"])
-        weighted_gpt = (per_example_gpt * row_weights).sum() / row_weights.sum()
-        total = total + float(configured["task"]) * weighted_gpt
+        if oracle_hard_answer_bus:
+            per_example_answer = _per_example_answer_loss(
+                output.answer_composer_log_probabilities,
+                batch["answer_labels"],
+            )
+            weighted_answer = (
+                per_example_answer * row_weights
+            ).sum() / row_weights.sum()
+            total = weighted_answer
+        else:
+            per_example_gpt = _per_example_loss(
+                output.gpt_logits, batch["gpt_labels"]
+            )
+            weighted_gpt = (per_example_gpt * row_weights).sum() / row_weights.sum()
+            total = total + float(configured["task"]) * weighted_gpt
     preservation = output.loss.detach() * 0.0
     causal_message = output.loss.detach() * 0.0
     causal_wake = output.loss.detach() * 0.0
@@ -578,7 +613,7 @@ def v1_3_objective(
         device=output.gpt_logits.device,
     )
     required_rows = batch["wake_targets"][:, :maximum_rounds].sum(dim=(1, 2)).gt(0)
-    if auxiliary and bool(pure_rows.any()):
+    if auxiliary and not oracle_hard_answer_bus and bool(pure_rows.any()):
         with torch.no_grad():
             baseline = model(
                 batch,
@@ -604,8 +639,22 @@ def v1_3_objective(
             shuffled_returns=set(SPECIALISTS),
             loss_weights={"wake_required_set": 0.0, "halt": 0.0},
         )
-        correct_loss = _per_example_loss(output.gpt_logits, batch["gpt_labels"])
-        shuffled_loss = _per_example_loss(shuffled.gpt_logits, batch["gpt_labels"])
+        if oracle_hard_answer_bus:
+            correct_loss = _per_example_answer_loss(
+                output.answer_composer_log_probabilities,
+                batch["answer_labels"],
+            )
+            shuffled_loss = _per_example_answer_loss(
+                shuffled.answer_composer_log_probabilities,
+                batch["answer_labels"],
+            )
+        else:
+            correct_loss = _per_example_loss(
+                output.gpt_logits, batch["gpt_labels"]
+            )
+            shuffled_loss = _per_example_loss(
+                shuffled.gpt_logits, batch["gpt_labels"]
+            )
         margin = float(configured["causal_message_margin"])
         causal_message = F.relu(
             margin - (shuffled_loss[required_rows] - correct_loss[required_rows])
@@ -631,8 +680,22 @@ def v1_3_objective(
                 disabled_specialists={specialist},
                 loss_weights={"wake_required_set": 0.0, "halt": 0.0},
             )
-            correct_loss = _per_example_loss(output.gpt_logits, batch["gpt_labels"])
-            disabled_loss = _per_example_loss(disabled.gpt_logits, batch["gpt_labels"])
+            if oracle_hard_answer_bus:
+                correct_loss = _per_example_answer_loss(
+                    output.answer_composer_log_probabilities,
+                    batch["answer_labels"],
+                )
+                disabled_loss = _per_example_answer_loss(
+                    disabled.answer_composer_log_probabilities,
+                    batch["answer_labels"],
+                )
+            else:
+                correct_loss = _per_example_loss(
+                    output.gpt_logits, batch["gpt_labels"]
+                )
+                disabled_loss = _per_example_loss(
+                    disabled.gpt_logits, batch["gpt_labels"]
+                )
             margin = float(configured["causal_wake_margin"])
             causal_wake = F.relu(
                 margin - (disabled_loss[specialist_rows] - correct_loss[specialist_rows])
@@ -642,6 +705,8 @@ def v1_3_objective(
         "model_loss": float(output.loss.detach()),
         "gpt_loss": float(output.gpt_loss.detach()),
         "weighted_gpt_loss": float(weighted_gpt.detach()),
+        "answer_composer_loss": float(output.answer_composer_loss.detach()),
+        "weighted_answer_composer_loss": float(weighted_answer.detach()),
         "specialist_loss": float(output.specialist_loss.detach()),
         "wake_loss": float(output.wake_loss.detach()),
         "halt_loss": float(output.halt_loss.detach()),
@@ -653,6 +718,7 @@ def v1_3_objective(
         "routing_calibration_only": float(routing_calibration_only),
         "oracle_hard_adapter": float(oracle_hard_adapter),
         "oracle_hard_fusion": float(oracle_hard_fusion),
+        "oracle_hard_answer_bus": float(oracle_hard_answer_bus),
     }
 
 
@@ -669,6 +735,7 @@ def evaluate_joint_teacher_forcing(
     max_batches: int | None = None,
     conditional_execution: bool | None = None,
     apply_halt: bool | None = None,
+    evaluate_answer_composer_generation: bool = False,
 ) -> dict[str, Any]:
     model.eval()
     examples = token_correct = token_total = sequence_correct = 0
@@ -678,8 +745,19 @@ def evaluate_joint_teacher_forcing(
     wake_predictions = wake_target_positives = all_open_sets = all_closed_sets = 0
     pure_examples = pure_false_wakes = 0
     causal_correct = causal_shuffled = causal_examples = 0.0
+    answer_causal_correct = answer_causal_shuffled = answer_causal_examples = 0.0
     gpt_loss_sum = 0.0
+    answer_examples = answer_token_correct = answer_token_total = 0
+    answer_sequence_correct = answer_generated_sequence_correct = 0
+    answer_loss_sum = 0.0
     task_class_sums: dict[str, dict[str, float | int]] = {}
+    string_operation_sums: dict[
+        tuple[str, str], dict[str, float | int]
+    ] = {}
+    answer_task_class_sums: dict[str, dict[str, float | int]] = {}
+    answer_operation_sums: dict[
+        tuple[str, str], dict[str, float | int]
+    ] = {}
     for batch_index, raw in enumerate(loader):
         if max_batches is not None and batch_index >= max_batches:
             break
@@ -711,6 +789,35 @@ def evaluate_joint_teacher_forcing(
             ((predicted_tokens == shifted_labels) | ~valid_tokens).all(dim=1)
             & row_token_total.gt(0)
         )
+        answer_labels = batch["answer_labels"]
+        answer_valid_tokens = answer_labels.ne(-100)
+        answer_predictions = output.answer_composer_log_probabilities.argmax(dim=-1)
+        answer_row_token_correct = (
+            (answer_predictions == answer_labels) & answer_valid_tokens
+        ).sum(dim=1)
+        answer_row_token_total = answer_valid_tokens.sum(dim=1)
+        answer_row_sequence_correct = (
+            ((answer_predictions == answer_labels) | ~answer_valid_tokens).all(dim=1)
+            & answer_row_token_total.gt(0)
+        )
+        answer_row_losses = _per_example_answer_loss(
+            output.answer_composer_log_probabilities, answer_labels
+        )
+        generated_answers: list[list[int]] | None = None
+        if evaluate_answer_composer_generation:
+            with autocast_context(device, dtype):
+                generated_answers = model.answer_composer.generate(
+                    prompt_context=output.answer_prompt_context,
+                    source_token_ids=output.answer_bus_token_ids,
+                    source_attention_mask=output.answer_bus_attention_mask,
+                    source_specialist_ids=output.answer_bus_specialist_ids,
+                    source_round_ids=output.answer_bus_round_ids,
+                    source_position_ids=output.answer_bus_position_ids,
+                    max_new_tokens=min(
+                        model.answer_composer.maximum_target_positions,
+                        int(answer_row_token_total.max().item()) + 4,
+                    ),
+                )
         gpt_loss_sum += float(per_example_gpt.sum())
         for row_index, task_class in enumerate(batch["task_classes"]):
             sums = task_class_sums.setdefault(
@@ -736,6 +843,106 @@ def evaluate_joint_teacher_forcing(
             sums["gpt_loss_sum"] = float(sums["gpt_loss_sum"]) + float(
                 per_example_gpt[row_index]
             )
+            operation = joint_string_operation(batch["records"][row_index])
+            if operation is not None:
+                operation_sums = string_operation_sums.setdefault(
+                    (str(task_class), operation),
+                    {
+                        "examples": 0,
+                        "token_correct": 0,
+                        "token_total": 0,
+                        "sequence_correct": 0,
+                        "gpt_loss_sum": 0.0,
+                    },
+                )
+                operation_sums["examples"] = int(operation_sums["examples"]) + 1
+                operation_sums["token_correct"] = int(
+                    operation_sums["token_correct"]
+                ) + int(row_token_correct[row_index])
+                operation_sums["token_total"] = int(
+                    operation_sums["token_total"]
+                ) + int(row_token_total[row_index])
+                operation_sums["sequence_correct"] = int(
+                    operation_sums["sequence_correct"]
+                ) + int(row_sequence_correct[row_index])
+                operation_sums["gpt_loss_sum"] = float(
+                    operation_sums["gpt_loss_sum"]
+                ) + float(per_example_gpt[row_index])
+            if bool(answer_row_token_total[row_index].gt(0)):
+                answer_examples += 1
+                answer_token_correct += int(answer_row_token_correct[row_index])
+                answer_token_total += int(answer_row_token_total[row_index])
+                answer_sequence_correct += int(
+                    answer_row_sequence_correct[row_index]
+                )
+                answer_loss_sum += float(answer_row_losses[row_index])
+                generated_correct = 0
+                if generated_answers is not None:
+                    target_tokens = answer_labels[row_index][
+                        answer_valid_tokens[row_index]
+                    ].tolist()
+                    if (
+                        target_tokens
+                        and target_tokens[-1] == ByteMathTokenizer.eos_token_id
+                    ):
+                        target_tokens = target_tokens[:-1]
+                    generated_correct = int(
+                        generated_answers[row_index] == target_tokens
+                    )
+                    answer_generated_sequence_correct += generated_correct
+                answer_sums = answer_task_class_sums.setdefault(
+                    str(task_class),
+                    {
+                        "examples": 0,
+                        "token_correct": 0,
+                        "token_total": 0,
+                        "sequence_correct": 0,
+                        "generated_sequence_correct": 0,
+                        "loss_sum": 0.0,
+                    },
+                )
+                answer_sums["examples"] = int(answer_sums["examples"]) + 1
+                answer_sums["token_correct"] = int(
+                    answer_sums["token_correct"]
+                ) + int(answer_row_token_correct[row_index])
+                answer_sums["token_total"] = int(answer_sums["token_total"]) + int(
+                    answer_row_token_total[row_index]
+                )
+                answer_sums["sequence_correct"] = int(
+                    answer_sums["sequence_correct"]
+                ) + int(answer_row_sequence_correct[row_index])
+                answer_sums["generated_sequence_correct"] = int(
+                    answer_sums["generated_sequence_correct"]
+                ) + generated_correct
+                answer_sums["loss_sum"] = float(answer_sums["loss_sum"]) + float(
+                    answer_row_losses[row_index]
+                )
+                if operation is not None:
+                    answer_operation = answer_operation_sums.setdefault(
+                        (str(task_class), operation),
+                        {
+                            "examples": 0,
+                            "token_correct": 0,
+                            "token_total": 0,
+                            "sequence_correct": 0,
+                            "generated_sequence_correct": 0,
+                            "loss_sum": 0.0,
+                        },
+                    )
+                    for key, increment in (
+                        ("examples", 1),
+                        ("token_correct", int(answer_row_token_correct[row_index])),
+                        ("token_total", int(answer_row_token_total[row_index])),
+                        (
+                            "sequence_correct",
+                            int(answer_row_sequence_correct[row_index]),
+                        ),
+                        ("generated_sequence_correct", generated_correct),
+                    ):
+                        answer_operation[key] = int(answer_operation[key]) + increment
+                    answer_operation["loss_sum"] = float(
+                        answer_operation["loss_sum"]
+                    ) + float(answer_row_losses[row_index])
         logits = torch.stack([item.wake_logits for item in output.rounds], dim=1)
         pre_halt_predicted = torch.sigmoid(logits).ge(model.wake_threshold)
         predicted = (
@@ -797,6 +1004,23 @@ def evaluate_joint_teacher_forcing(
                 causal_correct += float(correct_losses[required].sum())
                 causal_shuffled += float(shuffled_losses[required].sum())
                 causal_examples += int(required.sum())
+                answer_required = required & batch["answer_composer_eligible"]
+                if bool(answer_required.any()):
+                    correct_answer_losses = _per_example_answer_loss(
+                        output.answer_composer_log_probabilities,
+                        batch["answer_labels"],
+                    )
+                    shuffled_answer_losses = _per_example_answer_loss(
+                        shuffled.answer_composer_log_probabilities,
+                        batch["answer_labels"],
+                    )
+                    answer_causal_correct += float(
+                        correct_answer_losses[answer_required].sum()
+                    )
+                    answer_causal_shuffled += float(
+                        shuffled_answer_losses[answer_required].sum()
+                    )
+                    answer_causal_examples += int(answer_required.sum())
     if not examples:
         raise RuntimeError("V1.3 validation produced no examples")
     precision = wake_tp / max(1, wake_tp + wake_fp)
@@ -814,6 +1038,52 @@ def evaluate_joint_teacher_forcing(
         }
         for name, sums in sorted(task_class_sums.items())
     }
+    string_operation_metrics: dict[str, dict[str, dict[str, float | int]]] = {}
+    for (task_class, operation), sums in sorted(string_operation_sums.items()):
+        operation_examples = max(1, int(sums["examples"]))
+        string_operation_metrics.setdefault(task_class, {})[operation] = {
+            "examples": int(sums["examples"]),
+            "gpt_loss": float(sums["gpt_loss_sum"]) / operation_examples,
+            "sequence_accuracy": int(sums["sequence_correct"])
+            / operation_examples,
+            "token_accuracy": int(sums["token_correct"])
+            / max(1, int(sums["token_total"])),
+        }
+    answer_task_class_metrics = {
+        name: {
+            "examples": int(sums["examples"]),
+            "loss": float(sums["loss_sum"]) / max(1, int(sums["examples"])),
+            "teacher_forced_sequence_accuracy": int(sums["sequence_correct"])
+            / max(1, int(sums["examples"])),
+            "teacher_forced_token_accuracy": int(sums["token_correct"])
+            / max(1, int(sums["token_total"])),
+            "generated_sequence_accuracy": (
+                int(sums["generated_sequence_correct"])
+                / max(1, int(sums["examples"]))
+                if evaluate_answer_composer_generation
+                else None
+            ),
+        }
+        for name, sums in sorted(answer_task_class_sums.items())
+    }
+    answer_string_operation_metrics: dict[
+        str, dict[str, dict[str, float | int | None]]
+    ] = {}
+    for (task_class, operation), sums in sorted(answer_operation_sums.items()):
+        operation_examples = max(1, int(sums["examples"]))
+        answer_string_operation_metrics.setdefault(task_class, {})[operation] = {
+            "examples": int(sums["examples"]),
+            "loss": float(sums["loss_sum"]) / operation_examples,
+            "teacher_forced_sequence_accuracy": int(sums["sequence_correct"])
+            / operation_examples,
+            "teacher_forced_token_accuracy": int(sums["token_correct"])
+            / max(1, int(sums["token_total"])),
+            "generated_sequence_accuracy": (
+                int(sums["generated_sequence_correct"]) / operation_examples
+                if evaluate_answer_composer_generation
+                else None
+            ),
+        }
     return {
         "examples": examples,
         "loss": loss_sum / examples,
@@ -821,6 +1091,20 @@ def evaluate_joint_teacher_forcing(
         "gpt_teacher_forced_sequence_accuracy": sequence_correct / examples,
         "gpt_teacher_forced_loss": gpt_loss_sum / examples,
         "task_class_metrics": task_class_metrics,
+        "string_operation_metrics": string_operation_metrics,
+        "answer_composer_examples": answer_examples,
+        "answer_composer_loss": answer_loss_sum / max(1, answer_examples),
+        "answer_composer_teacher_forced_token_accuracy": answer_token_correct
+        / max(1, answer_token_total),
+        "answer_composer_teacher_forced_sequence_accuracy": answer_sequence_correct
+        / max(1, answer_examples),
+        "answer_composer_generated_sequence_accuracy": (
+            answer_generated_sequence_correct / max(1, answer_examples)
+            if evaluate_answer_composer_generation
+            else None
+        ),
+        "answer_composer_task_class_metrics": answer_task_class_metrics,
+        "answer_composer_string_operation_metrics": answer_string_operation_metrics,
         "wake_precision": precision,
         "wake_recall": recall,
         "wake_f1": 2 * precision * recall / max(1e-12, precision + recall),
@@ -843,6 +1127,11 @@ def evaluate_joint_teacher_forcing(
             (causal_shuffled - causal_correct) / max(1, causal_examples)
         ),
         "causal_panel_examples": int(causal_examples),
+        "answer_composer_causal_loss_gap": (
+            (answer_causal_shuffled - answer_causal_correct)
+            / max(1, answer_causal_examples)
+        ),
+        "answer_composer_causal_panel_examples": int(answer_causal_examples),
         "wake_labels": wake_labels,
     }
 
@@ -1175,6 +1464,67 @@ def adapter_recovery_acceptance(
     }
 
 
+def answer_bus_recovery_acceptance(
+    validation: dict[str, Any], settings: Mapping[str, Any]
+) -> dict[str, Any]:
+    legacy_classes = validation["task_class_metrics"]
+    answer_classes = validation["answer_composer_task_class_metrics"]
+    operation_metrics = validation["answer_composer_string_operation_metrics"]
+    reverse = operation_metrics.get("exact_string", {}).get("reverse")
+    parallel = answer_classes.get("multi_parallel")
+    generated_key = "generated_sequence_accuracy"
+    protected = settings.get(
+        "protected_task_classes",
+        {
+            "explicit_math": 0.95,
+            "language_dependent_math": 0.95,
+            "multi_sequential": 0.95,
+        },
+    )
+    gates = {
+        "protocol_semantic_floor": float(
+            validation["protocol_semantic_sequence_accuracy_lower_bound"]
+        )
+        >= float(settings.get("minimum_protocol_semantic_sequence_accuracy", 0.83)),
+        "pure_language_calibration": validation.get("protocol_aware", {}).get(
+            "calibration_pass"
+        )
+        is True,
+        "answer_bus_causal_floor": float(
+            validation["answer_composer_causal_loss_gap"]
+        )
+        >= float(settings.get("minimum_answer_bus_causal_loss_gap", 0.10)),
+        "reverse_exact": bool(reverse)
+        and reverse.get(generated_key) is not None
+        and float(reverse[generated_key])
+        >= float(settings.get("minimum_reverse_generated_accuracy", 0.90)),
+        "multi_parallel_exact": bool(parallel)
+        and parallel.get(generated_key) is not None
+        and float(parallel[generated_key])
+        >= float(settings.get("minimum_multi_parallel_generated_accuracy", 0.90)),
+    }
+    for operation in ("count", "index"):
+        metrics = operation_metrics.get("exact_string", {}).get(operation)
+        gates[f"short_string_{operation}"] = bool(metrics) and metrics.get(
+            generated_key
+        ) is not None and float(metrics[generated_key]) >= float(
+            settings.get("minimum_short_string_generated_accuracy", 0.98)
+        )
+    for task_class, minimum in protected.items():
+        metrics = legacy_classes.get(task_class)
+        gates[f"protected_{task_class}"] = bool(metrics) and float(
+            metrics["sequence_accuracy"]
+        ) >= float(minimum)
+    gates["pass"] = all(gates.values())
+    return {
+        "gates": gates,
+        "collapse_guard": {
+            "triggered": not gates["pass"],
+            "failed": sorted(name for name, passed in gates.items() if not passed),
+        },
+    }
+
+
 def integration_selection_score(
     validation: dict[str, Any],
     *,
@@ -1182,6 +1532,35 @@ def integration_selection_score(
     selection_mode: str = "legacy",
     focus_classes: list[str] | tuple[str, ...] | None = None,
 ) -> float:
+    if selection_mode == "answer_bus_recovery":
+        classes = validation.get("answer_composer_task_class_metrics", {})
+        operations = validation.get(
+            "answer_composer_string_operation_metrics", {}
+        )
+        parallel = classes.get("multi_parallel")
+        reverse = operations.get("exact_string", {}).get("reverse")
+        if not isinstance(parallel, dict) or not isinstance(reverse, dict):
+            raise RuntimeError(
+                "answer-bus selection requires multi_parallel and exact_string/reverse"
+            )
+        parallel_exact = parallel.get("generated_sequence_accuracy")
+        reverse_exact = reverse.get("generated_sequence_accuracy")
+        if parallel_exact is None or reverse_exact is None:
+            raise RuntimeError("answer-bus selection requires free-running validation")
+        return (
+            float(parallel_exact)
+            + float(reverse_exact)
+            + 0.10
+            * float(validation["answer_composer_generated_sequence_accuracy"])
+            + 0.01
+            * float(validation["answer_composer_teacher_forced_token_accuracy"])
+            + 0.005
+            * min(
+                10.0,
+                max(0.0, float(validation["answer_composer_causal_loss_gap"])),
+            )
+            - 0.001 * float(validation["answer_composer_loss"])
+        )
     if selection_mode == "adapter_recovery":
         focus = tuple(focus_classes or ("exact_string", "multi_parallel"))
         class_metrics = validation.get("task_class_metrics", {})
@@ -1386,8 +1765,10 @@ def train_integration_phase(
     objective_mode = str(phase.get("objective_mode", "auto"))
     router_recovery = objective_mode == "router_calibration"
     fusion_recovery = objective_mode == "oracle_hard_fusion"
+    answer_bus_recovery = objective_mode == "oracle_hard_answer_bus"
     selection_mode = str(phase.get("selection_mode", "legacy"))
     adapter_selection = selection_mode == "adapter_recovery"
+    answer_bus_selection = selection_mode == "answer_bus_recovery"
     conditional_execution = phase.get("conditional_execution")
     apply_halt = phase.get("apply_halt")
     baseline_required = bool(
@@ -1452,13 +1833,32 @@ def train_integration_phase(
     if not train_classes.issubset(allowed_classes):
         raise ValueError("train_task_classes must be a subset of include_task_classes")
     task_class_weights = phase.get("task_class_weights")
-    calibration = _load_gpt_language_calibration(config) if adapter_selection else None
+    calibration = (
+        _load_gpt_language_calibration(config)
+        if adapter_selection or answer_bus_selection
+        else None
+    )
+    train_records_path = phase.get("train_records_override_jsonl")
+    validation_records_path = phase.get("validation_records_override_jsonl")
     all_train_records = V13Dataset(
-        data_root / manifest["splits"]["joint_train"]["path"]
+        Path(str(train_records_path))
+        if train_records_path is not None
+        else data_root / manifest["splits"]["joint_train"]["path"]
     ).records
     all_validation_records = V13Dataset(
-        data_root / manifest["splits"]["joint_validation"]["path"]
+        Path(str(validation_records_path))
+        if validation_records_path is not None
+        else data_root / manifest["splits"]["joint_validation"]["path"]
     ).records
+    if train_records_path is not None or validation_records_path is not None:
+        provenance["answer_bus_record_overrides"] = {
+            "train": str(Path(str(train_records_path)).resolve())
+            if train_records_path is not None
+            else None,
+            "validation": str(Path(str(validation_records_path)).resolve())
+            if validation_records_path is not None
+            else None,
+        }
     recovery_data: dict[str, Any] | None = None
     if bool(phase.get("repair_sequential_orders", False)):
         all_train_records, train_repair = _repair_sequential_orders(
@@ -1532,7 +1932,32 @@ def train_integration_phase(
         )
     )
     optimizer_groups: list[dict[str, Any]] = []
-    if fusion_recovery:
+    if answer_bus_recovery:
+        unexpected = sorted(
+            name
+            for name, _ in named
+            if not name.startswith("answer_composer.")
+        )
+        if unexpected:
+            raise RuntimeError(
+                "answer-bus recovery may train only the typed answer composer; "
+                f"unexpected trainable parameters: {unexpected}"
+            )
+        answer_parameters = [
+            value for name, value in named if name.startswith("answer_composer.")
+        ]
+        if not answer_parameters:
+            raise RuntimeError("answer-bus recovery has no composer parameters")
+        optimizer_groups.append(
+            {
+                "params": answer_parameters,
+                "lr": float(
+                    phase.get("answer_composer_learning_rate", phase_learning_rate)
+                ),
+                "group_name": "answer_composer",
+            }
+        )
+    elif fusion_recovery:
         unexpected = sorted(
             name
             for name, _ in named
@@ -1615,24 +2040,46 @@ def train_integration_phase(
         if phase_name == "hardened_wake" or router_recovery
         else (
             {
-                "objective": "oracle_hard_fusion",
-                "trainable_components": ["message_fusion", "gpt_receivers"],
+                "objective": "oracle_hard_answer_bus",
+                "trainable_components": ["answer_composer"],
                 "frozen_components": [
+                    "gpt_tower",
                     "specialist_towers",
                     "request_bridges",
                     "return_bridges",
+                    "message_fusion",
+                    "gpt_receivers",
                     "specialist_receivers",
                     "wake_gates",
                     "halt_gate",
                 ],
                 "conditional_specialist_execution": True,
                 "hard_halt_enabled": False,
-                "zero_update_candidate": bool(
-                    phase.get("zero_update_candidate", False)
-                ),
+                "lossless_byte_answer_bus": True,
+                "pointer_copy_decoder": True,
             }
-            if fusion_recovery
-            else None
+            if answer_bus_recovery
+            else (
+                {
+                    "objective": "oracle_hard_fusion",
+                    "trainable_components": ["message_fusion", "gpt_receivers"],
+                    "frozen_components": [
+                        "specialist_towers",
+                        "request_bridges",
+                        "return_bridges",
+                        "specialist_receivers",
+                        "wake_gates",
+                        "halt_gate",
+                    ],
+                    "conditional_specialist_execution": True,
+                    "hard_halt_enabled": False,
+                    "zero_update_candidate": bool(
+                        phase.get("zero_update_candidate", False)
+                    ),
+                }
+                if fusion_recovery
+                else None
+            )
         )
     )
     optimizer = AdamW(
@@ -1655,6 +2102,7 @@ def train_integration_phase(
     start_epoch = 1
     global_step = 0
     best_metric = float("-inf")
+    observed_best_metric = float("-inf")
     patience = 0
     eligible_best_exists = False
     best_metrics: dict[str, Any] = {}
@@ -1739,17 +2187,24 @@ def train_integration_phase(
             max_batches=max_batches,
             conditional_execution=conditional_execution,
             apply_halt=apply_halt,
+            evaluate_answer_composer_generation=answer_bus_selection,
         )
         if calibration is not None:
             baseline_validation = apply_protocol_aware_adapter_metrics(
                 baseline_validation, calibration
             )
         baseline_acceptance = (
-            adapter_recovery_acceptance(
-                baseline_validation, phase.get("adapter_acceptance", {})
+            answer_bus_recovery_acceptance(
+                baseline_validation, phase.get("answer_bus_acceptance", {})
             )
-            if adapter_selection
-            else None
+            if answer_bus_selection
+            else (
+                adapter_recovery_acceptance(
+                    baseline_validation, phase.get("adapter_acceptance", {})
+                )
+                if adapter_selection
+                else None
+            )
         )
         baseline_selection = integration_selection_score(
             baseline_validation,
@@ -1845,6 +2300,9 @@ def train_integration_phase(
         patience = int(checkpoint["patience"])
         eligible_best_exists = math.isfinite(best_metric) and best_path.is_file()
         best_metrics = dict(checkpoint.get("extra", {}).get("best_metrics", {}))
+        observed_best_metric = float(
+            checkpoint.get("extra", {}).get("observed_best_metric", best_metric)
+        )
     tracker = initialize_wandb(
         wandb_options,
         artifact_dir=artifact,
@@ -1969,6 +2427,7 @@ def train_integration_phase(
                     if apply_halt is not None
                     else (False if phase_name == "hardened_wake" else None)
                 ),
+                evaluate_answer_composer_generation=answer_bus_selection,
             )
             if calibration is not None:
                 validation = apply_protocol_aware_adapter_metrics(
@@ -1983,11 +2442,17 @@ def train_integration_phase(
                     )
                     if router_recovery
                     else (
-                        adapter_recovery_acceptance(
-                            validation, phase.get("adapter_acceptance", {})
+                        answer_bus_recovery_acceptance(
+                            validation, phase.get("answer_bus_acceptance", {})
                         )
-                        if adapter_selection
-                        else None
+                        if answer_bus_selection
+                        else (
+                            adapter_recovery_acceptance(
+                                validation, phase.get("adapter_acceptance", {})
+                            )
+                            if adapter_selection
+                            else None
+                        )
                     )
                 )
             )
@@ -1998,8 +2463,24 @@ def train_integration_phase(
                 focus_classes=phase.get("selection_focus_classes"),
             )
             checkpoint_eligible = hardening is None or hardening["gates"]["pass"] is True
-            improved = checkpoint_eligible and selection > best_metric
-            patience = 0 if improved else patience + 1
+            selection_min_delta = float(phase.get("selection_min_delta", 0.0))
+            observed_improved = (
+                selection > observed_best_metric + selection_min_delta
+            )
+            if observed_improved:
+                observed_best_metric = selection
+            improved = (
+                checkpoint_eligible
+                and selection > best_metric + selection_min_delta
+            )
+            # A new phase can improve for several epochs before crossing every
+            # promotion gate. For answer-bus recovery, patience follows the
+            # actual validation trend while checkpoint promotion remains
+            # strictly acceptance-gated.
+            patience_improved = (
+                observed_improved if answer_bus_selection else improved
+            )
+            patience = 0 if patience_improved else patience + 1
             if improved:
                 best_metric = selection
                 eligible_best_exists = True
@@ -2014,6 +2495,8 @@ def train_integration_phase(
                 },
                 "validation": validation,
                 "selection_metric": selection,
+                "selection_min_delta": selection_min_delta,
+                "observed_best_metric": observed_best_metric,
                 "checkpoint_eligible": checkpoint_eligible,
                 "hardening_acceptance": hardening,
                 "best_metric": best_metric,
@@ -2066,6 +2549,7 @@ def train_integration_phase(
                 extra={
                     "metrics": final_metrics,
                     "best_metrics": best_metrics,
+                    "observed_best_metric": observed_best_metric,
                     "provenance": provenance,
                 },
             )
@@ -2131,9 +2615,13 @@ def train_integration_phase(
                     ["wake_gates"]
                     if phase_name == "hardened_wake"
                     else (
-                        ["message_fusion", "gpt_receivers"]
-                        if fusion_recovery
-                        else None
+                        ["answer_composer"]
+                        if answer_bus_recovery
+                        else (
+                            ["message_fusion", "gpt_receivers"]
+                            if fusion_recovery
+                            else None
+                        )
                     )
                 )
             ),
@@ -2142,6 +2630,7 @@ def train_integration_phase(
                 if phase_name == "hardened_wake"
                 or router_recovery
                 or fusion_recovery
+                or answer_bus_recovery
                 else None
             ),
         },

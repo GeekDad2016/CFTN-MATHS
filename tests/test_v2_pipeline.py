@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from cftn_text.config import load_config
+from cftn_text.v1_3_config import load_v1_3_config
 from cftn_text.pipeline_lock import PipelineAlreadyRunning, exclusive_pipeline_lock
 from run_v2 import runner_arguments
 from tools.run_v2_experiment import (
@@ -26,6 +28,7 @@ def test_v2_plan_is_ordered_resumable_end_to_end():
         "evaluate_math",
         "assess_math_scale",
         "prepare_multi_specialist_data",
+        "train_learned_dispatcher",
         "calibrate_frozen_gpt_language",
         "train_exact_string_specialist",
         "seal_native_specialists",
@@ -35,6 +38,7 @@ def test_v2_plan_is_ordered_resumable_end_to_end():
         "train_supervised_soft_wake",
         "evaluate_zero_update_hard_baseline",
         "train_hardened_wake",
+        "evaluate_native_typed_dispatch",
         "evaluate_sealed_causal_suite",
         "assemble_v2_evidence",
     ]
@@ -50,12 +54,14 @@ def test_v2_plan_is_ordered_resumable_end_to_end():
         phase["through_epoch"] for phase in config["data"]["curriculum"]["phases"]
     ] == [10, 30, 100]
     assert "tools.prepare_v1_3_data" in stages[5].command
-    assert "tools.train_v1_3_string" in stages[7].command
-    assert "tools.evaluate_hard_transition_baseline" in stages[13].command
-    assert "hardened_wake" in stages[14].command
+    assert "tools.train_v2_dispatcher" in stages[6].command
+    assert "tools.train_v1_3_string" in stages[8].command
+    assert "tools.evaluate_hard_transition_baseline" in stages[14].command
+    assert "hardened_wake" in stages[15].command
+    assert "tools.evaluate_v2_native_dispatch" in stages[16].command
     assert stages[1].resumable_artifact is not None
-    assert stages[7].resumable_artifact is not None
-    assert stages[14].resumable_artifact is not None
+    assert stages[8].resumable_artifact is not None
+    assert stages[15].resumable_artifact is not None
 
 
 def test_v2_evaluation_completion_fails_closed_on_failed_gate(tmp_path):
@@ -63,6 +69,20 @@ def test_v2_evaluation_completion_fails_closed_on_failed_gate(tmp_path):
     path.write_text('{"specialist_gate": {"pass": false}}', encoding="utf-8")
     stage = Stage("evaluate_math", [], path)
     assert not _is_complete(stage, {})
+
+
+def test_v2_resume_rejects_stale_multi_specialist_revision(tmp_path):
+    root = Path(__file__).parents[1]
+    base = load_config(root / "config" / "v2_broad_math.yaml")
+    revision = load_v1_3_config(root / "config" / "v2_multi_specialist.yaml")
+    path = tmp_path / "summary.json"
+    summary = {"state": "completed", "revision_sha256": "stale"}
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    stage = Stage("train_dense_recurrent", [], path)
+    assert not _is_complete(stage, base)
+    summary["revision_sha256"] = revision["_meta"]["sha256"]
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    assert _is_complete(stage, base)
 
 
 def test_online_v2_requires_wandb_key_only_from_environment(monkeypatch):
