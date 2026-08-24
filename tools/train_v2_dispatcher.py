@@ -13,6 +13,11 @@ from torch.utils.data import DataLoader, Dataset
 from cftn_text.checkpoint import append_jsonl, atomic_json_dump
 from cftn_text.config import load_config
 from cftn_text.data_generator import file_sha256
+from cftn_text.dataset import CFTNCollator
+from cftn_text.semantic_features import (
+    FrozenSemanticFeatureExtractor,
+    load_or_create_semantic_cache,
+)
 from cftn_text.v1_3_config import load_v1_3_config
 from cftn_text.v1_3_data import audit_v1_3_manifest
 from cftn_text.v1_3_dataset import V13Dataset
@@ -23,30 +28,55 @@ from cftn_text.v2_dispatch import (
     dispatch_v2_intent_from_registered_prompt,
 )
 from cftn_text.v2_learned_dispatch import (
-    ByteIntentClassifier,
+    HierarchicalDispatcherModel,
+    dispatcher_parameter_count,
     encode_dispatch_prompts,
+    hierarchy_targets,
     load_learned_dispatcher,
     save_learned_dispatcher_checkpoint,
 )
 
 
-class PromptIntentDataset(Dataset[tuple[str, int]]):
-    def __init__(self, values: Iterable[tuple[str, str]]) -> None:
-        rows = [(str(prompt), str(intent)) for prompt, intent in values]
-        self.prompts = [prompt for prompt, _ in rows]
-        self.labels = [DISPATCH_INTENTS.index(intent) for _, intent in rows]
+DispatcherRow = tuple[str, str, str]
+
+
+def _default_semantic_prompt(prompt: str) -> str:
+    return f"Problem: {prompt}\nExact result:"
+
+
+class PromptIntentDataset(Dataset[tuple[str, int, torch.Tensor]]):
+    def __init__(self, values: Iterable[DispatcherRow | tuple[str, str]]) -> None:
+        rows: list[DispatcherRow] = []
+        for value in values:
+            if len(value) == 2:
+                prompt, intent = value
+                semantic_prompt = _default_semantic_prompt(str(prompt))
+            else:
+                prompt, intent, semantic_prompt = value
+            rows.append((str(prompt), str(intent), str(semantic_prompt)))
+        self.prompts = [prompt for prompt, _, _ in rows]
+        self.labels = [DISPATCH_INTENTS.index(intent) for _, intent, _ in rows]
+        self.semantic_prompts = [semantic for _, _, semantic in rows]
+        self.semantic_features: torch.Tensor | None = None
+
+    def attach_semantic_features(self, features: torch.Tensor) -> None:
+        if features.ndim != 2 or features.shape[0] != len(self):
+            raise ValueError("semantic feature cache does not align with dispatcher rows")
+        self.semantic_features = features.detach().cpu()
 
     def __len__(self) -> int:
         return len(self.prompts)
 
-    def __getitem__(self, index: int) -> tuple[str, int]:
-        return self.prompts[index], self.labels[index]
+    def __getitem__(self, index: int) -> tuple[str, int, torch.Tensor]:
+        if self.semantic_features is None:
+            raise RuntimeError("dispatcher semantic features have not been attached")
+        return self.prompts[index], self.labels[index], self.semantic_features[index]
 
 
 def _collate(
-    items: list[tuple[str, int]], *, maximum_length: int
+    items: list[tuple[str, int, torch.Tensor]], *, maximum_length: int
 ) -> dict[str, torch.Tensor]:
-    prompts, labels = zip(*items)
+    prompts, labels, semantic_features = zip(*items)
     input_ids, attention_mask = encode_dispatch_prompts(
         prompts, maximum_length=maximum_length
     )
@@ -54,21 +84,29 @@ def _collate(
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": torch.tensor(labels, dtype=torch.long),
+        "semantic_features": torch.stack(semantic_features),
     }
 
 
 def _read_v2_split(
     root: Path, manifest: dict[str, Any], split: str, maximum: int
-) -> list[tuple[str, str]]:
+) -> list[DispatcherRow]:
     path = root / str(manifest["splits"][split]["path"])
-    rows: list[tuple[str, str]] = []
+    rows: list[DispatcherRow] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             if len(rows) >= int(maximum):
                 break
             record = json.loads(line)
             validate_v2_record(record)
-            rows.append((str(record["problem"]), "broad_math"))
+            problem = str(record["problem"])
+            rows.append(
+                (
+                    problem,
+                    "broad_math",
+                    CFTNCollator.gpt_prompt(problem, generic_answer=True),
+                )
+            )
     if len(rows) != min(int(maximum), int(manifest["splits"][split]["examples"])):
         raise RuntimeError(f"V2 dispatcher could not read requested {split} records")
     return rows
@@ -76,19 +114,20 @@ def _read_v2_split(
 
 def _read_joint_split(
     root: Path, manifest: dict[str, Any], split: str, maximum: int
-) -> list[tuple[str, str]]:
+) -> list[DispatcherRow]:
     records = V13Dataset(root / str(manifest["splits"][split]["path"])).records
     selected = records[: int(maximum)]
     return [
         (
             str(record["problem"]),
             dispatch_v2_intent_from_registered_prompt(str(record["problem"])),
+            str(record["gpt_prompt"]),
         )
         for record in selected
     ]
 
 
-def _semantic_rows(*, count: int, seed: int, heldout: bool) -> list[tuple[str, str]]:
+def _semantic_rows(*, count: int, seed: int, heldout: bool) -> list[DispatcherRow]:
     """Generate semantic controls independent of official validation text."""
 
     rng = random.Random(int(seed))
@@ -154,7 +193,7 @@ def _semantic_rows(*, count: int, seed: int, heldout: bool) -> list[tuple[str, s
         "unsupported": ("Sort '{text}' lexically rather than mirror it.",),
     }
     templates = heldout_templates if heldout else train_templates
-    rows: list[tuple[str, str]] = []
+    rows: list[DispatcherRow] = []
     for index in range(int(count)):
         intent = DISPATCH_INTENTS[index % len(DISPATCH_INTENTS)]
         text = "".join(rng.choice(alphabet) for _ in range(rng.randint(6, 24)))
@@ -181,13 +220,13 @@ def _semantic_rows(*, count: int, seed: int, heldout: bool) -> list[tuple[str, s
         )
         if intent != "unsupported":
             compile_v2_intent(prompt, intent).validate()
-        rows.append((prompt, intent))
+        rows.append((prompt, intent, _default_semantic_prompt(prompt)))
     return rows
 
 
 @torch.no_grad()
 def evaluate_classifier(
-    model: ByteIntentClassifier,
+    model: HierarchicalDispatcherModel,
     dataset: PromptIntentDataset,
     *,
     device: torch.device,
@@ -214,6 +253,7 @@ def evaluate_classifier(
             model(
                 batch["input_ids"].to(device),
                 batch["attention_mask"].to(device),
+                batch["semantic_features"].to(device),
             ).float(),
             dim=-1,
         )
@@ -257,9 +297,72 @@ def _contracts(base: dict[str, Any], revision: dict[str, Any]) -> tuple[Path, di
     return v2_root, v2_manifest, joint_root, joint_manifest
 
 
+def _dispatcher_model(settings: dict[str, Any]) -> HierarchicalDispatcherModel:
+    model = dict(settings["model"])
+    return HierarchicalDispatcherModel(
+        semantic_width=int(model["semantic_width"]),
+        semantic_projection_size=int(model["semantic_projection_size"]),
+        structure_projection_size=int(model["structure_projection_size"]),
+        fusion_size=int(model["fusion_size"]),
+        tower_names=tuple(model["tower_names"]),
+        active_tower_names=tuple(model["active_tower_names"]),
+        embedding_size=int(model.get("embedding_size", 64)),
+        channels=int(model.get("channels", 96)),
+        kernels=tuple(int(value) for value in model.get("kernels", (3, 5, 7))),
+        dropout=float(model.get("dropout", 0.1)),
+        hierarchy_weight=float(model.get("hierarchy_weight", 0.25)),
+    )
+
+
+def _training_loss(
+    model: HierarchicalDispatcherModel,
+    batch: dict[str, torch.Tensor],
+    *,
+    device: torch.device,
+    weights: dict[str, Any],
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+    labels = batch["labels"].to(device)
+    values = model.hierarchical_logits(
+        batch["input_ids"].to(device),
+        batch["attention_mask"].to(device),
+        batch["semantic_features"].to(device),
+    )
+    logits = model.combined_intent_logits(values)
+    targets = hierarchy_targets(
+        labels,
+        tower_names=model.tower_names,
+        active_tower_names=model.active_tower_names,
+    )
+    intent_loss = torch.nn.functional.cross_entropy(logits, labels)
+    delegation_loss = torch.nn.functional.cross_entropy(
+        values["delegation"], targets["delegation"].to(device)
+    )
+    round_loss = torch.nn.functional.cross_entropy(
+        values["rounds"], targets["rounds"].to(device)
+    )
+    tower_values = torch.nn.functional.binary_cross_entropy_with_logits(
+        values["towers"], targets["towers"].to(device), reduction="none"
+    )
+    tower_mask = targets["tower_mask"].to(device)
+    tower_loss = tower_values.masked_select(tower_mask).mean()
+    total = (
+        float(weights["intent"]) * intent_loss
+        + float(weights["delegation"]) * delegation_loss
+        + float(weights["towers"]) * tower_loss
+        + float(weights["rounds"]) * round_loss
+    )
+    components = {
+        "intent": float(intent_loss.detach()),
+        "delegation": float(delegation_loss.detach()),
+        "towers": float(tower_loss.detach()),
+        "rounds": float(round_loss.detach()),
+    }
+    return total, logits, components
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train the constrained, value-invariant V2 prompt dispatcher"
+        description="Train the constrained hierarchical V2 prompt dispatcher"
     )
     parser.add_argument("--config", default="config/v2_broad_math.yaml")
     parser.add_argument("--device", default="cuda")
@@ -346,7 +449,67 @@ def main() -> None:
     maximum_length = int(settings["maximum_length"])
     batch_size = int(settings["batch_size"])
     confidence_threshold = float(settings["confidence_threshold"])
-    model = ByteIntentClassifier().to(device)
+    model = _dispatcher_model(settings)
+    parameter_count = dispatcher_parameter_count(model)
+    parameter_target = int(settings["model"]["parameter_target"])
+    parameter_tolerance = int(settings["model"]["parameter_tolerance"])
+    if abs(parameter_count - parameter_target) > parameter_tolerance:
+        raise RuntimeError(
+            f"dispatcher has {parameter_count:,} parameters, outside target "
+            f"{parameter_target:,} +/- {parameter_tolerance:,}"
+        )
+    semantic_settings = settings["semantic_encoder"]
+    gpt = base["gpt"]
+    started = time.time()
+    atomic_json_dump(
+        {
+            "format": "cftn_text_v2_dispatcher_status_v2",
+            "state": "extracting_frozen_semantic_features",
+            "pid": __import__("os").getpid(),
+            "model_name": gpt["model_name"],
+            "revision": gpt.get("revision"),
+            "parameter_count": parameter_count,
+        },
+        status_path,
+    )
+    extractor = FrozenSemanticFeatureExtractor(
+        model_name=str(gpt["model_name"]),
+        revision=gpt.get("revision"),
+        device=device,
+        dtype=gpt.get("dtype"),
+        local_files_only=bool(gpt.get("local_files_only", True)),
+        trust_remote_code=bool(gpt.get("trust_remote_code", False)),
+        attn_implementation=gpt.get("attn_implementation"),
+        expected_model_type=gpt.get("expected_model_type"),
+        expected_hidden_size=gpt.get("expected_hidden_size"),
+        expected_layers=gpt.get("expected_layers"),
+        require_dense=bool(gpt.get("require_dense", True)),
+        maximum_length=int(semantic_settings["maximum_length"]),
+        use_chat_template=bool(semantic_settings["use_chat_template"]),
+    )
+    if extractor.semantic_width != model.semantic_width:
+        raise RuntimeError(
+            "dispatcher semantic width differs from the frozen coordinator"
+        )
+    feature_contracts: dict[str, Any] = {}
+    feature_datasets = {"train": train_dataset, **panels}
+    for name, dataset in feature_datasets.items():
+        features, contract = load_or_create_semantic_cache(
+            artifact / "semantic_cache" / f"{name}.pth",
+            dataset.semantic_prompts,
+            extractor=extractor,
+            model_name=str(gpt["model_name"]),
+            revision=gpt.get("revision"),
+            maximum_length=int(semantic_settings["maximum_length"]),
+            use_chat_template=bool(semantic_settings["use_chat_template"]),
+            batch_size=int(semantic_settings["batch_size"]),
+        )
+        dataset.attach_semantic_features(features)
+        feature_contracts[name] = contract
+    del extractor
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    model = model.to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(settings["learning_rate"]),
@@ -360,7 +523,6 @@ def main() -> None:
         num_workers=0,
         collate_fn=lambda values: _collate(values, maximum_length=maximum_length),
     )
-    started = time.time()
     best_score: tuple[float, ...] = (-1.0,)
     best_epoch = 0
     stale = 0
@@ -368,21 +530,25 @@ def main() -> None:
     for epoch in range(1, int(settings["epochs"]) + 1):
         model.train()
         loss_sum = 0.0
+        component_sums = {name: 0.0 for name in ("intent", "delegation", "towers", "rounds")}
         examples = correct = 0
         for batch in train_loader:
             labels = batch["labels"].to(device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(
-                batch["input_ids"].to(device),
-                batch["attention_mask"].to(device),
+            loss, logits, components = _training_loss(
+                model,
+                batch,
+                device=device,
+                weights=settings["losses"],
             )
-            loss = torch.nn.functional.cross_entropy(logits, labels)
             if not bool(torch.isfinite(loss)):
                 raise RuntimeError("V2 dispatcher produced a non-finite loss")
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             loss_sum += float(loss.detach()) * int(labels.numel())
+            for name, value in components.items():
+                component_sums[name] += value * int(labels.numel())
             examples += int(labels.numel())
             correct += int(logits.detach().argmax(dim=-1).eq(labels).sum())
         evaluations = {
@@ -399,6 +565,10 @@ def main() -> None:
         row = {
             "epoch": epoch,
             "train_loss": loss_sum / max(1, examples),
+            "train_loss_components": {
+                name: value / max(1, examples)
+                for name, value in component_sums.items()
+            },
             "train_accuracy": correct / max(1, examples),
             "evaluations": evaluations,
             "elapsed_seconds": time.time() - started,
@@ -407,7 +577,7 @@ def main() -> None:
         append_jsonl(row, metrics_path)
         atomic_json_dump(
             {
-                "format": "cftn_text_v2_dispatcher_status_v1",
+                "format": "cftn_text_v2_dispatcher_status_v2",
                 "state": "training",
                 "pid": __import__("os").getpid(),
                 "epoch": epoch,
@@ -441,6 +611,16 @@ def main() -> None:
                     "joint_manifest_sha256": joint_manifest["manifest_sha256"],
                     "base_config_sha256": base["_meta"]["sha256"],
                     "revision_sha256": revision["_meta"]["sha256"],
+                    "semantic_encoder": {
+                        "model_name": gpt["model_name"],
+                        "revision": gpt.get("revision"),
+                        "use_chat_template": bool(
+                            semantic_settings["use_chat_template"]
+                        ),
+                        "pooling": "attention_mask_mean_final_hidden_v1",
+                    },
+                    "feature_contracts": feature_contracts,
+                    "parameter_count": parameter_count,
                     "evaluations": evaluations,
                 },
             )
@@ -452,7 +632,9 @@ def main() -> None:
     dispatcher = load_learned_dispatcher(checkpoint_path, device=device)
     final: dict[str, Any] = {}
     for name, panel in panels.items():
-        predictions = dispatcher.predict_intents(panel.prompts)
+        predictions = dispatcher.predict_intents(
+            panel.prompts, panel.semantic_features
+        )
         correct = sum(
             DISPATCH_INTENTS.index(intent) == label
             for (intent, _), label in zip(predictions, panel.labels)
@@ -488,12 +670,21 @@ def main() -> None:
     }
     gates["pass"] = all(gates.values())
     summary = {
-        "format": "cftn_text_v2_learned_dispatcher_training_v1",
+        "format": "cftn_text_v2_hierarchical_dispatcher_training_v2",
         "state": "passed" if gates["pass"] else "failed_acceptance",
         "checkpoint": str(checkpoint_path.resolve()),
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "best_epoch": best_epoch,
         "confidence_threshold": confidence_threshold,
+        "architecture": model.architecture,
+        "parameter_count": parameter_count,
+        "semantic_encoder": {
+            "model_name": gpt["model_name"],
+            "revision": gpt.get("revision"),
+            "use_chat_template": bool(semantic_settings["use_chat_template"]),
+            "pooling": "attention_mask_mean_final_hidden_v1",
+        },
+        "feature_contracts": feature_contracts,
         "train_examples": len(train_dataset),
         "base_manifest_sha256": v2_manifest["manifest_sha256"],
         "joint_manifest_sha256": joint_manifest["manifest_sha256"],
@@ -507,7 +698,7 @@ def main() -> None:
     atomic_json_dump(summary, summary_path)
     atomic_json_dump(
         {
-            "format": "cftn_text_v2_dispatcher_status_v1",
+            "format": "cftn_text_v2_dispatcher_status_v2",
             "state": summary["state"],
             "epoch": history[-1]["epoch"],
             "global_step": history[-1]["epoch"] * len(train_loader),

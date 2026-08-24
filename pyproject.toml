@@ -9,7 +9,7 @@ description = "Corpus-callosum communication between a frozen GPT generalist and
 requires-python = ">=3.11"
 dependencies = [
   "torch>=2.2",
-  "transformers>=4.45",
+  "transformers>=4.51,<6",
   "PyYAML>=6.0",
   "wandb>=0.18",
   "datasets>=3.0,<5",
@@ -21,6 +21,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cftn_text*", "tools*"]
+
+[tool.setuptools.package-data]
+cftn_text = ["web_static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

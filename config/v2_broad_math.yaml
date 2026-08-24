@@ -186,9 +186,20 @@ data:
         max_difficulty: 3
 
 gpt:
-  model_name: gpt2
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  # Immutable verified Hugging Face revision (the repository's tokenizer update).
+  revision: cdbee75f17c01a7cc42f958dc650907174af0554
+  architecture: dense
+  require_dense: true
+  expected_model_type: qwen3
+  expected_hidden_size: 2560
+  expected_layers: 36
+  dtype: bfloat16
+  attn_implementation: sdpa
+  trust_remote_code: false
+  use_chat_template: true
   local_files_only: false
-  receiver_layers: [7, 9, 11]
+  receiver_layers: [11, 23, 35]
 
 math_tower:
   layers: 8

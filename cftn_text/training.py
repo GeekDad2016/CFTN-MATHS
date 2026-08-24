@@ -29,7 +29,7 @@ from .config import config_sha256
 from .complementary import apply_view_mode
 from .data_generator import audit_manifest, file_sha256, prepare_manifests
 from .dataset import CFTNCollator, EquationDataset, MathCollator
-from .gpt_receiver import FrozenGPT2Tower
+from .gpt_receiver import FrozenCausalLMTower
 from .math_tower import MathTower
 from .metrics import masked_token_statistics, summarize_gate
 from .model import CFTNTextModel, causal_language_loss, optional_answer_loss
@@ -200,23 +200,40 @@ def build_math_tower(config: dict[str, Any]) -> MathTower:
     return MathTower(config["math_tower"], ByteMathTokenizer.vocab_size)
 
 
-def load_gpt_components(config: dict[str, Any]) -> tuple[Any, FrozenGPT2Tower]:
+def load_gpt_components(config: dict[str, Any]) -> tuple[Any, FrozenCausalLMTower]:
     from transformers import AutoTokenizer
 
     gpt = config["gpt"]
     local_only = bool(gpt.get("local_files_only", True))
-    tokenizer = AutoTokenizer.from_pretrained(
-        gpt["model_name"], local_files_only=local_only
-    )
+    tokenizer_kwargs: dict[str, Any] = {
+        "local_files_only": local_only,
+        "trust_remote_code": bool(gpt.get("trust_remote_code", False)),
+    }
+    if gpt.get("revision"):
+        tokenizer_kwargs["revision"] = str(gpt["revision"])
+    tokenizer = AutoTokenizer.from_pretrained(gpt["model_name"], **tokenizer_kwargs)
     if tokenizer.eos_token_id is None:
         raise ValueError("GPT tokenizer has no EOS token")
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
-    tower = FrozenGPT2Tower.from_pretrained(
+    setattr(
+        tokenizer,
+        "_cftn_use_chat_template",
+        bool(gpt.get("use_chat_template", False)),
+    )
+    tower = FrozenCausalLMTower.from_pretrained(
         gpt["model_name"],
         [int(layer) for layer in gpt["receiver_layers"]],
         config["bridge"],
         local_files_only=local_only,
+        revision=gpt.get("revision"),
+        dtype=gpt.get("dtype"),
+        trust_remote_code=bool(gpt.get("trust_remote_code", False)),
+        attn_implementation=gpt.get("attn_implementation"),
+        expected_model_type=gpt.get("expected_model_type"),
+        expected_hidden_size=gpt.get("expected_hidden_size"),
+        expected_layers=gpt.get("expected_layers"),
+        require_dense=bool(gpt.get("require_dense", False)),
     )
     return tokenizer, tower
 

@@ -1,10 +1,12 @@
 # CFTN-Text V2 on RunPod
 
-V2 is one resumable end-to-end experiment. It keeps GPT-2 frozen, retains the
-contextual message bridges and gated cross-receivers, trains the scratch math
-tower on 400,000 unique mixed examples, trains a larger exact-string tower,
-and then repeats the complete recurrent/wake-gated V1.3 curriculum with fresh
-collaboration modules.
+V2 is one resumable end-to-end experiment. It freezes the dense
+`Qwen/Qwen3-4B-Instruct-2507` coordinator at revision
+`cdbee75f17c01a7cc42f958dc650907174af0554`, retains the contextual message
+bridges and gated cross-receivers, trains the scratch math tower on 400,000
+unique mixed examples, trains a larger exact-string tower, and then repeats
+the complete recurrent/wake-gated V1.3 curriculum with fresh collaboration
+modules.
 
 ## Architecture sequencing after V1.1
 
@@ -33,12 +35,14 @@ The intended division of labour is asymmetric and complementary:
   relevant span that the specialist's local input does not contain;
 - math-to-GPT messages return the exact result and compact supporting state.
 
-During joint training GPT receives the natural prompt while each specialist is
+During joint training Qwen receives the natural prompt while each specialist is
 initialized from neutral workspace tokens. Pure language requires no tower;
 math or exact string tasks require one; language-dependent and composed tasks
-require directional or recurrent cooperation. A third `extension_1` slot is
-reserved but inactive until its dataset and capability contract are selected;
-it consumes no parameters or compute in this run.
+require directional or recurrent cooperation. The registry exposes twelve
+stable tower slots. Only math and string are active in this run; ten named
+future slots are masked out of dispatcher loss and runtime selection and
+consume no tower parameters or compute. Their datasets and activation order are
+recorded in `V2_QWEN_12_TOWER_TARGET.md`.
 
 ## Data boundary
 
@@ -87,8 +91,10 @@ bash start_v2_runpod.sh
 
 The bootstrap fast-forwards a clean `main` checkout, reopens its updated copy,
 sets all persistent `/workspace/volume/cftn-text` paths, installs the project
-and dependencies, runs the CUDA/BF16/storage/W&B preflight, and starts the
-normal resumable launcher. Prefer adding `WANDB_API_KEY` as a RunPod secret. If
+and dependencies, runs the Qwen revision/dense/chat-template plus
+CUDA/BF16/storage/W&B preflight, and starts the normal resumable launcher.
+The preflight downloads only Qwen configuration/tokenizer files, not model
+weights. Prefer adding `WANDB_API_KEY` as a RunPod secret. If
 it is absent and the terminal is interactive, the bootstrap securely prompts
 for it without echoing or writing it to disk.
 

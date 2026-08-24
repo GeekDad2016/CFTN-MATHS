@@ -73,6 +73,20 @@ mkdir -p \
   "${HF_HOME}" \
   "${WANDB_DIR}"
 
+# Keep the virtual environment on the Pod's fast local disk. RunPod network
+# volumes are appropriate for source, data, caches, and checkpoints, but their
+# metadata latency can make installation into /workspace appear to hang.
+venv_root="${CFTN_VENV_ROOT:-/opt/cftn-v2-venv}"
+if [[ -e "${venv_root}" && ! -x "${venv_root}/bin/python" ]]; then
+  echo "CFTN_VENV_ROOT exists but is not a usable virtual environment: ${venv_root}" >&2
+  exit 1
+fi
+if [[ ! -x "${venv_root}/bin/python" ]]; then
+  echo "Creating local-disk virtual environment at ${venv_root}..."
+  "${python_bin}" -m venv --system-site-packages "${venv_root}"
+fi
+python_bin="${venv_root}/bin/python"
+
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
   if [[ -t 0 ]]; then
     echo "WANDB_API_KEY was not supplied as a RunPod environment variable."
@@ -119,6 +133,7 @@ echo
 echo "CFTN-Text V2 bootstrap"
 echo "  revision: ${revision}"
 echo "  Python: ${python_bin}"
+echo "  virtual environment: ${venv_root}"
 echo "  math data: ${CFTN_DATA_ROOT}"
 echo "  multi-specialist data: ${CFTN_V2_MULTI_DATA_ROOT}"
 echo "  artifacts: ${CFTN_ARTIFACT_ROOT}"
@@ -128,5 +143,5 @@ echo "Running CUDA, BF16, storage, configuration, and W&B preflight..."
 "${python_bin}" run_v2.py --preflight-only "$@"
 
 echo
-echo "Preflight passed. Starting or safely resuming the 17-stage V2 pipeline..."
+echo "Preflight passed. Starting or safely resuming the 19-stage V2 pipeline..."
 exec "${python_bin}" run_v2.py "$@"

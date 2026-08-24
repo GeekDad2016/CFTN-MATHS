@@ -15,7 +15,9 @@ from typing import Any
 from cftn_text.checkpoint import atomic_json_dump
 from cftn_text.config import load_config
 from cftn_text.data_generator import file_sha256
+from cftn_text.gpt_receiver import validate_dense_causal_lm_config
 from cftn_text.pipeline_lock import exclusive_pipeline_lock
+from cftn_text.semantic_features import normalize_token_ids
 from cftn_text.v2_data import audit_v2_manifest
 from cftn_text.v1_3_config import load_v1_3_config
 from cftn_text.v1_3_data import audit_v1_3_manifest
@@ -563,6 +565,71 @@ def _verify_writable(path: Path) -> None:
         probe.unlink(missing_ok=True)
 
 
+def _coordinator_preflight(config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the pinned coordinator metadata without downloading its weights."""
+
+    from transformers import AutoConfig, AutoTokenizer, __version__ as transformers_version
+
+    settings = config["gpt"]
+    common: dict[str, Any] = {
+        "revision": str(settings["revision"]),
+        "local_files_only": bool(settings.get("local_files_only", False)),
+        "trust_remote_code": bool(settings.get("trust_remote_code", False)),
+    }
+    model_config = AutoConfig.from_pretrained(settings["model_name"], **common)
+    validate_dense_causal_lm_config(
+        model_config,
+        expected_model_type=settings.get("expected_model_type"),
+        expected_hidden_size=settings.get("expected_hidden_size"),
+        expected_layers=settings.get("expected_layers"),
+        require_dense=bool(settings.get("require_dense", True)),
+    )
+    resolved_commit = getattr(model_config, "_commit_hash", None)
+    requested_revision = str(settings["revision"])
+    if resolved_commit and str(resolved_commit) != requested_revision:
+        raise RuntimeError(
+            "resolved coordinator commit differs from the sealed V2 revision "
+            f"({resolved_commit} != {requested_revision})"
+        )
+    tokenizer = AutoTokenizer.from_pretrained(settings["model_name"], **common)
+    if tokenizer.eos_token_id is None:
+        raise RuntimeError("V2 coordinator tokenizer exposes no EOS token")
+    uses_chat_template = bool(settings.get("use_chat_template", False))
+    sample_ids: list[int] = []
+    if uses_chat_template:
+        if not getattr(tokenizer, "chat_template", None) or not callable(
+            getattr(tokenizer, "apply_chat_template", None)
+        ):
+            raise RuntimeError("V2 coordinator tokenizer exposes no chat template")
+        sample_ids = normalize_token_ids(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": "CFTN preflight"}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+        )
+        if not sample_ids:
+            raise RuntimeError("V2 coordinator chat template produced no tokens")
+    return {
+        "model_name": str(settings["model_name"]),
+        "requested_revision": requested_revision,
+        "resolved_commit": str(resolved_commit or requested_revision),
+        "model_type": str(model_config.model_type),
+        "architectures": [
+            str(value) for value in getattr(model_config, "architectures", ()) or ()
+        ],
+        "dense": True,
+        "hidden_size": int(model_config.hidden_size),
+        "layers": int(model_config.num_hidden_layers),
+        "dtype": str(settings.get("dtype")),
+        "chat_template": uses_chat_template,
+        "chat_template_probe_tokens": len(sample_ids),
+        "tokenizer_class": type(tokenizer).__name__,
+        "transformers_version": str(transformers_version),
+        "weights_downloaded_by_preflight": False,
+    }
+
+
 def _runtime_preflight(
     config: dict[str, Any], *, device: str, wandb: bool
 ) -> dict[str, Any]:
@@ -571,6 +638,7 @@ def _runtime_preflight(
     _validate_wandb_environment(config, wandb)
     revision = _multi_revision(config)
     _validate_wandb_environment(revision, wandb)
+    coordinator = _coordinator_preflight(config)
 
     artifact_root = _project_path(config, "artifact_root")
     data_root = _project_path(config, "data_root")
@@ -621,7 +689,7 @@ def _runtime_preflight(
         gpu.update({"available": False, "device": device})
 
     report = {
-        "format": "cftn_text_v2_startup_preflight_v1",
+        "format": "cftn_text_v2_startup_preflight_v2",
         "state": "passed",
         "checked_unix": time.time(),
         "pid": os.getpid(),
@@ -640,6 +708,7 @@ def _runtime_preflight(
             "artifact_free_bytes": int(shutil.disk_usage(artifact_root).free),
             "data_free_bytes": int(shutil.disk_usage(data_root).free),
         },
+        "coordinator": coordinator,
         "gpu": gpu,
         "wandb": {
             "enabled": wandb,

@@ -100,6 +100,27 @@ def validate_config(config: dict[str, Any]) -> None:
         if int(data[key]) < 1:
             raise ValueError(f"data.{key} must be positive")
     if format_name == "cftn_text_broad_math_v2":
+        gpt = config["gpt"]
+        if gpt.get("model_name") != "Qwen/Qwen3-4B-Instruct-2507":
+            raise ValueError("V2 coordinator must use the registered dense Qwen checkpoint")
+        revision = str(gpt.get("revision", ""))
+        if len(revision) != 40 or any(
+            character not in "0123456789abcdef" for character in revision.casefold()
+        ):
+            raise ValueError("V2 coordinator revision must be a full immutable Git SHA")
+        if gpt.get("architecture") != "dense" or gpt.get("require_dense") is not True:
+            raise ValueError("V2 coordinator must be explicitly pinned as dense")
+        if gpt.get("expected_model_type") != "qwen3":
+            raise ValueError("V2 coordinator must use the registered Qwen3 model type")
+        if int(gpt.get("expected_hidden_size", 0)) != 2560:
+            raise ValueError("V2 Qwen coordinator hidden size differs from the target")
+        if int(gpt.get("expected_layers", 0)) != 36:
+            raise ValueError("V2 Qwen coordinator layer count differs from the target")
+        if gpt.get("use_chat_template") is not True:
+            raise ValueError("V2 Qwen coordinator must use its tokenizer chat template")
+        receiver_layers = [int(value) for value in gpt.get("receiver_layers", [])]
+        if not receiver_layers or any(value < 0 or value >= 36 for value in receiver_layers):
+            raise ValueError("V2 Qwen receiver layers are outside the decoder")
         sources = data.get("training_sources", {})
         expected = int(data["train_examples"])
         allocated = sum(int(value) for value in sources.values())

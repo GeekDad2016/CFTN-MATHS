@@ -592,6 +592,15 @@ def test_adapter_continuation_uses_weighted_task_loss_and_adapter_parameters():
     )
 
 
+def test_collaboration_checkpoint_excludes_all_frozen_tower_weights():
+    model, _batch = _tiny_model_and_batch()
+    state = model.collaboration_state_dict()
+    assert state
+    assert all(name.startswith(model._collaboration_prefixes()) for name in state)
+    assert not any(name.startswith("gpt_tower.model.") for name in state)
+    assert not any(name.startswith("specialists.") for name in state)
+
+
 def test_fusion_recovery_trains_only_fusion_and_gpt_receivers():
     model, batch = _tiny_model_and_batch()
     legacy_state = {

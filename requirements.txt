@@ -1,5 +1,5 @@
 torch>=2.2
-transformers>=4.45
+transformers>=4.51,<6
 PyYAML>=6.0
 pytest>=8.0
 wandb>=0.18

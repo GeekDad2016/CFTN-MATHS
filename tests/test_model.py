@@ -81,6 +81,18 @@ def test_stage_freezing_preserves_roles(tiny_model):
     assert any(parameter.requires_grad for parameter in tiny_model.math_receivers.parameters())
 
 
+def test_trainable_checkpoint_excludes_frozen_gpt_base(tiny_model):
+    tiny_model.set_trainable_stage("bidirectional")
+    state = tiny_model.trainable_state_dict()
+    expected = {
+        name for name, parameter in tiny_model.named_parameters() if parameter.requires_grad
+    }
+    assert state
+    assert set(state) == expected
+    assert not any(name.startswith("gpt_tower.model.") for name in state)
+    assert not any(name.startswith("math_tower.") for name in state)
+
+
 def test_batched_gpt_generation_matches_individual_generation(tiny_model):
     tiny_model.eval()
     tokenizer = ByteMathTokenizer()

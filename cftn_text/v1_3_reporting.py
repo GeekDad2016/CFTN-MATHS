@@ -481,7 +481,7 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
                     "The selected hard checkpoint passed no-harm and exact-routing guards."
                 ),
                 "learned_dispatcher": (
-                    "The value-invariant finite-graph dispatcher passed registered, broad-math, and semantic holdouts."
+                    "The hierarchical semantic/structural dispatcher passed registered, broad-math, and semantic holdouts."
                 ),
                 "native_typed_dispatch": (
                     "The learned dispatcher, specialists, and deterministic result composer passed end to end."
@@ -504,11 +504,11 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
     if is_v2:
         recommendations = (
             [
-                "Populate the reserved extension_1 slot only after defining its native competence and matched causal tests."
+                "Activate reserved towers one at a time only after defining native competence, typed interfaces, and matched causal tests."
             ]
             if gates["pass"]
             else [
-                "Repair only the failed V2 gate(s); keep extension_1 inactive until current conditional communication and compute pass."
+                "Repair only the failed V2 gate(s); keep all reserved towers inactive until current conditional communication and compute pass."
             ]
         )
     else:
@@ -588,7 +588,7 @@ def assemble_v1_3_report(config: dict[str, Any]) -> dict[str, Any]:
                 else f"{experiment_label} completed but did not pass every preregistered multi-specialist gate."
             ),
             "scope": (
-                "This result concerns two active controlled specialists, one inactive reserved slot, and a frozen GPT-2 workspace. "
+                "This result concerns two active controlled specialists, ten inactive reserved slots, and a frozen dense Qwen3-4B coordinator. "
                 "Central bridge claims are conditioned on independently verified task-matched "
                 "specialist competence with at least 95% primary coverage. Held-out, extrapolation, "
                 "counterfactual, and unseen-composition splits remain non-gating diagnostics and "

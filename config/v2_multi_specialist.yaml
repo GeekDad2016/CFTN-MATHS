@@ -19,20 +19,121 @@ paths:
   artifact_root: ${CFTN_ARTIFACT_ROOT:-artifacts/v2_broad_math_400k_r3}
 
 specialist_registry:
-  maximum_slots: 3
+  maximum_slots: 12
   active:
     - name: math
       capability: broad_symbolic_and_word_problem_math
       source: v2_selected_math_checkpoint
+      datasets:
+        training: [openai/gsm8k]
+        note: the sealed V2 math mix also includes project generators, DeepMind Mathematics, and MathQA
     - name: string
       capability: exact_byte_level_string_operations
       source: train_from_scratch
+      datasets:
+        training: [project_deterministic_generator]
+        note: synthetic generation is preferable because every byte-level target is exactly verifiable
   reserved:
-    - name: extension_1
+    - name: code
       state: reserved_inactive
       train: false
-      capability: pending_user_selection
-      dataset: pending_user_selection
+      capability: code_generation_debugging_and_execution
+      datasets:
+        training:
+          - {id: google-research-datasets/mbpp, split: train, access: open, license: cc-by-4.0}
+        evaluation:
+          - {id: openai/openai_humaneval, split: test, access: open, license: mit}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: formal_logic
+      state: reserved_inactive
+      train: false
+      capability: deductive_logic_constraint_solving_and_planning
+      datasets:
+        training:
+          - {id: tasksource/ruletaker, split: train, access: open, license: apache-2.0}
+        evaluation:
+          - {id: tasksource/folio, split: validation, access: open, license: license-review-required}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: science
+      state: reserved_inactive
+      train: false
+      capability: grounded_science_question_answering
+      datasets:
+        training:
+          - {id: allenai/ai2_arc, subset: ARC-Challenge, split: train, access: open, license: cc-by-sa-4.0}
+        evaluation:
+          - {id: allenai/ai2_arc, subset: ARC-Challenge, split: validation, access: open, license: cc-by-sa-4.0}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: retrieval
+      state: reserved_inactive
+      train: false
+      capability: evidence_retrieval_and_multihop_question_answering
+      datasets:
+        training:
+          - {id: rajpurkar/squad, split: train, access: open, license: cc-by-sa-4.0}
+          - {id: hotpotqa/hotpot_qa, subset: distractor, split: train, access: open, license: cc-by-sa-4.0}
+        evaluation:
+          - {id: hotpotqa/hotpot_qa, subset: distractor, split: validation, access: open, license: cc-by-sa-4.0}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: long_context
+      state: reserved_inactive
+      train: false
+      capability: long_document_reading_and_evidence_synthesis
+      datasets:
+        training:
+          - {id: allenai/qasper, split: train, access: open, license: cc-by-4.0}
+        evaluation:
+          - {id: zai-org/LongBench, access: open, license: dataset-card-review-required}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: multilingual
+      state: reserved_inactive
+      train: false
+      capability: multilingual_understanding_and_translation
+      datasets:
+        training:
+          - {id: google/wmt24pp, split: train, access: open, license: apache-2.0}
+        evaluation:
+          - {id: openlanguagedata/flores_plus, access: gated, license: cc-by-sa-4.0, use: evaluation-only}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: tool_use
+      state: reserved_inactive
+      train: false
+      capability: typed_function_selection_and_argument_generation
+      datasets:
+        training:
+          - {id: glaiveai/glaive-function-calling-v2, split: train, access: open, license: apache-2.0}
+        optional_training:
+          - {id: Salesforce/xlam-function-calling-60k, split: train, access: gated, license: cc-by-4.0}
+      note: optional_xlam_source_requires_huggingface_terms_acceptance
+    - name: structured_data
+      state: reserved_inactive
+      train: false
+      capability: text_to_sql_and_table_reasoning
+      datasets:
+        training:
+          - {id: b-mc2/sql-create-context, split: train, access: open, license: cc-by-4.0}
+        evaluation:
+          - {id: xlangai/spider, split: validation, access: open, license: dataset-card-review-required}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: information_extraction
+      state: reserved_inactive
+      train: false
+      capability: named_entity_relation_and_schema_extraction
+      datasets:
+        training:
+          - {id: DFKI-SLT/few-nerd, subset: supervised, split: train, access: open, license: cc-by-sa-4.0}
+        evaluation:
+          - {id: DFKI-SLT/few-nerd, subset: supervised, split: test, access: open, license: cc-by-sa-4.0}
+      note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
+    - name: commonsense
+      state: reserved_inactive
+      train: false
+      capability: commonsense_and_social_reasoning
+      datasets:
+        training:
+          - {id: tau/commonsense_qa, split: train, access: open, license: mit}
+        evaluation:
+          - {id: tau/commonsense_qa, split: validation, access: open, license: mit}
       note: excluded_from_wake_targets_optimizers_checkpoints_and_compute
 
 data:
@@ -66,6 +167,7 @@ gpt_interface:
   generic_answer_cue: "Exact result:"
   pure_language_prompt_style: archival_key_value_v1
   completion_terminator: "\n"
+  prompt_transport: tokenizer_chat_template_v1
   calibration_max_new_tokens: 16
 
 string_tower:
@@ -100,20 +202,47 @@ runtime:
     math: "<workspace:math><latent-request>"
     string: "<workspace:string><latent-request>"
 
-# V2 routes natural prompts through a learned finite graph classifier.  The
-# classifier never predicts operands: quoted values, numbers, and broad-math
-# prompts are copied from immutable source spans and validated before a tower
-# can run. Unknown or low-confidence prompts fail closed.
+# Qwen provides frozen semantic features; a compact CNN validates source shape
+# and spans; hierarchical heads select delegation, towers, dependency rounds,
+# and the registered graph. The model never predicts operand values: the typed
+# compiler copies them from immutable prompt spans. Unknown/low-confidence
+# prompts fail closed and inactive tower slots cannot be selected.
 dispatcher:
-  format: cftn_text_v2_learned_dispatcher_v1
+  format: cftn_text_v2_hierarchical_dispatcher_v2
   artifact_directory: learned_dispatcher_v2
   maximum_length: 2048
   confidence_threshold: 0.90
-  epochs: 8
-  patience: 3
+  epochs: 15
+  patience: 4
   batch_size: 256
-  learning_rate: 0.002
+  learning_rate: 0.0003
   weight_decay: 0.0001
+  semantic_encoder:
+    source: frozen_coordinator_prepass
+    pooling: attention_mask_mean_final_hidden_v1
+    maximum_length: 768
+    batch_size: 16
+    use_chat_template: true
+    cache_dtype: float16
+  model:
+    semantic_width: 2560
+    semantic_projection_size: 1536
+    structure_projection_size: 384
+    fusion_size: 384
+    embedding_size: 64
+    channels: 96
+    kernels: [3, 5, 7]
+    dropout: 0.10
+    hierarchy_weight: 0.25
+    parameter_target: 5000000
+    parameter_tolerance: 500000
+    tower_names: [math, string, code, formal_logic, science, retrieval, long_context, multilingual, tool_use, structured_data, information_extraction, commonsense]
+    active_tower_names: [math, string]
+  losses:
+    intent: 1.0
+    delegation: 0.25
+    towers: 0.25
+    rounds: 0.20
   broad_train_examples: 100000
   joint_train_examples: 100000
   semantic_train_examples: 45000

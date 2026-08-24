@@ -501,9 +501,7 @@ def evaluate_native_answer_bus(
             raise FileNotFoundError(dispatcher_checkpoint)
         dispatcher_checkpoint_hash = file_sha256(dispatcher_checkpoint)
         loader = dispatcher_loader or load_learned_dispatcher
-        learned_dispatcher = loader(
-            dispatcher_checkpoint, device="cpu"
-        )
+        learned_dispatcher = loader(dispatcher_checkpoint, device=device)
     collator_class = V13JointInferenceCollator if dispatcher_enabled else V13JointCollator
     collator = collator_class(
         math_tokenizer,

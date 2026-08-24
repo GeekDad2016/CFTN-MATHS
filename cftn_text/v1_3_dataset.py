@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .tokenizer import ByteMathTokenizer, SequenceTooLongError, pad_1d
+from .semantic_features import causal_prompt_and_target_ids, semantic_prompt_ids
 from .v1_3_answer_bus import extract_answer_payload, registered_answer_bus
 from .v1_3_data import JOINT_SCHEMA, STRING_SCHEMA, load_v1_3_records
 
@@ -81,6 +82,7 @@ class V13JointCollator:
         maximum_specialist_length: int,
         maximum_rounds: int,
         neutral_workspaces: dict[str, str],
+        use_chat_template: bool | None = None,
     ) -> None:
         self.math_tokenizer = math_tokenizer
         self.gpt_tokenizer = gpt_tokenizer
@@ -88,6 +90,11 @@ class V13JointCollator:
         self.maximum_specialist_length = int(maximum_specialist_length)
         self.maximum_rounds = int(maximum_rounds)
         self.neutral_workspaces = dict(neutral_workspaces)
+        self.use_chat_template = (
+            bool(getattr(gpt_tokenizer, "_cftn_use_chat_template", False))
+            if use_chat_template is None
+            else bool(use_chat_template)
+        )
         self.specialist_names = tuple(self.neutral_workspaces)
         self.gpt_pad_id = (
             gpt_tokenizer.pad_token_id
@@ -185,13 +192,12 @@ class V13JointCollator:
             (len(records), self.maximum_rounds), -100.0, dtype=torch.float32
         )
         for row, record in enumerate(records):
-            prompt_ids = _external_encode(
-                self.gpt_tokenizer, self.gpt_prompt(record)
+            prompt_ids, combined, labels = causal_prompt_and_target_ids(
+                self.gpt_tokenizer,
+                self.gpt_prompt(record),
+                self.gpt_target(record),
+                use_chat_template=self.use_chat_template,
             )
-            target_ids = _external_encode(
-                self.gpt_tokenizer, self.gpt_target(record)
-            ) + [int(self.gpt_tokenizer.eos_token_id)]
-            combined = prompt_ids + target_ids
             if len(combined) > self.maximum_gpt_length:
                 raise SequenceTooLongError(
                     f"GPT sequence has {len(combined)} tokens, exceeding "
@@ -199,7 +205,7 @@ class V13JointCollator:
                 )
             gpt_prefixes.append(prompt_ids)
             gpt_sequences.append(combined)
-            gpt_labels.append([-100] * len(prompt_ids) + target_ids)
+            gpt_labels.append(labels)
             answer_target_ids = self.math_tokenizer.encode(str(record["gpt_target"]))
             answer_decoder_inputs.append(
                 [self.math_tokenizer.bos_token_id, *answer_target_ids]
@@ -366,7 +372,11 @@ class V13JointInferenceCollator(V13JointCollator):
         if any(record.get("schema_version") != JOINT_SCHEMA for record in records):
             raise ValueError("V1.3 inference collator received a non-joint record")
         gpt_prefixes = [
-            _external_encode(self.gpt_tokenizer, self.gpt_prompt(record))
+            semantic_prompt_ids(
+                self.gpt_tokenizer,
+                self.gpt_prompt(record),
+                use_chat_template=self.use_chat_template,
+            )
             for record in records
         ]
         if any(len(prefix) > self.maximum_gpt_length for prefix in gpt_prefixes):

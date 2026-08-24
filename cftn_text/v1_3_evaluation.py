@@ -405,10 +405,25 @@ def generate_joint_batch(
     dispatch_results: list[dict[str, str]] = []
     dispatch_errors: list[str | None] = []
     dispatch_requests: list[list[dict[str, object]]] = []
+    gpt_hidden = model.gpt_tower.prepass(
+        batch["gpt_prepass_input_ids"], batch["gpt_prepass_attention_mask"]
+    )
     if dispatcher_enabled:
-        for record in batch["records"]:
+        prompts = [str(record["problem"]) for record in batch["records"]]
+        semantic_predictions = None
+        if bool(getattr(typed_dispatcher, "requires_semantic_features", False)):
+            semantic_predictions = typed_dispatcher.predict_intents(
+                prompts,
+                _masked_mean(gpt_hidden, batch["gpt_prepass_attention_mask"]),
+            )
+        for row, record in enumerate(batch["records"]):
             try:
-                plan = dispatcher_function(str(record["problem"]))
+                if semantic_predictions is None:
+                    plan = dispatcher_function(str(record["problem"]))
+                else:
+                    plan = typed_dispatcher.compile_prediction(
+                        str(record["problem"]), semantic_predictions[row]
+                    )
                 dispatch_plans.append(plan)
                 dispatch_errors.append(None)
             except (DispatchError, KeyError) as exc:
@@ -420,9 +435,6 @@ def generate_joint_batch(
         [str(record["problem"]) for record in batch["records"]]
         if lossless_request_mode in {"raw_problem", "raw_problem_no_latent"}
         else None
-    )
-    gpt_hidden = model.gpt_tower.prepass(
-        batch["gpt_prepass_input_ids"], batch["gpt_prepass_attention_mask"]
     )
     accumulated: list[torch.Tensor] = []
     accumulated_masks: list[torch.Tensor] = []

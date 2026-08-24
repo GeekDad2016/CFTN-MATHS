@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>CFTN Inference Console</title>
+    <link rel="stylesheet" href="/app.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">C</div>
+        <div>
+          <p class="eyebrow">V1.3 typed runtime</p>
+          <h1>CFTN Inference Console</h1>
+        </div>
+      </div>
+      <div class="health-pill" id="health-pill" role="status" aria-live="polite">
+        <span class="health-dot"></span>
+        <span id="health-label">Connecting</span>
+      </div>
+    </header>
+
+    <main class="app-shell">
+      <aside class="control-panel panel">
+        <section>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Input</p>
+              <h2>Compose a run</h2>
+            </div>
+            <span class="counter" id="prompt-counter">0 / 4096</span>
+          </div>
+          <label class="sr-only" for="prompt">Prompt</label>
+          <textarea id="prompt" rows="8" maxlength="4096" spellcheck="false" placeholder="Enter any prompt…">Solve 7*x + (-4) = 31. Return x.</textarea>
+          <p class="prompt-note">Supported V1.3 tasks route to specialists. Other prompts fall back to the GPT generalist.</p>
+          <div class="sample-row" aria-label="Example prompts">
+            <button class="sample-chip" type="button" data-sample="math">Math</button>
+            <button class="sample-chip" type="button" data-sample="string">String</button>
+            <button class="sample-chip" type="button" data-sample="parallel">Parallel</button>
+            <button class="sample-chip" type="button" data-sample="sequential">Sequential</button>
+            <button class="sample-chip" type="button" data-sample="language">Language</button>
+          </div>
+        </section>
+
+        <section class="tower-section">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">Ablation controls</p>
+              <h2>Available towers</h2>
+            </div>
+            <button id="enable-all" class="text-button" type="button">Enable all</button>
+          </div>
+          <div class="tower-list">
+            <label class="tower-toggle">
+              <span class="tower-icon gpt">G</span>
+              <span class="tower-copy">
+                <strong>GPT generalist</strong>
+                <small>Pure-language fallback</small>
+              </span>
+              <span class="switch"><input id="tower-gpt" type="checkbox" checked><span></span></span>
+            </label>
+            <label class="tower-toggle">
+              <span class="tower-icon math">∑</span>
+              <span class="tower-copy">
+                <strong>Math tower</strong>
+                <small>Linear equations</small>
+              </span>
+              <span class="switch"><input id="tower-math" type="checkbox" checked><span></span></span>
+            </label>
+            <label class="tower-toggle">
+              <span class="tower-icon string">Aa</span>
+              <span class="tower-copy">
+                <strong>String tower</strong>
+                <small>Exact byte operations</small>
+              </span>
+              <span class="switch"><input id="tower-string" type="checkbox" checked><span></span></span>
+            </label>
+          </div>
+          <p class="control-note">Disabled towers are not executed. Dependent rounds fail closed and remain visible in the trace.</p>
+        </section>
+
+        <details class="advanced-controls">
+          <summary>Generation limits</summary>
+          <div class="field-grid">
+            <label>GPT tokens<input id="gpt-tokens" type="number" min="1" max="128" value="32"></label>
+            <label>Specialist tokens<input id="specialist-tokens" type="number" min="1" max="256" value="96"></label>
+          </div>
+        </details>
+
+        <button id="run-button" class="run-button" type="button">
+          <span class="run-icon" aria-hidden="true">▶</span>
+          <span id="run-label">Run inference</span>
+        </button>
+        <p class="keyboard-hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to run</p>
+      </aside>
+
+      <div class="results-column">
+        <section class="response-panel panel" aria-labelledby="response-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Final output</p>
+              <h2 id="response-title">Response</h2>
+            </div>
+            <span class="result-state idle" id="result-state">Ready</span>
+          </div>
+          <div class="response-body empty" id="response-body">
+            Run a prompt to inspect the final answer and every routing decision.
+          </div>
+          <div class="metric-strip" id="metric-strip" hidden>
+            <div><span>Intent</span><strong id="metric-intent">—</strong></div>
+            <div><span>Confidence</span><strong id="metric-confidence">—</strong></div>
+            <div><span>Latency</span><strong id="metric-latency">—</strong></div>
+            <div><span>Executed</span><strong id="metric-towers">—</strong></div>
+          </div>
+        </section>
+
+        <section class="trace-panel panel" aria-labelledby="trace-title">
+          <div class="section-heading trace-heading">
+            <div>
+              <p class="eyebrow">Execution observability</p>
+              <h2 id="trace-title">CFTN trace</h2>
+            </div>
+            <span class="mode-chip">Typed dispatcher</span>
+          </div>
+          <div class="trace-empty" id="trace-empty">
+            <div class="trace-empty-icon" aria-hidden="true">⌁</div>
+            <strong>No trace yet</strong>
+            <p>The dispatcher, tower requests, raw generations, answer payloads, and final composition will appear here.</p>
+          </div>
+          <div id="trace-content" hidden>
+            <div class="route-summary" id="route-summary"></div>
+            <div class="timeline" id="timeline"></div>
+            <details class="raw-trace">
+              <summary>Raw trace JSON</summary>
+              <div class="raw-actions"><button id="copy-json" class="text-button" type="button">Copy JSON</button></div>
+              <pre id="raw-json"></pre>
+            </details>
+          </div>
+        </section>
+
+        <details class="runtime-panel panel">
+          <summary>
+            <span><span class="eyebrow">Provenance</span><strong>Runtime and artifacts</strong></span>
+            <span class="summary-hint">Hashes &amp; device</span>
+          </summary>
+          <div id="runtime-details" class="runtime-details">Loading runtime metadata…</div>
+        </details>
+      </div>
+    </main>
+
+    <footer>
+      Private LAN console · No authentication or TLS · Do not expose directly to the internet
+    </footer>
+  </body>
+</html>

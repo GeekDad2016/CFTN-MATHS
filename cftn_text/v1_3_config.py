@@ -102,17 +102,18 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
         maximum_slots = int(registry.get("maximum_slots", 0))
         active = [str(item.get("name")) for item in registry.get("active", [])]
         reserved = registry.get("reserved", [])
-        if maximum_slots != 3:
-            raise ValueError("V2 must reserve exactly three specialist slots")
+        if maximum_slots != len(active) + len(reserved) or maximum_slots < 2:
+            raise ValueError("V2 specialist slot count differs from its registry")
         if active != specialists:
             raise ValueError("V2 active specialist registry differs from runtime order")
-        if len(reserved) != 1 or reserved[0].get("name") != "extension_1":
-            raise ValueError("V2 must retain one reserved extension_1 specialist slot")
-        if reserved[0].get("state") != "reserved_inactive":
-            raise ValueError("the extension_1 slot must remain reserved_inactive")
-        if reserved[0].get("train") is not False:
-            raise ValueError("the reserved specialist must not be trained")
-        if any(name in specialists for name in (item.get("name") for item in reserved)):
+        reserved_names = [str(item.get("name")) for item in reserved]
+        if not reserved_names or len(set([*active, *reserved_names])) != maximum_slots:
+            raise ValueError("V2 specialist registry names must be complete and unique")
+        if any(item.get("state") != "reserved_inactive" for item in reserved):
+            raise ValueError("every reserved specialist must remain reserved_inactive")
+        if any(item.get("train") is not False for item in reserved):
+            raise ValueError("reserved specialists must not be trained")
+        if any(name in specialists for name in reserved_names):
             raise ValueError("active and reserved specialist slots overlap")
         for section in (
             "dispatcher",
@@ -122,7 +123,7 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
             if not isinstance(config.get(section), dict):
                 raise ValueError(f"V2 configuration requires {section}")
         dispatcher = config["dispatcher"]
-        if dispatcher.get("format") != "cftn_text_v2_learned_dispatcher_v1":
+        if dispatcher.get("format") != "cftn_text_v2_hierarchical_dispatcher_v2":
             raise ValueError("V2 dispatcher format is not recognized")
         if not 0.5 < float(dispatcher.get("confidence_threshold", 0.0)) < 1.0:
             raise ValueError("V2 dispatcher confidence threshold must be within (0.5, 1)")
@@ -130,6 +131,38 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
             config["data"]["maximum_specialist_length"]
         ):
             raise ValueError("V2 dispatcher must cover the specialist prompt limit")
+        semantic_encoder = dispatcher.get("semantic_encoder", {})
+        dispatcher_model = dispatcher.get("model", {})
+        dispatcher_losses = dispatcher.get("losses", {})
+        if semantic_encoder.get("source") != "frozen_coordinator_prepass":
+            raise ValueError("V2 dispatcher must share the frozen coordinator prepass")
+        if semantic_encoder.get("pooling") != "attention_mask_mean_final_hidden_v1":
+            raise ValueError("V2 dispatcher semantic pooling contract is not recognized")
+        if int(semantic_encoder.get("maximum_length", 0)) < 1:
+            raise ValueError("V2 dispatcher semantic length must be positive")
+        if int(semantic_encoder.get("batch_size", 0)) < 1:
+            raise ValueError("V2 dispatcher semantic batch size must be positive")
+        if list(dispatcher_model.get("tower_names", [])) != [
+            *active,
+            *reserved_names,
+        ]:
+            raise ValueError("V2 dispatcher tower heads differ from the registry order")
+        if list(dispatcher_model.get("active_tower_names", [])) != active:
+            raise ValueError("V2 dispatcher active tower heads differ from runtime")
+        for key in (
+            "semantic_width",
+            "semantic_projection_size",
+            "structure_projection_size",
+            "fusion_size",
+            "parameter_target",
+            "parameter_tolerance",
+        ):
+            if int(dispatcher_model.get(key, 0)) < 1:
+                raise ValueError(f"V2 dispatcher model.{key} must be positive")
+        if set(dispatcher_losses) != {"intent", "delegation", "towers", "rounds"}:
+            raise ValueError("V2 dispatcher hierarchical losses are incomplete")
+        if any(float(value) <= 0.0 for value in dispatcher_losses.values()):
+            raise ValueError("V2 dispatcher loss weights must be positive")
         dispatch_acceptance = dispatcher.get("acceptance", {})
         required_dispatch_gates = {
             "minimum_registered_accuracy",
@@ -181,6 +214,11 @@ def load_v1_3_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("V1.3 generic GPT answer cue differs from preregistration")
     if str(interface.get("completion_terminator")) != "\n":
         raise ValueError("V1.3 GPT completion terminator must be one newline")
+    if (
+        raw.get("format") == V2_REVISION_FORMAT
+        and interface.get("prompt_transport") != "tokenizer_chat_template_v1"
+    ):
+        raise ValueError("V2 must use the coordinator tokenizer chat template")
     if int(interface.get("calibration_max_new_tokens", 0)) < 4:
         raise ValueError("V1.3 GPT calibration token budget is too small")
     phases = config["integration_training"].get("phases", [])

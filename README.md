@@ -192,10 +192,26 @@ py -3.11 -m tools.wait_then_run_v1_3 --config config/v1_3_multi_specialist.yaml 
 Every direct V1.3 training/evaluation entry point repeats the same prerequisite
 audit, so bypassing the continuation cannot start the experiment early.
 
+### V1.3 LAN inference console
+
+Run the confirmed learned typed-dispatch path from a browser, inspect its full
+round-by-round trace, and disable GPT, math, or string independently:
+
+```powershell
+D:\Applio-3.2.4\env\python.exe -m tools.serve_v1_3_inference --host 0.0.0.0 --port 7860 --device cuda
+```
+
+Then open `http://<computer-ip>:7860/` from this computer or another device on
+the same trusted private network. The service has no authentication and must
+not be exposed directly to the internet. Artifact defaults, firewall guidance,
+API details, trace semantics, and supported task scope are documented in
+[V1_3_WEB_INFERENCE.md](V1_3_WEB_INFERENCE.md).
+
 ## Broad-math V2
 
-V2 expands the proof to 400,000 unique math examples while keeping GPT-2
-frozen and retaining the same bridge classes. It repeats and scales the full
+V2 expands the proof to 400,000 unique math examples around a frozen, dense
+`Qwen/Qwen3-4B-Instruct-2507` coordinator at a full immutable Hugging Face
+revision. It retains the same bridge classes and repeats and scales the full
 V1.3 capability sequence rather than inheriting V1.3 as a prerequisite: a
 larger math specialist, a larger exact-string specialist, one-round capacity,
 dense recurrent communication, supervised soft wakes, a zero-update hard
@@ -221,10 +237,18 @@ evaluated in hard mode with zero optimizer updates and with hard halt disabled.
 The first hard transition calibrates only the wake gates with required-set BCE,
 caps their learning rate at `5e-7`, and refuses to select routing-collapse
 checkpoints. Hard halt remains frozen and diagnostic until a separate later
-experiment calibrates it. A third slot named `extension_1` is
-reserved but inactive and contributes no targets, optimization, checkpoints,
-or compute until its capability and dataset are specified. See
-[V2_EVIDENCE_REVISION.md](V2_EVIDENCE_REVISION.md).
+experiment calibrates it.
+
+The public-prompt dispatcher is now a 5,025,996-parameter hierarchical planner:
+it combines the frozen Qwen prepass with a byte-CNN structural path, predicts
+delegation/towers/dependency rounds/a finite typed graph, and copies operands
+from immutable source spans. The registry has twelve slots. Math and string are
+active; code, formal logic, science, retrieval, long context, multilingual,
+tool use, structured data, information extraction, and commonsense remain
+masked `reserved_inactive` slots that consume no tower compute or optimization.
+The exact current target skeleton is 4,089,525,858 parameters (4.090B). See
+[V2_EVIDENCE_REVISION.md](V2_EVIDENCE_REVISION.md) and the dataset/activation
+roadmap in [V2_QWEN_12_TOWER_TARGET.md](V2_QWEN_12_TOWER_TARGET.md).
 
 Preview or execute the complete resumable experiment. The top-level launcher
 enables W&B and safe resume by default:

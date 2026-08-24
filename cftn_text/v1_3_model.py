@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .bridges import BridgeOutput, ContextualMessageBridge, GatedCrossReceiver
-from .gpt_receiver import FrozenGPT2Tower
+from .gpt_receiver import FrozenCausalLMTower
 from .math_tower import MathTower, MathTowerOutput
 from .model import causal_language_loss
 from .v1_3_answer_bus import TypedAnswerComposer
@@ -104,7 +104,7 @@ class V13MultiTowerModel(nn.Module):
     def __init__(
         self,
         *,
-        gpt_tower: FrozenGPT2Tower,
+        gpt_tower: FrozenCausalLMTower,
         specialists: Mapping[str, MathTower],
         config: dict[str, Any],
     ) -> None:

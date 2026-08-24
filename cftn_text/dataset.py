@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .data_generator import load_records
+from .semantic_features import causal_prompt_and_target_ids
 from .tokenizer import ByteMathTokenizer, SequenceTooLongError, pad_1d
 
 
@@ -118,10 +119,16 @@ class CFTNCollator(MathCollator):
         gpt_tokenizer: ExternalTokenizer,
         max_math_length: int,
         max_gpt_length: int,
+        use_chat_template: bool | None = None,
     ) -> None:
         super().__init__(math_tokenizer, max_math_length)
         self.gpt_tokenizer = gpt_tokenizer
         self.max_gpt_length = int(max_gpt_length)
+        self.use_chat_template = (
+            bool(getattr(gpt_tokenizer, "_cftn_use_chat_template", False))
+            if use_chat_template is None
+            else bool(use_chat_template)
+        )
         self.gpt_pad_id = (
             gpt_tokenizer.pad_token_id
             if gpt_tokenizer.pad_token_id is not None
@@ -159,10 +166,12 @@ class CFTNCollator(MathCollator):
                     )
                 ),
             )
-            prompt_ids = _external_encode(self.gpt_tokenizer, prompt)
-            target_ids = _external_encode(self.gpt_tokenizer, record["target_answer"])
-            target_ids.append(int(self.gpt_tokenizer.eos_token_id))
-            combined = prompt_ids + target_ids
+            prompt_ids, combined, labels = causal_prompt_and_target_ids(
+                self.gpt_tokenizer,
+                prompt,
+                str(record["target_answer"]),
+                use_chat_template=self.use_chat_template,
+            )
             if len(combined) > self.max_gpt_length:
                 raise SequenceTooLongError(
                     f"GPT sequence has {len(combined)} tokens, exceeding "
@@ -170,7 +179,7 @@ class CFTNCollator(MathCollator):
                 )
             prepass_ids.append(prompt_ids)
             final_ids.append(combined)
-            final_labels.append([-100] * len(prompt_ids) + target_ids)
+            final_labels.append(labels)
             final_prefix_lengths.append(len(prompt_ids))
         gpt_prepass_ids, gpt_prepass_mask = pad_1d(
             prepass_ids, int(self.gpt_pad_id), self.max_gpt_length

@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .bridges import BridgeOutput, ContextualMessageBridge, GatedCrossReceiver
-from .gpt_receiver import FrozenGPT2Tower
+from .gpt_receiver import FrozenCausalLMTower
 from .math_tower import MathTower, MathTowerOutput
 from .tokenizer import ByteMathTokenizer, pad_1d
 
@@ -87,7 +87,7 @@ class CFTNTextModel(nn.Module):
     def __init__(
         self,
         math_tower: MathTower,
-        gpt_tower: FrozenGPT2Tower,
+        gpt_tower: FrozenCausalLMTower,
         config: dict[str, Any],
     ) -> None:
         super().__init__()

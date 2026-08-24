@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from cftn_text.data_generator import file_sha256
+from cftn_text.semantic_features import causal_prompt_and_target_ids, semantic_prompt_ids
 from cftn_text.v1_3_dispatch import compile_specialist_request
 from cftn_text.v2_dispatch import (
     DISPATCH_INTENTS,
@@ -16,13 +17,39 @@ from cftn_text.v2_dispatch import (
 )
 from cftn_text.v2_learned_dispatch import (
     ByteIntentClassifier,
+    HierarchicalDispatcherModel,
     LearnedV2Dispatcher,
+    dispatcher_parameter_count,
     encode_dispatch_prompts,
+    hierarchy_targets,
     load_learned_dispatcher,
     save_learned_dispatcher_checkpoint,
 )
 from tools.run_v2_experiment import Stage, _is_complete
 from tools.train_v2_dispatcher import _semantic_rows
+
+
+class _Transformers5StyleTokenizer:
+    eos_token_id = 99
+
+    def apply_chat_template(self, messages, **kwargs):
+        assert kwargs["tokenize"] is True
+        if kwargs["add_generation_prompt"]:
+            assert len(messages) == 1
+            return {"input_ids": [[10, 11]], "attention_mask": [[1, 1]]}
+        assert len(messages) == 2
+        return {"input_ids": torch.tensor([[10, 11, 12]])}
+
+
+def test_transformers5_mapping_chat_tokens_are_normalized():
+    tokenizer = _Transformers5StyleTokenizer()
+    assert semantic_prompt_ids(tokenizer, "prompt", use_chat_template=True) == [10, 11]
+    prefix, full, labels = causal_prompt_and_target_ids(
+        tokenizer, "prompt", "answer", use_chat_template=True
+    )
+    assert prefix == [10, 11]
+    assert full == [10, 11, 12]
+    assert labels == [-100, -100, 12]
 
 
 def test_v2_broad_math_dispatch_is_an_exact_lossless_prompt_copy():
@@ -80,8 +107,53 @@ def test_v2_unsupported_intent_fails_closed():
 
 def test_v2_semantic_training_controls_cover_every_intent_without_oracle_fields():
     rows = _semantic_rows(count=100, seed=41, heldout=False)
-    assert {intent for _, intent in rows} == set(DISPATCH_INTENTS)
-    assert all(isinstance(prompt, str) and prompt for prompt, _ in rows)
+    assert {intent for _, intent, _ in rows} == set(DISPATCH_INTENTS)
+    assert all(
+        isinstance(prompt, str) and prompt and semantic_prompt
+        for prompt, _, semantic_prompt in rows
+    )
+
+
+def test_v2_hierarchical_dispatcher_hits_five_million_target_and_uses_semantics():
+    tower_names = (
+        "math",
+        "string",
+        "code",
+        "formal_logic",
+        "science",
+        "retrieval",
+        "long_context",
+        "multilingual",
+        "tool_use",
+        "structured_data",
+        "information_extraction",
+        "commonsense",
+    )
+    model = HierarchicalDispatcherModel(
+        tower_names=tower_names,
+        active_tower_names=("math", "string"),
+        dropout=0.0,
+    )
+    assert dispatcher_parameter_count(model) == 5_025_996
+    ids, mask = encode_dispatch_prompts(
+        ["Differentiate 7*x^2 with respect to x."], maximum_length=128
+    )
+    logits = model(ids, mask, torch.zeros(1, 2560))
+    assert logits.shape == (1, len(DISPATCH_INTENTS))
+    assert model.tower_names == tower_names
+
+
+def test_v2_hierarchy_supervises_only_active_tower_slots():
+    labels = torch.tensor(
+        [DISPATCH_INTENTS.index("multi_parallel"), DISPATCH_INTENTS.index("pure_language")]
+    )
+    targets = hierarchy_targets(
+        labels,
+        tower_names=("math", "string", "code"),
+        active_tower_names=("math", "string"),
+    )
+    assert targets["towers"].tolist() == [[1.0, 1.0, 0.0], [0.0, 0.0, 0.0]]
+    assert targets["tower_mask"].tolist() == [[True, True, False], [True, True, False]]
 
 
 def test_v2_dispatch_encoding_is_value_invariant_for_source_operands():
@@ -122,6 +194,7 @@ def test_v2_dispatcher_structural_mask_keeps_rejection_and_broad_math_eligible()
     )
     logits = model(ids, mask)
     assert logits[0, DISPATCH_INTENTS.index("string_reverse")] > -1e3
+    assert logits[0, DISPATCH_INTENTS.index("pure_language")] > -1e3
     assert logits[0, DISPATCH_INTENTS.index("broad_math")] > -1e3
     assert logits[0, DISPATCH_INTENTS.index("unsupported")] > -1e3
     assert logits[0, DISPATCH_INTENTS.index("single_math")] < -1e3
