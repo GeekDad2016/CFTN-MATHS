@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import errno
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from cftn_text.config import load_config
 from cftn_text.v2_data import (
     _IntegralFloatRandintProxy,
+    _atomic_write_records,
     LOCAL_FAMILIES,
     V2_FORMAT,
     audit_v2_manifest,
@@ -18,6 +22,58 @@ from cftn_text.v2_data import (
     prepare_v2_manifests,
     validate_v2_record,
 )
+
+
+def test_atomic_writer_recovers_from_partial_fuse_eio_without_duplicate_rows(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "train.jsonl"
+    records = list(iter_local_records(count=3, split="train", seed=719))
+    real_open = Path.open
+    fault = {"injected": False}
+
+    class PartialEioWriter:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def write(self, payload):
+            if not fault["injected"]:
+                fault["injected"] = True
+                self.wrapped.write(bytes(payload[:7]))
+                self.wrapped.flush()
+                raise OSError(errno.EIO, "simulated transient FUSE failure")
+            return self.wrapped.write(payload)
+
+        def __getattr__(self, name):
+            return getattr(self.wrapped, name)
+
+    def flaky_open(
+        path,
+        mode="r",
+        buffering=-1,
+        encoding=None,
+        errors=None,
+        newline=None,
+    ):
+        handle = real_open(path, mode, buffering, encoding, errors, newline)
+        if mode == "w+b" and path.name.startswith(".train.jsonl."):
+            return PartialEioWriter(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    monkeypatch.setattr("cftn_text.v2_data.time.sleep", lambda _delay: None)
+
+    metadata = _atomic_write_records(destination, records, expected_count=3)
+    payload = destination.read_bytes()
+    decoded = [json.loads(line) for line in payload.splitlines()]
+
+    assert fault["injected"] is True
+    assert [row["record_id"] for row in decoded] == [
+        row["record_id"] for row in records
+    ]
+    assert metadata["count"] == 3
+    assert metadata["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert not list(tmp_path.glob(".train.jsonl.*.tmp"))
 
 
 def test_legacy_randint_proxy_converts_only_integral_float_bounds():

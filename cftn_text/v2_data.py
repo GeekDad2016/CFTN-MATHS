@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import hashlib
 import importlib
 import json
@@ -12,7 +13,7 @@ import urllib.request
 from collections import Counter
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, BinaryIO, Callable, Iterable, Iterator
 
 from .config import canonical_json, config_sha256
 from .checkpoint import atomic_json_dump
@@ -56,6 +57,14 @@ _GSM8K_CALCULATION = re.compile(r"<<(.*?)>>", re.DOTALL)
 _MATHQA_OPTION = re.compile(r"(?:^|,\s*)([a-e])\s*\)\s*", re.IGNORECASE)
 _WHITESPACE = re.compile(r"\s+")
 _SLOTS = tuple("PQRSTUVWXYZABCDEFGHIJKLMNO")
+_TRANSIENT_FILESYSTEM_ERRNOS = {
+    errno.EAGAIN,
+    errno.EINTR,
+    errno.EIO,
+    getattr(errno, "ESTALE", errno.EIO),
+    getattr(errno, "ETIMEDOUT", errno.EIO),
+}
+_FILESYSTEM_WRITE_ATTEMPTS = 12
 
 
 class _IntegralFloatRandintProxy:
@@ -1131,6 +1140,52 @@ def iter_gsm_symbolic_records(
         )
 
 
+def _write_payload_with_retries(
+    temporary: Path,
+    handle: BinaryIO,
+    payload: bytes,
+    *,
+    offset: int,
+) -> BinaryIO:
+    """Write one complete record, recovering from transient network-FS errors.
+
+    A failed buffered write can leave an unknown prefix on disk. Each retry
+    therefore reopens the file, truncates back to the last accepted record
+    boundary, and writes the entire payload again. This keeps JSONL rows and
+    the manifest digest exact even when a persistent FUSE mount briefly
+    returns EIO/ESTALE/ETIMEDOUT.
+    """
+
+    current: BinaryIO | None = handle
+    for attempt in range(_FILESYSTEM_WRITE_ATTEMPTS):
+        try:
+            if current is None or current.closed:
+                current = temporary.open("r+b", buffering=0)
+                current.seek(offset)
+                current.truncate(offset)
+            remaining = memoryview(payload)
+            while remaining:
+                written = current.write(remaining)
+                if not written:
+                    raise OSError(errno.EIO, "filesystem returned a zero-byte write")
+                remaining = remaining[written:]
+            return current
+        except OSError as exc:
+            if current is not None:
+                try:
+                    current.close()
+                except OSError:
+                    pass
+                current = None
+            if (
+                exc.errno not in _TRANSIENT_FILESYSTEM_ERRNOS
+                or attempt + 1 >= _FILESYSTEM_WRITE_ATTEMPTS
+            ):
+                raise
+            time.sleep(min(0.25 * (2**attempt), 5.0))
+    raise AssertionError("unreachable filesystem retry state")
+
+
 def _atomic_write_records(
     path: Path,
     records: Iterable[dict[str, Any]],
@@ -1147,8 +1202,11 @@ def _atomic_write_records(
     family_counts: Counter[str] = Counter()
     difficulty_counts: Counter[str] = Counter()
     maximum_math_tokens = 0
+    handle: BinaryIO | None = None
+    byte_offset = 0
     try:
-        with temporary.open("wb") as handle:
+        handle = temporary.open("w+b", buffering=0)
+        try:
             for record in records:
                 validate_v2_record(record)
                 math_problem = str(record.get("math_problem") or record["problem"])
@@ -1164,7 +1222,13 @@ def _atomic_write_records(
                         f"configured maximum is {max_math_length}"
                     )
                 payload = (canonical_json(record) + "\n").encode("utf-8")
-                handle.write(payload)
+                handle = _write_payload_with_retries(
+                    temporary,
+                    handle,
+                    payload,
+                    offset=byte_offset,
+                )
+                byte_offset += len(payload)
                 digest.update(payload)
                 count += 1
                 source_counts[str(record["source"])] += 1
@@ -1176,8 +1240,17 @@ def _atomic_write_records(
                     progress_callback(count)
             handle.flush()
             os.fsync(handle.fileno())
+        finally:
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
     except BaseException:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
     if expected_count is not None and count != int(expected_count):
         temporary.unlink(missing_ok=True)
