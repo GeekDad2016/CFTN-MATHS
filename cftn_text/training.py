@@ -32,6 +32,7 @@ from .dataset import CFTNCollator, EquationDataset, MathCollator
 from .gpt_receiver import FrozenCausalLMTower
 from .math_tower import MathTower
 from .math_validation import (
+    DEFAULT_V2_GENERATION_VALIDATION,
     evaluate_generation_panel,
     summarize_teacher_forced_breakdowns,
     update_teacher_forced_breakdowns,
@@ -730,7 +731,8 @@ def train_math_tower(
                 float(settings["answer_head_weight"]),
                 max_batches=max_batches,
             )
-            generation_settings = settings.get("generation_validation", {})
+            generation_settings = dict(DEFAULT_V2_GENERATION_VALIDATION)
+            generation_settings.update(settings.get("generation_validation", {}))
             generation_validation: dict[str, Any] | None = None
             if (
                 manifest.get("format") == "cftn_text_broad_math_v2"

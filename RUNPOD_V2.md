@@ -165,7 +165,10 @@ redacts sensitive JSON fields before serving the browser.
 The active R4 process was launched before cohort and per-epoch generation
 metrics were added. Its existing aggregate history is still displayed
 immediately; the additional breakdown and native-generation fields are emitted
-by newly started or explicitly resumed trainers. The final post-training
+by newly started or explicitly resumed trainers. The compact panel uses
+versioned code defaults (96 stratified examples, every epoch, up to 512 new
+tokens) so enabling monitoring does not alter the experiment config hash. The
+final post-training
 checkpoint-selection and specialist evaluations remain larger independent
 checks and are also surfaced when their pipeline stages run.
 

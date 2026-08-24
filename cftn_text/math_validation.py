@@ -14,6 +14,14 @@ from .v2_metrics import extract_v2_answer, score_v2_generations
 
 
 _BREAKDOWN_DIMENSIONS = ("source", "family", "difficulty")
+DEFAULT_V2_GENERATION_VALIDATION: dict[str, int | bool] = {
+    "enabled": True,
+    "every_epochs": 1,
+    "examples": 96,
+    "batch_size": 16,
+    "max_new_tokens": 512,
+    "failure_examples": 8,
+}
 
 
 def _new_group() -> dict[str, float | int]:

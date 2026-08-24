@@ -149,26 +149,6 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("V2 math result contract is not recognized")
         if int(tower["max_sequence_length"]) < 4096:
             raise ValueError("V2 proof math context must be at least 4096 byte tokens")
-        generation_validation = config["math_training"].get(
-            "generation_validation", {}
-        )
-        if generation_validation.get("enabled") is not True:
-            raise ValueError("V2 math training must enable native generation validation")
-        for key in (
-            "every_epochs",
-            "examples",
-            "batch_size",
-            "max_new_tokens",
-            "failure_examples",
-        ):
-            if int(generation_validation.get(key, 0)) <= 0:
-                raise ValueError(f"V2 generation_validation.{key} must be positive")
-        if int(generation_validation["max_new_tokens"]) >= int(
-            tower["max_sequence_length"]
-        ):
-            raise ValueError(
-                "V2 generation validation must leave context room for the request"
-            )
     elif format_name == "cftn_text_linear_equations_v1_1":
         bands = data.get("numeric_curriculum_bands", [])
         if len(bands) < 2:

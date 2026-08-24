@@ -5,6 +5,7 @@ import json
 import torch
 
 from cftn_text.math_validation import (
+    DEFAULT_V2_GENERATION_VALIDATION,
     evaluate_generation_panel,
     stratified_validation_panel,
     summarize_teacher_forced_breakdowns,
@@ -23,6 +24,17 @@ def _record(source: str, family: str, difficulty: int, answer: str = "2"):
         problem=f"Compute the {family} result.",
         answer=answer,
     )
+
+
+def test_v2_generation_validation_defaults_are_bounded_and_epoch_level():
+    assert DEFAULT_V2_GENERATION_VALIDATION == {
+        "enabled": True,
+        "every_epochs": 1,
+        "examples": 96,
+        "batch_size": 16,
+        "max_new_tokens": 512,
+        "failure_examples": 8,
+    }
 
 
 def test_teacher_forced_breakdowns_report_source_family_and_difficulty():
