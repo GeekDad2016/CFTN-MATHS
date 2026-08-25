@@ -199,69 +199,33 @@ def math_epoch_dataset(
 ) -> tuple[EquationDataset, dict[str, Any]]:
     data_format = config["data"].get("format")
     if data_format == "cftn_text_broad_math_v2":
-        from .v2_data import curriculum_records
+        curriculum = config["data"].get("curriculum", {})
+        if not curriculum.get("enabled", False):
+            selected = dataset.records
+            metadata = {"enabled": False, "phase": "all", "max_difficulty": 3}
+        else:
+            phases = list(curriculum.get("phases", []))
+            if not phases and phase_override is None:
+                raise ValueError("V2 curriculum requires at least one phase")
+            phase = phase_override or next(
+                (
+                    item
+                    for item in phases
+                    if epoch <= int(item["through_epoch"])
+                ),
+                phases[-1],
+            )
+            selected = _filter_v2_records_for_phase(dataset.records, phase)
+            if not selected:
+                raise RuntimeError(
+                    f"curriculum phase {phase.get('name', 'unknown')} selected no records"
+                )
+            metadata = _v2_curriculum_metadata(dataset.records, selected, phase)
     elif data_format == "cftn_text_linear_equations_v1_1":
         from .algorithmic_data_generator import curriculum_records
+        selected, metadata = curriculum_records(dataset.records, config, epoch)
     else:
         return dataset, {"enabled": False, "phase": "all"}
-
-    if data_format == "cftn_text_broad_math_v2":
-        selected, metadata = curriculum_records(
-            dataset.records, config, epoch, phase_override=phase_override
-        )
-        phase = phase_override or next(
-            (
-                item
-                for item in config["data"].get("curriculum", {}).get("phases", [])
-                if epoch <= int(item["through_epoch"])
-            ),
-            config["data"].get("curriculum", {}).get("phases", [{}])[-1],
-        )
-        selected = _filter_v2_records_for_phase(selected, phase)
-        if not selected:
-            raise RuntimeError(
-                f"curriculum phase {phase.get('name', 'unknown')} selected no records"
-            )
-        metadata = {
-            **metadata,
-            "available_examples": len(selected),
-            "difficulty_counts": dict(
-                sorted(
-                    Counter(
-                        str(record.get("difficulty", "unknown"))
-                        for record in selected
-                    ).items()
-                )
-            ),
-            "source_counts": dict(
-                sorted(
-                    Counter(
-                        str(record.get("source", "unknown")) for record in selected
-                    ).items()
-                )
-            ),
-            "family_counts": dict(
-                sorted(
-                    Counter(
-                        str(record.get("family", "unknown")) for record in selected
-                    ).items()
-                )
-            ),
-            "filters": {
-                "sources": (
-                    sorted(str(value) for value in phase["sources"])
-                    if phase.get("sources") is not None
-                    else None
-                ),
-                "families": (
-                    sorted(str(value) for value in phase["families"])
-                    if phase.get("families") is not None
-                    else None
-                ),
-            },
-        }
-    else:
-        selected, metadata = curriculum_records(dataset.records, config, epoch)
     target = int(
         config["data"].get("curriculum", {}).get(
             "examples_per_epoch", len(dataset)
@@ -325,6 +289,40 @@ def _filter_v2_records_for_phase(
         and (sources is None or str(record.get("source", "unknown")) in sources)
         and (families is None or str(record.get("family", "unknown")) in families)
     ]
+
+
+def _v2_curriculum_metadata(
+    all_records: list[dict[str, Any]],
+    selected: list[dict[str, Any]],
+    phase: dict[str, Any],
+) -> dict[str, Any]:
+    def counts(key: str) -> dict[str, int]:
+        return dict(
+            sorted(Counter(str(record.get(key, "unknown")) for record in selected).items())
+        )
+
+    return {
+        "enabled": True,
+        "phase": str(phase["name"]),
+        "max_difficulty": int(phase.get("max_difficulty", 3)),
+        "available_examples": len(selected),
+        "total_examples": len(all_records),
+        "difficulty_counts": counts("difficulty"),
+        "source_counts": counts("source"),
+        "family_counts": counts("family"),
+        "filters": {
+            "sources": (
+                sorted(str(value) for value in phase["sources"])
+                if phase.get("sources") is not None
+                else None
+            ),
+            "families": (
+                sorted(str(value) for value in phase["families"])
+                if phase.get("families") is not None
+                else None
+            ),
+        },
+    }
 
 
 def make_scheduler(

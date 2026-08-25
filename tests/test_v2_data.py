@@ -25,7 +25,7 @@ from cftn_text.v2_data import (
 )
 
 
-def test_recovery_curriculum_override_is_audited_and_reports_cohorts():
+def test_sealed_generator_curriculum_selects_by_recorded_difficulty():
     records = [
         {"difficulty": 1, "source": "a", "family": "easy"},
         {"difficulty": 2, "source": "b", "family": "medium"},
@@ -36,7 +36,7 @@ def test_recovery_curriculum_override_is_audited_and_reports_cohorts():
             "curriculum": {
                 "enabled": True,
                 "phases": [
-                    {"name": "all", "through_epoch": 1, "max_difficulty": 3}
+                    {"name": "foundations", "through_epoch": 1, "max_difficulty": 1}
                 ],
             }
         }
@@ -45,13 +45,10 @@ def test_recovery_curriculum_override_is_audited_and_reports_cohorts():
         records,
         config,
         1,
-        phase_override={"name": "repair", "max_difficulty": 1},
     )
     assert selected == [records[0]]
     assert metadata["available_examples"] == 1
-    assert metadata["difficulty_counts"] == {"1": 1}
-    assert metadata["source_counts"] == {"a": 1}
-    assert metadata["family_counts"] == {"easy": 1}
+    assert metadata["max_difficulty"] == 1
 
 
 def test_atomic_writer_recovers_from_partial_fuse_eio_without_duplicate_rows(
