@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from cftn_text.data_generator import file_sha256
-from cftn_text.v2_checkpoint_selection import candidate_score
+from cftn_text.v2_checkpoint_selection import (
+    candidate_score,
+    select_v2_math_checkpoint,
+)
 from cftn_text.v2_prerequisites import (
     V1_3_REQUIRED_GATES,
     audit_v2_mechanism_prerequisites,
@@ -135,3 +138,87 @@ def test_v2_checkpoint_ranking_prioritizes_generation_over_teacher_forcing():
     assert candidate_score(stronger_generation) > candidate_score(
         stronger_teacher_forcing
     )
+
+
+def test_v2_checkpoint_selection_can_reuse_one_explicit_candidate(
+    tmp_path, monkeypatch
+):
+    import cftn_text.v2_checkpoint_selection as selection_module
+
+    artifact_root = tmp_path / "artifacts"
+    math_root = artifact_root / "math"
+    math_root.mkdir(parents=True)
+    checkpoint_path = math_root / "math.best.pth"
+    checkpoint_path.write_bytes(b"epoch-45-checkpoint")
+    digest = file_sha256(checkpoint_path)
+    candidate_root = (
+        artifact_root
+        / "math_checkpoint_selection"
+        / f"epoch_0045_{digest[:12]}"
+    )
+    candidate_root.mkdir(parents=True)
+    _write(
+        candidate_root / "report.json",
+        {
+            "format": "cftn_text_math_evaluation_v2",
+            "checkpoint": str(checkpoint_path.resolve()),
+            "checkpoint_sha256": digest,
+            "config_sha256": "config-sha",
+            "manifest_sha256": "manifest-sha",
+            "splits": {
+                "validation": {
+                    "examples": 512,
+                    "accuracy": 0.25,
+                    "valid_rate": 0.75,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        selection_module,
+        "load_data_contract",
+        lambda config: (tmp_path / "data", {"manifest_sha256": "manifest-sha"}),
+    )
+    monkeypatch.setattr(
+        selection_module, "config_sha256", lambda config: "config-sha"
+    )
+    monkeypatch.setattr(
+        selection_module,
+        "load_checkpoint",
+        lambda *args, **kwargs: {
+            "epoch": 45,
+            "extra": {
+                "metrics": {
+                    "validation": {
+                        "teacher_forced_sequence_accuracy": 0.9,
+                        "loss": 0.2,
+                    }
+                }
+            },
+        },
+    )
+
+    def unexpected_evaluation(*args, **kwargs):
+        raise AssertionError("completed candidate should have been reused")
+
+    monkeypatch.setattr(
+        selection_module, "evaluate_v2_math_checkpoint", unexpected_evaluation
+    )
+    report = select_v2_math_checkpoint(
+        {
+            "project": {"artifact_root": str(artifact_root)},
+            "checkpoint_selection": {
+                "generation_examples": 512,
+                "split": "validation",
+            },
+        },
+        device_name="cpu",
+        candidate_paths=[checkpoint_path],
+        working_root=tmp_path / "scratch",
+    )
+    assert report["candidate_scope"] == "explicit"
+    assert len(report["candidates"]) == 1
+    assert report["candidates"][0]["epoch"] == 45
+    assert report["candidates"][0]["evaluation_reused"] is True
+    assert report["selected"]["source_path"] == str(checkpoint_path.resolve())
+    assert Path(report["selected"]["path"]).read_bytes() == checkpoint_path.read_bytes()

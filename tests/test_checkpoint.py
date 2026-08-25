@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import errno
+
 import torch
 
 from cftn_text.checkpoint import (
+    atomic_copy_file,
     atomic_json_dump,
     atomic_torch_save,
     build_checkpoint,
@@ -74,3 +77,47 @@ def test_atomic_json_retries_windows_reader_collision(tmp_path, monkeypatch):
     atomic_json_dump({"state": "running"}, path)
     assert attempts["count"] == 3
     assert path.read_text(encoding="utf-8").strip().startswith("{")
+
+
+def test_atomic_json_retries_transient_fuse_eio(tmp_path, monkeypatch):
+    import cftn_text.checkpoint as checkpoint_module
+
+    real_fsync = checkpoint_module.os.fsync
+    attempts = {"count": 0}
+
+    def flaky_fsync(descriptor):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise OSError(errno.EIO, "simulated FUSE write failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(checkpoint_module.os, "fsync", flaky_fsync)
+    monkeypatch.setattr(checkpoint_module.time, "sleep", lambda _: None)
+    path = tmp_path / "status.json"
+    atomic_json_dump({"state": "running"}, path)
+    assert attempts["count"] == 3
+    assert path.read_text(encoding="utf-8").strip().startswith("{")
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_atomic_copy_retries_transient_fuse_eio(tmp_path, monkeypatch):
+    import cftn_text.checkpoint as checkpoint_module
+
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"durable checkpoint" * 1024)
+    destination = tmp_path / "published" / "checkpoint.bin"
+    real_replace = checkpoint_module.os.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(source_path, destination_path):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise OSError(errno.EIO, "simulated FUSE rename failure")
+        return real_replace(source_path, destination_path)
+
+    monkeypatch.setattr(checkpoint_module.os, "replace", flaky_replace)
+    monkeypatch.setattr(checkpoint_module.time, "sleep", lambda _: None)
+    atomic_copy_file(source, destination)
+    assert attempts["count"] == 3
+    assert destination.read_bytes() == source.read_bytes()
+    assert not list(destination.parent.glob("*.tmp"))

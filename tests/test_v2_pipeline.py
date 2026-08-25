@@ -105,6 +105,45 @@ def test_one_command_launcher_is_resumable_and_wandb_enabled_by_default():
     assert "--wandb" not in runner_arguments(["--no-wandb"])
 
 
+def test_v2_recovery_forwards_one_math_checkpoint_and_local_working_root(tmp_path):
+    checkpoint = tmp_path / "math" / "math.best.pth"
+    working_root = tmp_path / "scratch"
+    arguments = runner_arguments(
+        [
+            "--no-wandb",
+            "--math-selection-checkpoint",
+            str(checkpoint),
+            "--working-root",
+            str(working_root),
+        ]
+    )
+    assert arguments.count("--math-selection-checkpoint") == 1
+    assert str(checkpoint) in arguments
+    assert arguments[-2:] == ["--working-root", str(working_root)]
+
+    config_path = Path(__file__).parents[1] / "config" / "v2_broad_math.yaml"
+    config = load_config(config_path)
+    stages = command_plan(
+        str(config_path),
+        config,
+        device="cuda",
+        wandb=False,
+        math_selection_checkpoints=[str(checkpoint)],
+        working_root=str(working_root),
+    )
+    selection = next(stage for stage in stages if stage.name == "select_math_checkpoint")
+    evaluation = next(stage for stage in stages if stage.name == "evaluate_math")
+    assert selection.command[-4:] == [
+        "--checkpoint",
+        str(checkpoint.resolve()),
+        "--working-root",
+        str((working_root / "math_checkpoint_selection").resolve()),
+    ]
+    assert evaluation.command[evaluation.command.index("--working-root") + 1] == str(
+        (working_root / "evaluation_math_v2").resolve()
+    )
+
+
 def test_runpod_bootstrap_installs_preflights_and_executes_pipeline():
     repository = Path(__file__).parents[1]
     script = (repository / "start_v2_runpod.sh").read_text(

@@ -26,6 +26,15 @@ def runner_arguments(argv: list[str] | None = None) -> list[str]:
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--from-stage")
     parser.add_argument("--through-stage")
+    parser.add_argument(
+        "--math-selection-checkpoint",
+        action="append",
+        help="Restrict math checkpoint selection to this path; repeat as needed",
+    )
+    parser.add_argument(
+        "--working-root",
+        help="Optional local scratch root for high-frequency evaluation output",
+    )
     args = parser.parse_args(argv)
 
     output = [
@@ -45,6 +54,10 @@ def runner_arguments(argv: list[str] | None = None) -> list[str]:
         output.extend(["--from-stage", args.from_stage])
     if args.through_stage:
         output.extend(["--through-stage", args.through_stage])
+    for checkpoint in args.math_selection_checkpoint or []:
+        output.extend(["--math-selection-checkpoint", checkpoint])
+    if args.working_root:
+        output.extend(["--working-root", args.working_root])
     return output
 
 
