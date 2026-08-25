@@ -7,6 +7,7 @@
     "source_layers": 8,
     "target_layers": 24,
     "hidden_size": 384,
+    "expected_target_parameters": 47414913,
     "maximum_function_error": 0.000001
   },
   "capacity_baseline": {

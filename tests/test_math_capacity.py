@@ -70,6 +70,7 @@ def test_v2_capacity_contract_is_a_fail_closed_single_variable_ablation():
         "source_layers": 8,
         "target_layers": 24,
         "hidden_size": 384,
+        "expected_target_parameters": 47414913,
         "maximum_function_error": 0.000001,
     }
     assert contract["phases"][0]["through_epoch"] == 8
