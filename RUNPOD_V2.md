@@ -88,6 +88,15 @@ locally without downgrading PyTorch's SymPy.
 
 ## RunPod launch
 
+### RunPod test invariant
+
+Any change intended for a RunPod experiment must be tested on the RunPod
+machine before it can release or resume training. Run the acceptance suite in
+a fresh clean Pod worktree at the exact pushed commit, using the same CUDA,
+Python, dependency, storage, and configuration environment as the experiment.
+Local-machine tests may be used for quick development feedback, but they never
+count as acceptance evidence and must not authorize a RunPod launch.
+
 ### One-command Pod reopen
 
 The persistent volume contains a safe bootstrap at `/workspace/cftn-start.sh`.
