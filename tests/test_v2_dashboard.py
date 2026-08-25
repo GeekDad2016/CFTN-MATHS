@@ -12,6 +12,10 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Acceptable to continue — watch validation" in PAGE
     assert "validation covers all difficulty levels" in PAGE
     assert "Validation trend" in PAGE
+    assert "Latest acceptance gate" in PAGE
+    assert "Acceptance gates" in PAGE
+    assert "checkpoint not eligible" in PAGE
+    assert "Awaiting second validation" in PAGE
     assert "Latest validation breakdown" in PAGE
     assert "Generation validation" in PAGE
     assert "Acceptance panels" in PAGE
@@ -19,6 +23,8 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Raw artifacts for every stage" in PAGE
     assert "teacher_forced_token_accuracy" in PAGE
     assert "generation.accuracy" in PAGE
+    assert "toExponential(3)" in PAGE
+    assert "<circle" in PAGE
     assert "x!==null&&x!==undefined&&x!==''" in PAGE
     assert "refreshes every 30 seconds" in PAGE
     assert "setInterval(load,30000)" in PAGE
