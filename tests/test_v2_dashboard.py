@@ -37,6 +37,10 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert '"math_shared_trace_recovery": "math_shared_trace_recovery"' in REMOTE_PROBE
     assert '"math_broad_shared_recovery": "math_broad_shared_recovery"' in REMOTE_PROBE
     assert '"math_capacity_recovery": "math_capacity_recovery"' in REMOTE_PROBE
+    assert '"math_capacity_recovery*"' in REMOTE_PROBE
+    assert "stage_directories.setdefault(candidate_root.name, candidate_root.name)" in REMOTE_PROBE
+    assert 'candidate_stage = candidate_root.name' in REMOTE_PROBE
+    assert 'data/manifests/v2_broad_math_400k_r4' in REMOTE_PROBE
     assert '"recover_v2_math"' in REMOTE_PROBE
     assert 'recovery_root / "recovery_contract.json"' in REMOTE_PROBE
     assert 'artifact_root / f"{stage}.stdout.log"' in REMOTE_PROBE

@@ -26,7 +26,7 @@ except ImportError:
     yaml = None
 
 artifact_root = Path("/workspace/cftn-text/artifacts/v2_broad_math_400k_r4")
-data_root = Path("/workspace/cftn-text/data/v2_broad_math_400k_r4")
+data_root = Path("/workspace/CFTN-MATHS/data/manifests/v2_broad_math_400k_r4")
 markers = ("run_v2.py", "prepare_v2_data", "train_math_tower", "recover_v2_math", "train_v2_dispatcher", "train_v1_3_integration", "evaluate_v2", "evaluate_v1_3")
 sensitive_names = {
     "api_key",
@@ -124,6 +124,34 @@ def tail(path, limit=12000):
     except OSError:
         return {"path": str(path), "bytes": 0, "text": ""}
 
+def modified_unix(path):
+    candidates = [path / "status.json", path / "summary.json", path]
+    values = []
+    for candidate in candidates:
+        try:
+            values.append(candidate.stat().st_mtime)
+        except OSError:
+            pass
+    return max(values, default=0.0)
+
+recovery_roots = sorted(
+    {
+        path
+        for pattern in (
+            "math_capacity_recovery*",
+            "math_broad_shared_recovery*",
+            "math_shared_trace_recovery*",
+            "math_answer_recovery*",
+        )
+        for path in artifact_root.glob(pattern)
+        if path.is_dir()
+    },
+    key=modified_unix,
+    reverse=True,
+)
+for candidate_root in recovery_roots:
+    stage_directories.setdefault(candidate_root.name, candidate_root.name)
+
 pipeline = redact(read_json(artifact_root / "pipeline_state.json"))
 config_path = Path("/workspace/CFTN-MATHS/config/v2_broad_math.yaml")
 for stage_details in pipeline.get("stages", {}).values():
@@ -159,13 +187,8 @@ recovery_root = None
 recovery_contract = {}
 recovery_status = {}
 recovery_terminal_states = {"completed", "failed_acceptance", "error"}
-for candidate_stage in (
-    "math_capacity_recovery",
-    "math_broad_shared_recovery",
-    "math_shared_trace_recovery",
-    "math_answer_recovery",
-):
-    candidate_root = artifact_root / candidate_stage
+for candidate_root in recovery_roots:
+    candidate_stage = candidate_root.name
     candidate_contract = read_json(candidate_root / "recovery_contract.json")
     candidate_status = read_json(candidate_root / "status.json")
     if candidate_contract and str(candidate_status.get("state") or "starting") not in recovery_terminal_states:
@@ -241,12 +264,7 @@ for path in artifact_root.rglob("wandb_run.json"):
     parsed = read_json(path)
     if parsed:
         wandb_runs.append({"path": str(path), **redact(parsed)})
-if stage in {
-    "math_capacity_recovery",
-    "math_broad_shared_recovery",
-    "math_shared_trace_recovery",
-    "math_answer_recovery",
-}:
+if recovery_root is not None and stage == recovery_stage:
     stdout = tail(artifact_root / f"{stage}.stdout.log")
     stderr = tail(artifact_root / f"{stage}.stderr.log")
 else:
