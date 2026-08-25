@@ -53,6 +53,34 @@ def causal_language_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Te
     )
 
 
+def answer_weighted_causal_language_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    answer_labels: torch.Tensor,
+    *,
+    answer_weight: float,
+) -> torch.Tensor:
+    """Token-normalized LM loss with extra weight on the typed answer payload."""
+
+    if logits.shape[:2] != labels.shape or labels.shape != answer_labels.shape:
+        raise ValueError("weighted language logits and labels have incompatible shapes")
+    weight = float(answer_weight)
+    if weight < 1.0:
+        raise ValueError("answer token weight must be at least one")
+    shifted_labels = labels[:, 1:].contiguous().view(-1)
+    shifted_focus = answer_labels[:, 1:].contiguous().view(-1).ne(-100)
+    valid = shifted_labels.ne(-100)
+    losses = F.cross_entropy(
+        logits[:, :-1].contiguous().view(-1, logits.shape[-1]),
+        shifted_labels,
+        ignore_index=-100,
+        reduction="none",
+    )
+    weights = valid.to(losses.dtype)
+    weights = weights + shifted_focus.to(losses.dtype) * (weight - 1.0)
+    return (losses * weights).sum() / weights.sum().clamp_min(1.0)
+
+
 def optional_answer_loss(
     answer_logits: torch.Tensor, answer_classes: torch.Tensor
 ) -> torch.Tensor:

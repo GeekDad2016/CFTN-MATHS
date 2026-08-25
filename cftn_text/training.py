@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import hashlib
 import json
 import math
 import os
@@ -15,6 +17,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from .checkpoint import (
+    atomic_copy_file,
     append_jsonl,
     atomic_json_dump,
     atomic_torch_save,
@@ -38,7 +41,12 @@ from .math_validation import (
     update_teacher_forced_breakdowns,
 )
 from .metrics import masked_token_statistics, summarize_gate
-from .model import CFTNTextModel, causal_language_loss, optional_answer_loss
+from .model import (
+    CFTNTextModel,
+    answer_weighted_causal_language_loss,
+    causal_language_loss,
+    optional_answer_loss,
+)
 from .tokenizer import ByteMathTokenizer
 from .wandb_support import initialize_wandb
 
@@ -154,6 +162,7 @@ def math_epoch_dataset(
     *,
     epoch: int,
     seed: int,
+    phase_override: dict[str, Any] | None = None,
 ) -> tuple[EquationDataset, dict[str, Any]]:
     data_format = config["data"].get("format")
     if data_format == "cftn_text_broad_math_v2":
@@ -163,7 +172,12 @@ def math_epoch_dataset(
     else:
         return dataset, {"enabled": False, "phase": "all"}
 
-    selected, metadata = curriculum_records(dataset.records, config, epoch)
+    if data_format == "cftn_text_broad_math_v2":
+        selected, metadata = curriculum_records(
+            dataset.records, config, epoch, phase_override=phase_override
+        )
+    else:
+        selected, metadata = curriculum_records(dataset.records, config, epoch)
     target = int(
         config["data"].get("curriculum", {}).get(
             "examples_per_epoch", len(dataset)
@@ -527,6 +541,10 @@ def train_math_tower(
     require_calibration: bool = True,
     disable_early_stopping: bool = False,
     wandb_options: dict[str, Any] | None = None,
+    initial_checkpoint: str | Path | None = None,
+    artifact_directory: str | Path | None = None,
+    working_directory: str | Path | None = None,
+    recovery_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     seed = int(config["project"]["seed"])
     seed_everything(seed)
@@ -538,14 +556,47 @@ def train_math_tower(
         verify_calibration_gate(config, manifest)
     train_dataset = split_dataset(root, manifest, "train")
     validation_dataset = split_dataset(root, manifest, "validation")
+    contract = copy.deepcopy(recovery_contract or {})
+    contract_sha256 = (
+        hashlib.sha256(
+            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if contract
+        else None
+    )
+    settings = copy.deepcopy(config["math_training"])
+    settings.update(contract.get("math_training", {}))
+    curriculum_config = copy.deepcopy(config)
+    curriculum_config["data"]["curriculum"].update(contract.get("curriculum", {}))
+    phases = list(contract.get("phases", []))
     tokenizer = ByteMathTokenizer()
-    collator = MathCollator(tokenizer, int(config["data"]["max_math_length"]))
-    settings = config["math_training"]
+    collator = MathCollator(
+        tokenizer,
+        int(config["data"]["max_math_length"]),
+        target_mode=str(settings.get("target_mode", "full_trace_v1")),
+    )
     early_stopping_enabled = not bool(disable_early_stopping)
-    artifact_dir = Path(config["project"]["artifact_root"]) / "math"
+    artifact_dir = Path(
+        artifact_directory
+        or (Path(config["project"]["artifact_root"]) / "math")
+    ).expanduser().resolve()
+    work_dir = Path(working_directory or artifact_dir).expanduser().resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = artifact_dir / "metrics.jsonl"
-    status_path = artifact_dir / "status.json"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = work_dir / "metrics.jsonl"
+    durable_metrics_path = artifact_dir / "metrics.jsonl"
+    status_path = work_dir / "status.json"
+    durable_status_path = artifact_dir / "status.json"
+    mirrored_status_write_failures = 0
+
+    def write_status(payload: dict[str, Any]) -> None:
+        nonlocal mirrored_status_write_failures
+        atomic_json_dump(payload, status_path)
+        if status_path != durable_status_path:
+            try:
+                atomic_json_dump(payload, durable_status_path)
+            except OSError:
+                mirrored_status_write_failures += 1
     started_at = time.time()
     model = build_math_tower(config).to(device)
     optimizer = AdamW(
@@ -575,6 +626,30 @@ def train_math_tower(
     global_step = 0
     best_metric = float("-inf")
     patience = 0
+    source_provenance: dict[str, Any] | None = None
+    if resume and initial_checkpoint is not None:
+        raise ValueError("resume and initial_checkpoint are mutually exclusive")
+    if initial_checkpoint is not None:
+        source_path = Path(initial_checkpoint).expanduser().resolve()
+        source_sha256 = file_sha256(source_path)
+        expected_source_sha256 = contract.get("source_checkpoint_sha256")
+        if expected_source_sha256 and source_sha256 != expected_source_sha256:
+            raise RuntimeError("math recovery source checkpoint hash changed")
+        checkpoint = load_checkpoint(
+            source_path,
+            expected_stage="math",
+            expected_manifest_sha256=manifest["manifest_sha256"],
+            map_location=device,
+        )
+        model.load_state_dict(checkpoint["model_state"], strict=True)
+        source_provenance = {
+            "path": str(source_path),
+            "sha256": source_sha256,
+            "epoch": int(checkpoint["epoch"]),
+            "global_step": int(checkpoint["global_step"]),
+            "optimizer_reset": True,
+            "scheduler_reset": True,
+        }
     if resume:
         checkpoint_path = latest_checkpoint(artifact_dir)
         if checkpoint_path is None:
@@ -596,7 +671,7 @@ def train_math_tower(
         global_step = int(checkpoint["global_step"])
         best_metric = float(checkpoint["best_metric"])
         patience = int(checkpoint["patience"])
-    atomic_json_dump(
+    write_status(
         _status_payload(
             stage="math",
             state="running",
@@ -604,10 +679,12 @@ def train_math_tower(
             global_step=global_step,
             started_at=started_at,
         ),
-        status_path,
     )
     best_path = artifact_dir / "math.best.pth"
+    working_best_path = work_dir / "math.best.pth"
     final_metrics: dict[str, Any] = {}
+    state = "completed"
+    active_phase_name: str | None = None
     report_every_steps = max(1, int(settings.get("report_every_steps", 100)))
     stop_reason = "max_epochs"
     wandb_tracker = initialize_wandb(
@@ -621,6 +698,8 @@ def train_math_tower(
             "training": settings,
             "runtime_overrides": {
                 "early_stopping_enabled": early_stopping_enabled,
+                "recovery_contract_sha256": contract_sha256,
+                "source_checkpoint": source_provenance,
             },
             "config_sha256": config_sha256(config),
             "manifest_sha256": manifest["manifest_sha256"],
@@ -629,11 +708,25 @@ def train_math_tower(
     try:
         for epoch in range(start_epoch, int(settings["max_epochs"]) + 1):
             model.train()
+            phase = next(
+                (
+                    item
+                    for item in phases
+                    if epoch <= int(item["through_epoch"])
+                ),
+                phases[-1] if phases else None,
+            )
+            phase_name = str(phase["name"]) if phase is not None else None
+            if phase_name != active_phase_name:
+                best_metric = float("-inf")
+                patience = 0
+                active_phase_name = phase_name
             epoch_dataset, curriculum = math_epoch_dataset(
                 train_dataset,
-                config,
+                curriculum_config,
                 epoch=epoch,
                 seed=seed,
+                phase_override=phase,
             )
             train_loader = make_loader(
                 epoch_dataset,
@@ -662,7 +755,12 @@ def train_math_tower(
                         batch["math_attention_mask"],
                         batch["math_prefix_lengths"],
                     )
-                    lm_loss = causal_language_loss(output.logits, batch["math_labels"])
+                    lm_loss = answer_weighted_causal_language_loss(
+                        output.logits,
+                        batch["math_labels"],
+                        batch["math_answer_labels"],
+                        answer_weight=float(settings.get("answer_token_weight", 1.0)),
+                    )
                     classes = model.answer_classes(batch["answer_values"])
                     answer_loss = optional_answer_loss(output.answer_logits, classes)
                     loss = lm_loss + float(settings["answer_head_weight"]) * answer_loss
@@ -696,7 +794,7 @@ def train_math_tower(
                         interval_started_at=epoch_started_at,
                         interval_start_step=epoch_start_step,
                     )
-                    atomic_json_dump(
+                    write_status(
                         _status_payload(
                             stage="math",
                             state="running",
@@ -705,7 +803,6 @@ def train_math_tower(
                             metrics=progress_metrics,
                             started_at=started_at,
                         ),
-                        status_path,
                     )
                     wandb_tracker.log(
                         {"train": progress_metrics},
@@ -740,10 +837,21 @@ def train_math_tower(
                 and epoch % max(1, int(generation_settings.get("every_epochs", 1)))
                 == 0
             ):
+                panel_records = validation_dataset.records
+                if phase is not None:
+                    maximum_difficulty = int(phase["max_difficulty"])
+                    panel_records = [
+                        record
+                        for record in panel_records
+                        if int(record.get("difficulty", 3)) <= maximum_difficulty
+                    ]
+                generation_rows_path = (
+                    work_dir / f"generation_validation_epoch_{epoch:04d}.jsonl"
+                )
                 generation_validation = evaluate_generation_panel(
                     model,
                     tokenizer,
-                    validation_dataset.records,
+                    panel_records,
                     maximum_examples=int(
                         generation_settings.get("examples", 96)
                     ),
@@ -754,27 +862,61 @@ def train_math_tower(
                     failure_examples=int(
                         generation_settings.get("failure_examples", 8)
                     ),
-                    rows_path=artifact_dir
-                    / f"generation_validation_epoch_{epoch:04d}.jsonl",
+                    rows_path=generation_rows_path,
                 )
+                if work_dir != artifact_dir:
+                    atomic_copy_file(
+                        generation_rows_path,
+                        artifact_dir / generation_rows_path.name,
+                    )
                 validation["generation"] = generation_validation
-            if (
+            if generation_validation is not None:
+                selection_metric = (
+                    float(generation_validation["accuracy"])
+                    + 0.01 * float(generation_validation["valid_rate"])
+                    + 0.0001 * float(validation["teacher_forced_sequence_accuracy"])
+                    - 1e-8 * float(validation["loss"])
+                )
+                selection_basis = "greedy_generation_accuracy"
+            elif (
                 manifest.get("format") == "cftn_text_broad_math_v2"
                 or not model.answer_head_enabled
             ):
                 selection_metric = float(
                     validation["teacher_forced_sequence_accuracy"]
                 ) - 1e-6 * float(validation["loss"])
+                selection_basis = "teacher_forced_sequence_accuracy"
             else:
                 selection_metric = float(
                     validation["answer_head_accuracy"]
                 ) - 1e-6 * float(validation["loss"])
+                selection_basis = "answer_head_accuracy"
             improved = selection_metric > best_metric
             if improved:
                 best_metric = selection_metric
                 patience = 0
             else:
                 patience += 1
+            phase_gate = None
+            if phase is not None and epoch == int(phase["through_epoch"]):
+                phase_gate = {
+                    "phase": str(phase["name"]),
+                    "minimum_generation_accuracy": float(
+                        phase["minimum_generation_accuracy"]
+                    ),
+                    "minimum_valid_rate": float(phase["minimum_valid_rate"]),
+                    "generation_accuracy": float(
+                        (generation_validation or {}).get("accuracy", 0.0)
+                    ),
+                    "valid_rate": float(
+                        (generation_validation or {}).get("valid_rate", 0.0)
+                    ),
+                }
+                phase_gate["pass"] = (
+                    phase_gate["generation_accuracy"]
+                    >= phase_gate["minimum_generation_accuracy"]
+                    and phase_gate["valid_rate"] >= phase_gate["minimum_valid_rate"]
+                )
             final_metrics = {
                 "epoch": epoch,
                 "global_step": global_step,
@@ -782,10 +924,14 @@ def train_math_tower(
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "validation": validation,
                 "selection_metric": selection_metric,
+                "selection_basis": selection_basis,
                 "best_metric": best_metric,
                 "patience": patience,
                 "early_stopping_enabled": early_stopping_enabled,
                 "curriculum": curriculum,
+                "recovery_contract_sha256": contract_sha256,
+                "source_checkpoint": source_provenance,
+                "curriculum_gate": phase_gate,
                 "trainable_parameters": sum(
                     parameter.numel() for parameter in model.parameters()
                 ),
@@ -809,6 +955,8 @@ def train_math_tower(
                 "gpu": gpu_status(),
             }
             append_jsonl(final_metrics, metrics_path)
+            if metrics_path != durable_metrics_path:
+                atomic_copy_file(metrics_path, durable_metrics_path)
             wandb_tracker.log(
                 final_metrics,
                 global_step=global_step,
@@ -829,10 +977,13 @@ def train_math_tower(
                 patience=patience,
                 extra={"metrics": final_metrics},
             )
-            checkpoint_path = artifact_dir / f"checkpoint_epoch_{epoch:04d}.pth"
+            checkpoint_path = work_dir / f"checkpoint_epoch_{epoch:04d}.pth"
             atomic_torch_save(payload, checkpoint_path)
+            durable_checkpoint_path = artifact_dir / checkpoint_path.name
+            if checkpoint_path != durable_checkpoint_path:
+                atomic_copy_file(checkpoint_path, durable_checkpoint_path)
             rotate_latest(
-                artifact_dir,
+                work_dir,
                 int(
                     settings.get(
                         "keep_latest_checkpoints",
@@ -840,9 +991,16 @@ def train_math_tower(
                     )
                 ),
             )
+            if work_dir != artifact_dir:
+                rotate_latest(
+                    artifact_dir,
+                    int(settings.get("keep_latest_checkpoints", 3)),
+                )
             if improved:
-                atomic_torch_save(payload, best_path)
-            atomic_json_dump(
+                atomic_torch_save(payload, working_best_path)
+                if working_best_path != best_path:
+                    atomic_copy_file(working_best_path, best_path)
+            write_status(
                 _status_payload(
                     stage="math",
                     state="running",
@@ -851,8 +1009,11 @@ def train_math_tower(
                     metrics=final_metrics,
                     started_at=started_at,
                 ),
-                status_path,
-            )
+                )
+            if phase_gate is not None and not phase_gate["pass"]:
+                stop_reason = f"curriculum_gate_failed_{phase['name']}"
+                state = "failed_acceptance"
+                break
             if _should_stop_early(
                 epoch=epoch,
                 patience=patience,
@@ -861,9 +1022,8 @@ def train_math_tower(
             ):
                 stop_reason = "early_stopping_validation_plateau"
                 break
-        state = "completed"
     except BaseException as exc:
-        atomic_json_dump(
+        write_status(
             _status_payload(
                 stage="math",
                 state="error",
@@ -872,7 +1032,6 @@ def train_math_tower(
                 metrics={"error": repr(exc)},
                 started_at=started_at,
             ),
-            status_path,
         )
         wandb_tracker.update_summary(
             {"run/state": "error", "run/error": repr(exc)}
@@ -887,9 +1046,16 @@ def train_math_tower(
         "best_checkpoint": str(best_path.resolve()),
         "best_checkpoint_sha256": file_sha256(best_path),
         "final_metrics": final_metrics,
+        "recovery_contract_sha256": contract_sha256,
+        "source_checkpoint": source_provenance,
+        "storage": {
+            "working_directory": str(work_dir),
+            "artifact_directory": str(artifact_dir),
+            "mirrored_status_write_failures": mirrored_status_write_failures,
+        },
     }
     atomic_json_dump(result, artifact_dir / "summary.json")
-    atomic_json_dump(
+    write_status(
         _status_payload(
             stage="math",
             state=state,
@@ -898,7 +1064,6 @@ def train_math_tower(
             metrics=final_metrics,
             started_at=started_at,
         ),
-        status_path,
     )
     wandb_tracker.update_summary(
         {

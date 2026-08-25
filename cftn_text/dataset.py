@@ -76,18 +76,36 @@ def _external_encode(tokenizer: ExternalTokenizer, text: str) -> list[int]:
 
 
 class MathCollator:
-    def __init__(self, tokenizer: ByteMathTokenizer, max_length: int) -> None:
+    def __init__(
+        self,
+        tokenizer: ByteMathTokenizer,
+        max_length: int,
+        *,
+        target_mode: str = "full_trace_v1",
+    ) -> None:
         self.tokenizer = tokenizer
         self.max_length = int(max_length)
+        self.target_mode = str(target_mode)
+        if self.target_mode not in {"full_trace_v1", "answer_only_v1"}:
+            raise ValueError(f"unsupported math target mode: {self.target_mode}")
+
+    def _target(self, record: dict[str, Any]) -> str:
+        if self.target_mode == "full_trace_v1":
+            return str(record["target_trace"])
+        answer = record.get("normalized_answer", record.get("target_answer"))
+        if answer is None:
+            raise ValueError("answer-only math training requires a normalized answer")
+        return f"<answer>{answer}</answer>"
 
     def __call__(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        targets = [self._target(record) for record in records]
         encoded = [
             self.tokenizer.encode_training_example(
                 record.get("math_problem", record["problem"]),
-                record["target_trace"],
+                target,
                 self.max_length,
             )
-            for record in records
+            for record, target in zip(records, targets)
         ]
         input_ids, attention_mask = pad_1d(
             [item.input_ids for item in encoded],
@@ -97,10 +115,22 @@ class MathCollator:
         labels, _ = pad_1d(
             [item.labels for item in encoded], -100, self.max_length
         )
+        answer_labels_rows: list[list[int]] = []
+        for item, target in zip(encoded, targets):
+            answer_start = target.rfind("<answer>")
+            if answer_start < 0:
+                raise ValueError("math target is missing an <answer> payload")
+            prefix_bytes = len(self.tokenizer.encode(target[:answer_start]))
+            focused = [-100] * len(item.labels)
+            suffix_start = item.prefix_length + prefix_bytes
+            focused[suffix_start:] = item.labels[suffix_start:]
+            answer_labels_rows.append(focused)
+        answer_labels, _ = pad_1d(answer_labels_rows, -100, self.max_length)
         return {
             "math_input_ids": input_ids,
             "math_attention_mask": attention_mask,
             "math_labels": labels,
+            "math_answer_labels": answer_labels,
             "math_prefix_lengths": torch.tensor(
                 [item.prefix_length for item in encoded], dtype=torch.long
             ),

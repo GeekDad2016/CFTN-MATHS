@@ -1,0 +1,49 @@
+{
+  "format": "cftn_text_v2_math_answer_recovery_v1",
+  "source_checkpoint_sha256": "fe2c056a1ee1d4a3514537681d82124b0312f45c27f72f8e73d2afc747d53973",
+  "math_training": {
+    "max_epochs": 80,
+    "minimum_epochs": 80,
+    "early_stop_patience": 80,
+    "learning_rate": 0.00005,
+    "minimum_learning_rate": 0.0000025,
+    "warmup_fraction": 0.02,
+    "target_mode": "answer_only_v1",
+    "answer_token_weight": 4.0,
+    "keep_latest_checkpoints": 5,
+    "generation_validation": {
+      "enabled": true,
+      "every_epochs": 1,
+      "examples": 512,
+      "batch_size": 16,
+      "max_new_tokens": 256,
+      "failure_examples": 12
+    }
+  },
+  "curriculum": {
+    "examples_per_epoch": 400000
+  },
+  "phases": [
+    {
+      "name": "foundations_repair",
+      "through_epoch": 20,
+      "max_difficulty": 1,
+      "minimum_generation_accuracy": 0.95,
+      "minimum_valid_rate": 0.99
+    },
+    {
+      "name": "rational_and_nested_repair",
+      "through_epoch": 45,
+      "max_difficulty": 2,
+      "minimum_generation_accuracy": 0.85,
+      "minimum_valid_rate": 0.98
+    },
+    {
+      "name": "systems_and_language_repair",
+      "through_epoch": 80,
+      "max_difficulty": 3,
+      "minimum_generation_accuracy": 0.70,
+      "minimum_valid_rate": 0.95
+    }
+  ]
+}

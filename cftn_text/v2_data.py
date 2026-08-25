@@ -1616,12 +1616,16 @@ def audit_v2_manifest(manifest: dict[str, Any], root: str | Path) -> dict[str, A
 
 
 def curriculum_records(
-    records: list[dict[str, Any]], config: dict[str, Any], epoch: int
+    records: list[dict[str, Any]],
+    config: dict[str, Any],
+    epoch: int,
+    *,
+    phase_override: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     curriculum = config["data"].get("curriculum", {})
     if not curriculum.get("enabled", False):
         return records, {"enabled": False, "phase": "all", "max_difficulty": 3}
-    phase = next(
+    phase = phase_override or next(
         (
             item
             for item in curriculum["phases"]
@@ -1633,10 +1637,18 @@ def curriculum_records(
     selected = [record for record in records if int(record.get("difficulty", 3)) <= maximum]
     if not selected:
         raise RuntimeError(f"curriculum phase {phase['name']} selected no records")
+    difficulty_counts = Counter(str(record.get("difficulty", "unknown")) for record in selected)
+    if any(int(value) > maximum for value in difficulty_counts if value.isdigit()):
+        raise RuntimeError("curriculum selected a record above its maximum difficulty")
+    source_counts = Counter(str(record.get("source", "unknown")) for record in selected)
+    family_counts = Counter(str(record.get("family", "unknown")) for record in selected)
     return selected, {
         "enabled": True,
         "phase": str(phase["name"]),
         "max_difficulty": maximum,
         "available_examples": len(selected),
         "total_examples": len(records),
+        "difficulty_counts": dict(sorted(difficulty_counts.items())),
+        "source_counts": dict(sorted(source_counts.items())),
+        "family_counts": dict(sorted(family_counts.items())),
     }

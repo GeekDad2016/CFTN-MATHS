@@ -4,7 +4,28 @@ import torch
 
 from cftn_text.data_generator import build_records
 from cftn_text.dataset import CFTNCollator
+from cftn_text.model import answer_weighted_causal_language_loss
 from cftn_text.tokenizer import ByteMathTokenizer
+
+
+def test_answer_weighted_loss_prioritizes_focused_payload_tokens():
+    logits = torch.zeros(1, 4, 8, requires_grad=True)
+    with torch.no_grad():
+        logits[0, 0, 1] = 5.0
+        logits[0, 1, 2] = 5.0
+    labels = torch.tensor([[-100, 1, 2, 3]])
+    focused = torch.tensor([[-100, -100, -100, 3]])
+    base = answer_weighted_causal_language_loss(
+        logits, labels, focused, answer_weight=1.0
+    )
+    weighted = answer_weighted_causal_language_loss(
+        logits, labels, focused, answer_weight=4.0
+    )
+    assert torch.isfinite(base)
+    assert torch.isfinite(weighted)
+    assert weighted > base
+    weighted.backward()
+    assert logits.grad is not None
 
 
 def make_batch(config):

@@ -14,6 +14,7 @@ from cftn_text.v2_data import (
     LOCAL_FAMILIES,
     V2_FORMAT,
     audit_v2_manifest,
+    curriculum_records,
     iter_deepmind_records,
     iter_gsm8k_records,
     iter_gsm_symbolic_records,
@@ -22,6 +23,35 @@ from cftn_text.v2_data import (
     prepare_v2_manifests,
     validate_v2_record,
 )
+
+
+def test_recovery_curriculum_override_is_audited_and_reports_cohorts():
+    records = [
+        {"difficulty": 1, "source": "a", "family": "easy"},
+        {"difficulty": 2, "source": "b", "family": "medium"},
+        {"difficulty": 3, "source": "c", "family": "hard"},
+    ]
+    config = {
+        "data": {
+            "curriculum": {
+                "enabled": True,
+                "phases": [
+                    {"name": "all", "through_epoch": 1, "max_difficulty": 3}
+                ],
+            }
+        }
+    }
+    selected, metadata = curriculum_records(
+        records,
+        config,
+        1,
+        phase_override={"name": "repair", "max_difficulty": 1},
+    )
+    assert selected == [records[0]]
+    assert metadata["available_examples"] == 1
+    assert metadata["difficulty_counts"] == {"1": 1}
+    assert metadata["source_counts"] == {"a": 1}
+    assert metadata["family_counts"] == {"easy": 1}
 
 
 def test_atomic_writer_recovers_from_partial_fuse_eio_without_duplicate_rows(

@@ -121,3 +121,24 @@ def test_atomic_copy_retries_transient_fuse_eio(tmp_path, monkeypatch):
     assert attempts["count"] == 3
     assert destination.read_bytes() == source.read_bytes()
     assert not list(destination.parent.glob("*.tmp"))
+
+
+def test_atomic_torch_save_retries_transient_fuse_eio(tmp_path, monkeypatch):
+    import cftn_text.checkpoint as checkpoint_module
+
+    real_replace = checkpoint_module.os.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(source_path, destination_path):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise OSError(errno.EIO, "simulated FUSE checkpoint failure")
+        return real_replace(source_path, destination_path)
+
+    monkeypatch.setattr(checkpoint_module.os, "replace", flaky_replace)
+    monkeypatch.setattr(checkpoint_module.time, "sleep", lambda _: None)
+    destination = tmp_path / "checkpoint.pth"
+    atomic_torch_save(payload(7), destination)
+    assert attempts["count"] == 3
+    assert load_checkpoint(destination)["epoch"] == 7
+    assert not list(tmp_path.glob("*.tmp"))

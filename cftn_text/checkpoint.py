@@ -80,12 +80,35 @@ def ensure_directory(
     )
 
 
-def atomic_torch_save(payload: Any, path: str | Path) -> None:
+def atomic_torch_save(
+    payload: Any,
+    path: str | Path,
+    *,
+    retry_attempts: int = DEFAULT_IO_RETRY_ATTEMPTS,
+    retry_base_seconds: float = DEFAULT_IO_RETRY_BASE_SECONDS,
+) -> None:
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    torch.save(payload, temporary)
-    os.replace(temporary, destination)
+
+    def write(attempt: int) -> None:
+        temporary = _temporary_path(destination, attempt)
+        try:
+            ensure_directory(destination.parent, retry_attempts=1)
+            torch.save(payload, temporary)
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        except BaseException:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    _with_io_retries(
+        write,
+        attempts=retry_attempts,
+        base_delay_seconds=retry_base_seconds,
+    )
 
 
 def atomic_json_dump(
@@ -168,13 +191,28 @@ def atomic_copy_file(
     )
 
 
-def append_jsonl(payload: Any, path: str | Path) -> None:
+def append_jsonl(
+    payload: Any,
+    path: str | Path,
+    *,
+    retry_attempts: int = DEFAULT_IO_RETRY_ATTEMPTS,
+    retry_base_seconds: float = DEFAULT_IO_RETRY_BASE_SECONDS,
+) -> None:
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+
+    def append(_: int) -> None:
+        ensure_directory(destination.parent, retry_attempts=1)
+        with destination.open("a", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    _with_io_retries(
+        append,
+        attempts=retry_attempts,
+        base_delay_seconds=retry_base_seconds,
+    )
 
 
 def capture_rng_state() -> dict[str, Any]:
