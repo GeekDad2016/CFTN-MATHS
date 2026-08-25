@@ -174,7 +174,6 @@ data:
   curriculum:
     enabled: true
     examples_per_epoch: 400000
-    sampling: auto
     phases:
       - name: foundations
         through_epoch: 10
@@ -243,11 +242,6 @@ math_training:
   weight_decay: 0.01
   gradient_clip: 1.0
   answer_head_weight: 0.0
-  # Standalone specialist training and validation must expose the same user
-  # problem. Joint CFTN training explicitly switches to the private math view.
-  input_view: shared_problem_v1
-  target_mode: full_trace_v1
-  answer_token_weight: 4.0
   precision: bf16
   num_workers: 4
   report_every_steps: 250
