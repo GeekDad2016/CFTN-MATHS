@@ -27,7 +27,7 @@ except ImportError:
 
 artifact_root = Path("/workspace/cftn-text/artifacts/v2_broad_math_400k_r4")
 data_root = Path("/workspace/cftn-text/data/v2_broad_math_400k_r4")
-markers = ("run_v2.py", "prepare_v2_data", "train_math_tower", "train_v2_dispatcher", "train_v1_3_integration", "evaluate_v2", "evaluate_v1_3")
+markers = ("run_v2.py", "prepare_v2_data", "train_math_tower", "recover_v2_math", "train_v2_dispatcher", "train_v1_3_integration", "evaluate_v2", "evaluate_v1_3")
 sensitive_names = {
     "api_key",
     "authorization",
@@ -39,6 +39,7 @@ sensitive_names = {
 sensitive_suffixes = ("_api_key", "_access_token", "_auth_token", "_password", "_secret")
 stage_directories = {
     "train_math": "math",
+    "math_answer_recovery": "math_answer_recovery",
     "select_math_checkpoint": "math_checkpoint_selection",
     "evaluate_math": "evaluation_math_v2",
     "train_learned_dispatcher": "learned_dispatcher_v2",
@@ -150,6 +151,34 @@ training_contract = redact({
     },
 })
 stage = str(pipeline.get("current_stage") or "")
+recovery_root = artifact_root / "math_answer_recovery"
+recovery_contract = read_json(recovery_root / "recovery_contract.json")
+recovery_status = read_json(recovery_root / "status.json")
+recovery_terminal_states = {"completed", "failed_acceptance", "error"}
+if recovery_contract and str(recovery_status.get("state") or "starting") not in recovery_terminal_states:
+    recovery_curriculum = dict(recovery_contract.get("curriculum") or {})
+    recovery_curriculum["phases"] = list(recovery_contract.get("phases") or [])
+    recovery_math_training = dict(recovery_contract.get("math_training") or {})
+    training_contract = redact({
+        "config_path": str(config_path),
+        "recovery_contract_path": str(recovery_root / "recovery_contract.json"),
+        "source_checkpoint": recovery_contract.get("source_checkpoint"),
+        "source_checkpoint_sha256": recovery_contract.get("source_checkpoint_sha256"),
+        "curriculum": recovery_curriculum,
+        "validation_examples": config.get("data", {}).get("validation_examples"),
+        "math_training": recovery_math_training,
+    })
+    stage = "math_answer_recovery"
+    pipeline = dict(pipeline)
+    pipeline["state"] = str(recovery_status.get("state") or "starting")
+    pipeline["current_stage"] = stage
+    pipeline["repository_revision"] = recovery_contract.get("repository_revision") or pipeline.get("repository_revision")
+    pipeline_stages = dict(pipeline.get("stages") or {})
+    pipeline_stages[stage] = {
+        "state": str(recovery_status.get("state") or "starting"),
+        "source_checkpoint_sha256": recovery_contract.get("source_checkpoint_sha256"),
+    }
+    pipeline["stages"] = pipeline_stages
 stage_artifacts = {}
 for stage_name, directory in stage_directories.items():
     stage_root = artifact_root if directory == "." else artifact_root / directory
@@ -191,8 +220,12 @@ for path in artifact_root.rglob("wandb_run.json"):
     parsed = read_json(path)
     if parsed:
         wandb_runs.append({"path": str(path), **redact(parsed)})
-stdout = tail(artifact_root / "pipeline_logs" / f"{stage}.stdout.log") if stage else {}
-stderr = tail(artifact_root / "pipeline_logs" / f"{stage}.stderr.log") if stage else {}
+if stage == "math_answer_recovery":
+    stdout = tail(artifact_root / "math_answer_recovery.stdout.log")
+    stderr = tail(artifact_root / "math_answer_recovery.stderr.log")
+else:
+    stdout = tail(artifact_root / "pipeline_logs" / f"{stage}.stdout.log") if stage else {}
+    stderr = tail(artifact_root / "pipeline_logs" / f"{stage}.stderr.log") if stage else {}
 disk = command(["df", "-h", "/workspace"]).splitlines()[-1:] 
 print(json.dumps({"format": "cftn_text_remote_dashboard_v2", "updated_unix": time.time(), "artifact_root": str(artifact_root), "data_root": str(data_root), "pipeline": pipeline, "training_contract": training_contract, "data_preparation": redact(read_json(data_root / "prepare_status.json")), "data_manifest": redact(read_json(data_root / "manifest.json")), "stage_artifacts": stage_artifacts, "current_stage_artifact": stage_artifacts.get(stage, {}), "gpu": {"gpus": gpus}, "processes": processes, "checkpoints": checkpoints, "wandb": {"preflight": redact(read_json(artifact_root / "startup_preflight.json")).get("wandb", {}), "runs": wandb_runs}, "logs": {"stdout": stdout, "stderr": stderr}, "disk": disk}, separators=(",", ":")))
 PY

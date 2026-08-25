@@ -31,6 +31,10 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert '"minimum_epochs"' in REMOTE_PROBE
     assert '"[redacted]"' in REMOTE_PROBE
     assert 'name in sensitive_names or name.endswith(sensitive_suffixes)' in REMOTE_PROBE
+    assert '"math_answer_recovery": "math_answer_recovery"' in REMOTE_PROBE
+    assert '"recover_v2_math"' in REMOTE_PROBE
+    assert 'recovery_root / "recovery_contract.json"' in REMOTE_PROBE
+    assert 'artifact_root / "math_answer_recovery.stdout.log"' in REMOTE_PROBE
 
 
 def test_remote_probe_returns_structured_ssh_failure(monkeypatch):
