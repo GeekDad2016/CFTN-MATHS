@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 
+import pytest
 import torch
 
 from cftn_text.checkpoint import (
@@ -14,6 +15,8 @@ from cftn_text.checkpoint import (
     restore_rng_state,
     rotate_latest,
 )
+from cftn_text.data_generator import file_sha256
+from cftn_text.training import _load_math_initialization_checkpoint
 
 
 def payload(epoch: int):
@@ -47,6 +50,28 @@ def test_checkpoint_contract_and_rotation(tmp_path):
     )
     assert loaded["epoch"] == 5
     assert torch.equal(loaded["model_state"]["weight"], torch.tensor([5.0]))
+
+
+def test_model_initialization_authenticates_source_but_allows_new_manifest(tmp_path):
+    source = tmp_path / "sealed_source.pth"
+    atomic_torch_save(payload(45), source)
+
+    loaded, observed_sha256 = _load_math_initialization_checkpoint(
+        source,
+        expected_sha256=file_sha256(source),
+        map_location="cpu",
+    )
+
+    assert loaded["epoch"] == 45
+    assert loaded["manifest_sha256"] == "manifest"
+    assert observed_sha256 == file_sha256(source)
+
+    with pytest.raises(RuntimeError, match="source checkpoint hash changed"):
+        _load_math_initialization_checkpoint(
+            source,
+            expected_sha256="0" * 64,
+            map_location="cpu",
+        )
 
 
 def test_rng_restore_accepts_states_relocated_with_checkpoint():

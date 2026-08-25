@@ -58,6 +58,33 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _load_math_initialization_checkpoint(
+    path: str | Path,
+    *,
+    expected_sha256: str | None,
+    map_location: str | torch.device,
+) -> tuple[dict[str, Any], str]:
+    """Load sealed model weights for a new run, not resumable training state.
+
+    A recovery run intentionally has a new data manifest, optimizer, scheduler,
+    and RNG stream.  The source file is authenticated by SHA-256 and its stage
+    is checked here; architecture compatibility is checked by the caller's
+    strict ``load_state_dict``.  Manifest/config equality remains mandatory for
+    true resume paths.
+    """
+
+    source_path = Path(path).expanduser().resolve()
+    observed_sha256 = file_sha256(source_path)
+    if expected_sha256 and observed_sha256 != expected_sha256:
+        raise RuntimeError("math recovery source checkpoint hash changed")
+    checkpoint = load_checkpoint(
+        source_path,
+        expected_stage="math",
+        map_location=map_location,
+    )
+    return checkpoint, observed_sha256
+
+
 def resolve_device(requested: str = "cuda") -> torch.device:
     if requested.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
@@ -631,14 +658,10 @@ def train_math_tower(
         raise ValueError("resume and initial_checkpoint are mutually exclusive")
     if initial_checkpoint is not None:
         source_path = Path(initial_checkpoint).expanduser().resolve()
-        source_sha256 = file_sha256(source_path)
         expected_source_sha256 = contract.get("source_checkpoint_sha256")
-        if expected_source_sha256 and source_sha256 != expected_source_sha256:
-            raise RuntimeError("math recovery source checkpoint hash changed")
-        checkpoint = load_checkpoint(
+        checkpoint, source_sha256 = _load_math_initialization_checkpoint(
             source_path,
-            expected_stage="math",
-            expected_manifest_sha256=manifest["manifest_sha256"],
+            expected_sha256=expected_source_sha256,
             map_location=device,
         )
         model.load_state_dict(checkpoint["model_state"], strict=True)
@@ -647,6 +670,9 @@ def train_math_tower(
             "sha256": source_sha256,
             "epoch": int(checkpoint["epoch"]),
             "global_step": int(checkpoint["global_step"]),
+            "source_manifest_sha256": checkpoint.get("manifest_sha256"),
+            "recovery_manifest_sha256": manifest["manifest_sha256"],
+            "manifest_reset": True,
             "optimizer_reset": True,
             "scheduler_reset": True,
         }
