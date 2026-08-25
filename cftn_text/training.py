@@ -540,6 +540,41 @@ def build_math_tower(config: dict[str, Any]) -> MathTower:
     return MathTower(config["math_tower"], ByteMathTokenizer.vocab_size)
 
 
+def build_math_tower_for_checkpoint(
+    config: dict[str, Any], checkpoint: dict[str, Any]
+) -> MathTower:
+    """Build the checkpoint-attested effective tower architecture."""
+
+    effective = checkpoint.get("extra", {}).get("effective_math_tower")
+    if effective is None:
+        return build_math_tower(config)
+    if not isinstance(effective, dict):
+        raise ValueError("checkpoint effective math architecture is invalid")
+    base = config["math_tower"]
+    for key in set(base).union(effective) - {"layers"}:
+        if effective.get(key) != base.get(key):
+            raise ValueError(
+                "checkpoint changes unsupported math architecture field " f"{key}"
+            )
+    expansion = (
+        checkpoint.get("extra", {})
+        .get("metrics", {})
+        .get("source_checkpoint", {})
+        .get("capacity_expansion")
+    )
+    if not isinstance(expansion, dict):
+        raise ValueError("expanded math checkpoint lacks capacity attestation")
+    if expansion.get("method") != "append_identity_transformer_blocks_v1":
+        raise ValueError("expanded math checkpoint method is not recognized")
+    if int(expansion.get("source_layers", -1)) != int(base["layers"]):
+        raise ValueError("expanded math checkpoint source depth differs from config")
+    if int(expansion.get("target_layers", -1)) != int(effective.get("layers", -2)):
+        raise ValueError("expanded math checkpoint target depth is inconsistent")
+    effective_config = copy.deepcopy(config)
+    effective_config["math_tower"] = copy.deepcopy(effective)
+    return build_math_tower(effective_config)
+
+
 def load_gpt_components(config: dict[str, Any]) -> tuple[Any, FrozenCausalLMTower]:
     from transformers import AutoTokenizer
 
@@ -590,7 +625,7 @@ def build_cftn_model(
         expected_config_sha256=config_sha256(config),
         expected_manifest_sha256=manifest["manifest_sha256"],
     )
-    math_tower = build_math_tower(config)
+    math_tower = build_math_tower_for_checkpoint(config, checkpoint)
     math_tower.load_state_dict(checkpoint["model_state"], strict=True)
     tokenizer, gpt_tower = load_gpt_components(config)
     model = CFTNTextModel(math_tower, gpt_tower, config).to(device)
@@ -1076,7 +1111,21 @@ def train_math_tower(
             except OSError:
                 mirrored_status_write_failures += 1
     started_at = time.time()
-    model = build_math_tower(config).to(device)
+    effective_config = copy.deepcopy(config)
+    capacity_expansion = contract.get("capacity_expansion")
+    if capacity_expansion is not None:
+        if int(capacity_expansion["source_layers"]) != int(
+            config["math_tower"]["layers"]
+        ):
+            raise ValueError("capacity source depth differs from base math config")
+        if int(capacity_expansion["hidden_size"]) != int(
+            config["math_tower"]["hidden_size"]
+        ):
+            raise ValueError("capacity width differs from base math config")
+        effective_config["math_tower"]["layers"] = int(
+            capacity_expansion["target_layers"]
+        )
+    model = build_math_tower(effective_config).to(device)
     optimizer = AdamW(
         model.parameters(),
         lr=float(settings["learning_rate"]),
@@ -1116,7 +1165,6 @@ def train_math_tower(
             expected_sha256=expected_source_sha256,
             map_location=device,
         )
-        capacity_expansion = contract.get("capacity_expansion")
         expansion_attestation = (
             _initialize_math_capacity_expansion(
                 model,
@@ -1187,7 +1235,7 @@ def train_math_tower(
         config={
             "project": config["project"]["name"],
             "seed": seed,
-            "model": config["math_tower"],
+            "model": effective_config["math_tower"],
             "training": settings,
             "runtime_overrides": {
                 "early_stopping_enabled": early_stopping_enabled,
@@ -1537,7 +1585,10 @@ def train_math_tower(
                 manifest_sha256=manifest["manifest_sha256"],
                 best_metric=best_metric,
                 patience=patience,
-                extra={"metrics": final_metrics},
+                extra={
+                    "metrics": final_metrics,
+                    "effective_math_tower": effective_config["math_tower"],
+                },
             )
             checkpoint_path = work_dir / f"checkpoint_epoch_{epoch:04d}.pth"
             atomic_torch_save(payload, checkpoint_path)
@@ -1623,6 +1674,7 @@ def train_math_tower(
         "final_metrics": final_metrics,
         "recovery_contract_sha256": contract_sha256,
         "source_checkpoint": source_provenance,
+        "effective_math_tower": effective_config["math_tower"],
         "storage": {
             "working_directory": str(work_dir),
             "artifact_directory": str(artifact_dir),

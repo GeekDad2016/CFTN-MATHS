@@ -18,7 +18,12 @@ from .data_generator import file_sha256
 from .specialist_evaluation import generate_math_tower
 from .tokenizer import ByteMathTokenizer
 from .tokenizer import SequenceTooLongError
-from .training import build_math_tower, load_data_contract, resolve_device, split_dataset
+from .training import (
+    build_math_tower_for_checkpoint,
+    load_data_contract,
+    resolve_device,
+    split_dataset,
+)
 from .v2_metrics import extract_v2_answer, score_v2_generations
 from .wandb_support import initialize_wandb
 
@@ -50,7 +55,7 @@ def evaluate_v2_math_checkpoint(
         expected_manifest_sha256=manifest["manifest_sha256"],
         map_location=device,
     )
-    model = build_math_tower(config).to(device)
+    model = build_math_tower_for_checkpoint(config, checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state"], strict=True)
     model.eval()
     tokenizer = ByteMathTokenizer()

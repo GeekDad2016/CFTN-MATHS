@@ -13,7 +13,7 @@ from .data_generator import file_sha256
 from .metrics import answer_generation_metrics
 from .tokenizer import ByteMathTokenizer, pad_1d
 from .training import (
-    build_math_tower,
+    build_math_tower_for_checkpoint,
     load_data_contract,
     resolve_device,
     split_dataset,
@@ -148,7 +148,7 @@ def evaluate_math_checkpoint(
         expected_manifest_sha256=manifest["manifest_sha256"],
         map_location=device,
     )
-    model = build_math_tower(config).to(device)
+    model = build_math_tower_for_checkpoint(config, checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state"], strict=True)
     model.eval()
     tokenizer = ByteMathTokenizer()

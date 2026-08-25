@@ -8,7 +8,10 @@ import torch
 from cftn_text.config import load_config
 from cftn_text.math_tower import MathTower
 from cftn_text.tokenizer import ByteMathTokenizer
-from cftn_text.training import _initialize_math_capacity_expansion
+from cftn_text.training import (
+    _initialize_math_capacity_expansion,
+    build_math_tower_for_checkpoint,
+)
 
 
 def _tiny_tower_config(layers: int) -> dict:
@@ -53,6 +56,19 @@ def test_identity_depth_expansion_preserves_source_function():
         assert torch.count_nonzero(block.self_attn.out_proj.weight) == 0
         assert torch.count_nonzero(block.linear2.weight) == 0
 
+    rebuilt = build_math_tower_for_checkpoint(
+        {"math_tower": _tiny_tower_config(2)},
+        {
+            "extra": {
+                "effective_math_tower": _tiny_tower_config(5),
+                "metrics": {
+                    "source_checkpoint": {"capacity_expansion": attestation}
+                },
+            }
+        },
+    )
+    assert len(rebuilt.blocks) == 5
+
 
 def test_v2_capacity_contract_is_a_fail_closed_single_variable_ablation():
     root = Path(__file__).resolve().parents[1]
@@ -63,7 +79,7 @@ def test_v2_capacity_contract_is_a_fail_closed_single_variable_ablation():
         )
     )
 
-    assert config["math_tower"]["layers"] == 24
+    assert config["math_tower"]["layers"] == 8
     assert config["math_tower"]["hidden_size"] == 384
     assert contract["capacity_expansion"] == {
         "method": "append_identity_transformer_blocks_v1",
