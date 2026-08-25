@@ -51,6 +51,37 @@ def test_sealed_generator_curriculum_selects_by_recorded_difficulty():
     assert metadata["max_difficulty"] == 1
 
 
+def test_sealed_generator_curriculum_preserves_manifest_compatible_override_metadata():
+    records = [
+        {"difficulty": 1, "source": "local", "family": "arithmetic"},
+        {"difficulty": 2, "source": "deepmind", "family": "algebra"},
+        {"difficulty": 3, "source": "mathqa", "family": "word_problem"},
+    ]
+    config = {
+        "data": {
+            "curriculum": {
+                "enabled": True,
+                "phases": [
+                    {"name": "configured", "through_epoch": 10, "max_difficulty": 3}
+                ],
+            }
+        }
+    }
+
+    selected, metadata = curriculum_records(
+        records,
+        config,
+        1,
+        phase_override={"name": "override", "max_difficulty": 2},
+    )
+
+    assert selected == records[:2]
+    assert metadata["phase"] == "override"
+    assert metadata["difficulty_counts"] == {"1": 1, "2": 1}
+    assert metadata["source_counts"] == {"deepmind": 1, "local": 1}
+    assert metadata["family_counts"] == {"algebra": 1, "arithmetic": 1}
+
+
 def test_atomic_writer_recovers_from_partial_fuse_eio_without_duplicate_rows(
     tmp_path: Path, monkeypatch
 ):
