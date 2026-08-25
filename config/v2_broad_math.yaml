@@ -209,7 +209,9 @@ math_tower:
   tokenizer_kind: lossless_utf8_bytes_v1
   request_contract: raw_utf8_problem_v1
   result_contract: typed_answer_payload_v1
-  layers: 8
+  # Capacity ablation: retain width/checkpoint compatibility and append sixteen
+  # identity-initialized residual blocks to the proven 8-layer source tower.
+  layers: 24
   hidden_size: 384
   attention_heads: 6
   feed_forward_size: 1536

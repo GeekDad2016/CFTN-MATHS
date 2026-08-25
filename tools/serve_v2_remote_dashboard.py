@@ -39,6 +39,7 @@ sensitive_names = {
 sensitive_suffixes = ("_api_key", "_access_token", "_auth_token", "_password", "_secret")
 stage_directories = {
     "train_math": "math",
+    "math_capacity_recovery": "math_capacity_recovery",
     "math_broad_shared_recovery": "math_broad_shared_recovery",
     "math_shared_trace_recovery": "math_shared_trace_recovery",
     "math_answer_recovery": "math_answer_recovery",
@@ -159,6 +160,7 @@ recovery_contract = {}
 recovery_status = {}
 recovery_terminal_states = {"completed", "failed_acceptance", "error"}
 for candidate_stage in (
+    "math_capacity_recovery",
     "math_broad_shared_recovery",
     "math_shared_trace_recovery",
     "math_answer_recovery",
@@ -181,6 +183,8 @@ if recovery_root is not None:
         "recovery_contract_path": str(recovery_root / "recovery_contract.json"),
         "source_checkpoint": recovery_contract.get("source_checkpoint"),
         "source_checkpoint_sha256": recovery_contract.get("source_checkpoint_sha256"),
+        "capacity_expansion": recovery_contract.get("capacity_expansion"),
+        "capacity_baseline": recovery_contract.get("capacity_baseline"),
         "curriculum": recovery_curriculum,
         "validation_examples": config.get("data", {}).get("validation_examples"),
         "math_training": recovery_math_training,
@@ -238,6 +242,7 @@ for path in artifact_root.rglob("wandb_run.json"):
     if parsed:
         wandb_runs.append({"path": str(path), **redact(parsed)})
 if stage in {
+    "math_capacity_recovery",
     "math_broad_shared_recovery",
     "math_shared_trace_recovery",
     "math_answer_recovery",

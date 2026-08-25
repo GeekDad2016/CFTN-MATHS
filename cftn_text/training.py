@@ -91,6 +91,129 @@ def _load_math_initialization_checkpoint(
     return checkpoint, observed_sha256
 
 
+def _initialize_math_capacity_expansion(
+    model: MathTower,
+    source_state: dict[str, torch.Tensor],
+    expansion: dict[str, Any],
+    *,
+    device: torch.device,
+) -> dict[str, Any]:
+    """Load a narrower-depth checkpoint into an identity-expanded tower.
+
+    The existing embedding, trained Transformer blocks, norms, and heads are
+    loaded byte-for-byte. Appended pre-norm blocks are made exact residual
+    identities by zeroing their attention and feed-forward output projections.
+    A deterministic forward comparison then proves that the expansion has not
+    changed the source function before optimization starts.
+    """
+
+    method = str(expansion.get("method", ""))
+    if method != "append_identity_transformer_blocks_v1":
+        raise ValueError(f"unsupported math capacity expansion method: {method}")
+    source_layers = int(expansion["source_layers"])
+    target_layers = int(expansion["target_layers"])
+    hidden_size = int(expansion["hidden_size"])
+    tolerance = float(expansion.get("maximum_function_error", 1.0e-6))
+    if source_layers < 1 or target_layers <= source_layers:
+        raise ValueError("math capacity expansion must append at least one layer")
+    if len(model.blocks) != target_layers:
+        raise ValueError("configured math layer count differs from capacity contract")
+    if model.hidden_size != hidden_size:
+        raise ValueError("configured math width differs from capacity contract")
+
+    observed_source_layers = 1 + max(
+        (
+            int(name.split(".")[1])
+            for name in source_state
+            if name.startswith("blocks.") and name.split(".")[1].isdigit()
+        ),
+        default=-1,
+    )
+    if observed_source_layers != source_layers:
+        raise ValueError("source checkpoint layer count differs from capacity contract")
+    source_embedding = source_state.get("token_embedding.weight")
+    if source_embedding is None or int(source_embedding.shape[1]) != hidden_size:
+        raise ValueError("source checkpoint width differs from capacity contract")
+
+    source_config = dict(model.config)
+    source_config["layers"] = source_layers
+    source_model = MathTower(source_config, model.vocabulary_size).to(device)
+    source_model.load_state_dict(source_state, strict=True)
+
+    for block in model.blocks[source_layers:]:
+        torch.nn.init.zeros_(block.self_attn.out_proj.weight)
+        if block.self_attn.out_proj.bias is not None:
+            torch.nn.init.zeros_(block.self_attn.out_proj.bias)
+        torch.nn.init.zeros_(block.linear2.weight)
+        if block.linear2.bias is not None:
+            torch.nn.init.zeros_(block.linear2.bias)
+
+    incompatible = model.load_state_dict(source_state, strict=False)
+    expected_missing = {
+        name
+        for name in model.state_dict()
+        if name.startswith("blocks.")
+        and int(name.split(".")[1]) >= source_layers
+    }
+    if set(incompatible.missing_keys) != expected_missing:
+        raise RuntimeError("capacity expansion has unexpected missing checkpoint keys")
+    if incompatible.unexpected_keys:
+        raise RuntimeError("capacity expansion has unexpected source checkpoint keys")
+
+    source_was_training = source_model.training
+    target_was_training = model.training
+    source_model.eval()
+    model.eval()
+    probe_ids = torch.tensor(
+        [
+            [1, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 2],
+            [1, 9, 27, 45, 63, 81, 99, 117, 135, 153, 171, 2],
+        ],
+        dtype=torch.long,
+        device=device,
+    ) % model.vocabulary_size
+    probe_mask = torch.ones_like(probe_ids, dtype=torch.bool)
+    probe_prefix = torch.tensor([4, 5], dtype=torch.long, device=device)
+    with torch.no_grad():
+        source_output = source_model(probe_ids, probe_mask, probe_prefix)
+        target_output = model(probe_ids, probe_mask, probe_prefix)
+    logit_error = float(
+        (source_output.logits - target_output.logits).abs().max().item()
+    )
+    hidden_error = float(
+        (source_output.hidden_states - target_output.hidden_states).abs().max().item()
+    )
+    if source_was_training:
+        source_model.train()
+    if target_was_training:
+        model.train()
+    if max(logit_error, hidden_error) > tolerance:
+        raise RuntimeError("identity capacity expansion changed the source function")
+
+    source_parameters = sum(parameter.numel() for parameter in source_model.parameters())
+    target_parameters = sum(parameter.numel() for parameter in model.parameters())
+    expected_target_parameters = expansion.get("expected_target_parameters")
+    if (
+        expected_target_parameters is not None
+        and target_parameters != int(expected_target_parameters)
+    ):
+        raise RuntimeError("expanded math parameter count differs from contract")
+    return {
+        "method": method,
+        "source_layers": source_layers,
+        "target_layers": target_layers,
+        "added_layers": target_layers - source_layers,
+        "hidden_size": hidden_size,
+        "source_parameters": source_parameters,
+        "target_parameters": target_parameters,
+        "parameter_ratio": target_parameters / max(1, source_parameters),
+        "maximum_function_error": tolerance,
+        "observed_logit_error": logit_error,
+        "observed_hidden_state_error": hidden_error,
+        "identity_preserved": True,
+    }
+
+
 def resolve_device(requested: str = "cuda") -> torch.device:
     if requested.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
@@ -993,7 +1116,19 @@ def train_math_tower(
             expected_sha256=expected_source_sha256,
             map_location=device,
         )
-        model.load_state_dict(checkpoint["model_state"], strict=True)
+        capacity_expansion = contract.get("capacity_expansion")
+        expansion_attestation = (
+            _initialize_math_capacity_expansion(
+                model,
+                checkpoint["model_state"],
+                dict(capacity_expansion),
+                device=device,
+            )
+            if capacity_expansion is not None
+            else None
+        )
+        if expansion_attestation is None:
+            model.load_state_dict(checkpoint["model_state"], strict=True)
         source_provenance = {
             "path": str(source_path),
             "sha256": source_sha256,
@@ -1005,6 +1140,8 @@ def train_math_tower(
             "optimizer_reset": True,
             "scheduler_reset": True,
         }
+        if expansion_attestation is not None:
+            source_provenance["capacity_expansion"] = expansion_attestation
     if resume:
         checkpoint_path = latest_checkpoint(artifact_dir)
         if checkpoint_path is None:

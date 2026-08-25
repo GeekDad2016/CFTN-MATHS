@@ -69,9 +69,17 @@ def _candidate_provenance(
     supported_recovery_formats = {
         "cftn_text_v2_math_shared_trace_recovery_v1",
         "cftn_text_v2_math_broad_shared_recovery_v1",
+        "cftn_text_v2_math_capacity_recovery_v1",
     }
     acceptance_checks = acceptance.get("checks", {})
-    broad_recovery = contract_format == "cftn_text_v2_math_broad_shared_recovery_v1"
+    broad_recovery = contract_format in {
+        "cftn_text_v2_math_broad_shared_recovery_v1",
+        "cftn_text_v2_math_capacity_recovery_v1",
+    }
+    capacity_recovery = contract_format == "cftn_text_v2_math_capacity_recovery_v1"
+    expansion = (summary.get("source_checkpoint") or {}).get(
+        "capacity_expansion", {}
+    )
     checks = {
         "contract_format": contract_format in supported_recovery_formats,
         "require_acceptance_for_best": contract.get("require_acceptance_for_best")
@@ -109,6 +117,22 @@ def _candidate_provenance(
             not broad_recovery
             or acceptance.get("primary_panel") == "validation_broad"
         ),
+        "capacity_expansion_attested": (
+            not capacity_recovery
+            or (
+                expansion.get("method")
+                == "append_identity_transformer_blocks_v1"
+                and expansion.get("identity_preserved") is True
+                and int(expansion.get("target_layers", 0))
+                == int(
+                    (contract.get("capacity_expansion") or {}).get(
+                        "target_layers", -1
+                    )
+                )
+                and float(expansion.get("observed_logit_error", 1.0))
+                <= float(expansion.get("maximum_function_error", 0.0))
+            )
+        ),
     }
     failed = sorted(name for name, passed in checks.items() if not passed)
     if failed:
@@ -118,9 +142,13 @@ def _candidate_provenance(
         )
     return {
         "kind": (
-            "accepted_math_broad_recovery"
-            if broad_recovery
-            else "accepted_math_recovery"
+            "accepted_math_capacity_recovery"
+            if capacity_recovery
+            else (
+                "accepted_math_broad_recovery"
+                if broad_recovery
+                else "accepted_math_recovery"
+            )
         ),
         "format": contract_format,
         "recovery_root": str(recovery_root),

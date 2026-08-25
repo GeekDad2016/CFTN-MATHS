@@ -36,6 +36,7 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert '"math_answer_recovery": "math_answer_recovery"' in REMOTE_PROBE
     assert '"math_shared_trace_recovery": "math_shared_trace_recovery"' in REMOTE_PROBE
     assert '"math_broad_shared_recovery": "math_broad_shared_recovery"' in REMOTE_PROBE
+    assert '"math_capacity_recovery": "math_capacity_recovery"' in REMOTE_PROBE
     assert '"recover_v2_math"' in REMOTE_PROBE
     assert 'recovery_root / "recovery_contract.json"' in REMOTE_PROBE
     assert 'artifact_root / f"{stage}.stdout.log"' in REMOTE_PROBE

@@ -35,6 +35,7 @@ def main() -> None:
         "cftn_text_v2_math_answer_recovery_v1",
         "cftn_text_v2_math_shared_trace_recovery_v1",
         "cftn_text_v2_math_broad_shared_recovery_v1",
+        "cftn_text_v2_math_capacity_recovery_v1",
     }
     if contract.get("format") not in supported_formats:
         raise ValueError("unsupported V2 math recovery contract")
