@@ -34,6 +34,7 @@ def main() -> None:
     supported_formats = {
         "cftn_text_v2_math_answer_recovery_v1",
         "cftn_text_v2_math_shared_trace_recovery_v1",
+        "cftn_text_v2_math_broad_shared_recovery_v1",
     }
     if contract.get("format") not in supported_formats:
         raise ValueError("unsupported V2 math recovery contract")
@@ -63,7 +64,7 @@ def main() -> None:
         disable_early_stopping=True,
         wandb_options=wandb_options_from_args(
             args,
-            default_run_name="v2-math-checkpoint45-shared-trace-recovery",
+            default_run_name="v2-math-checkpoint45-recovery",
         ),
         initial_checkpoint=source,
         artifact_directory=artifact_directory,

@@ -198,6 +198,7 @@ def math_epoch_dataset(
     phase_override: dict[str, Any] | None = None,
 ) -> tuple[EquationDataset, dict[str, Any]]:
     data_format = config["data"].get("format")
+    phase: dict[str, Any] | None = None
     if data_format == "cftn_text_broad_math_v2":
         curriculum = config["data"].get("curriculum", {})
         if not curriculum.get("enabled", False):
@@ -231,6 +232,73 @@ def math_epoch_dataset(
             "examples_per_epoch", len(dataset)
         )
     )
+    source_quotas = (
+        phase.get("source_quotas")
+        if data_format == "cftn_text_broad_math_v2" and phase is not None
+        else None
+    )
+    if source_quotas is not None:
+        if not isinstance(source_quotas, dict) or not source_quotas:
+            raise ValueError("curriculum phase source_quotas must be a non-empty object")
+        normalized_quotas = {
+            str(source): int(examples) for source, examples in source_quotas.items()
+        }
+        if any(examples <= 0 for examples in normalized_quotas.values()):
+            raise ValueError("curriculum phase source quotas must be positive")
+        if sum(normalized_quotas.values()) != target:
+            raise ValueError(
+                "curriculum source quotas must sum to examples_per_epoch"
+            )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for record in selected:
+            grouped.setdefault(str(record.get("source", "unknown")), []).append(record)
+        missing_sources = sorted(set(normalized_quotas) - set(grouped))
+        if missing_sources:
+            raise RuntimeError(
+                "curriculum source quotas selected unavailable sources: "
+                + ", ".join(missing_sources)
+            )
+        rng = random.Random(int(seed) + int(epoch) * 1_000_003)
+        epoch_records: list[dict[str, Any]] = []
+        source_sampling: dict[str, dict[str, Any]] = {}
+        for source in sorted(normalized_quotas):
+            available = grouped[source]
+            requested = normalized_quotas[source]
+            if requested <= len(available):
+                sampled = rng.sample(available, requested)
+                replacement_examples = 0
+            else:
+                # Cover every available row before drawing deterministic replay.
+                sampled = rng.sample(available, len(available))
+                replacement_examples = requested - len(available)
+                sampled.extend(
+                    available[rng.randrange(len(available))]
+                    for _ in range(replacement_examples)
+                )
+            epoch_records.extend(sampled)
+            source_sampling[source] = {
+                "available_examples": len(available),
+                "requested_examples": requested,
+                "unique_examples": len({str(row.get("record_id")) for row in sampled}),
+                "replacement_examples": replacement_examples,
+                "sampling_with_replacement": replacement_examples > 0,
+            }
+        rng.shuffle(epoch_records)
+        metadata = {
+            **metadata,
+            "examples_this_epoch": len(epoch_records),
+            "unique_examples_this_epoch": len(
+                {str(record.get("record_id")) for record in epoch_records}
+            ),
+            "sampling_policy": "source_quotas_v1",
+            "sampling_with_replacement": any(
+                details["sampling_with_replacement"]
+                for details in source_sampling.values()
+            ),
+            "source_quotas": normalized_quotas,
+            "source_sampling": source_sampling,
+        }
+        return EquationDataset(epoch_records), metadata
     sampling_policy = str(
         config["data"].get("curriculum", {}).get("sampling", "auto")
     )
@@ -661,6 +729,137 @@ def evaluate_math_tower(
     }
 
 
+def _phase_generation_acceptance(
+    *,
+    phase: dict[str, Any] | None,
+    generation_panels: dict[str, dict[str, Any]],
+    validation: dict[str, Any],
+    epoch: int,
+) -> dict[str, Any] | None:
+    """Build an auditable, fail-closed generation acceptance decision."""
+
+    if (
+        phase is None
+        or "minimum_generation_accuracy" not in phase
+        or "minimum_valid_rate" not in phase
+    ):
+        return None
+    primary_name = str(phase.get("primary_generation_panel", "validation"))
+    primary = generation_panels.get(primary_name)
+    if primary is None:
+        raise RuntimeError(
+            f"generation acceptance primary panel is unavailable: {primary_name}"
+        )
+
+    checks: dict[str, dict[str, Any]] = {}
+
+    def add_check(name: str, observed: float, minimum: float) -> None:
+        checks[name] = {
+            "observed": float(observed),
+            "minimum": float(minimum),
+            "pass": float(observed) >= float(minimum),
+        }
+
+    minimum_accuracy = float(phase["minimum_generation_accuracy"])
+    minimum_valid_rate = float(phase["minimum_valid_rate"])
+    add_check("primary_generation_accuracy", primary.get("accuracy", 0.0), minimum_accuracy)
+    add_check("primary_valid_rate", primary.get("valid_rate", 0.0), minimum_valid_rate)
+
+    for dimension in ("source", "family", "difficulty"):
+        threshold_key = f"minimum_generation_accuracy_by_{dimension}"
+        configured = phase.get(threshold_key, {})
+        if not isinstance(configured, dict):
+            raise ValueError(f"{threshold_key} must be an object")
+        observed_groups = {
+            str(name): values
+            for name, values in primary.get(f"by_{dimension}", {}).items()
+        }
+        for name, minimum in configured.items():
+            group = observed_groups.get(str(name))
+            if group is None:
+                checks[f"primary_{dimension}:{name}"] = {
+                    "observed": None,
+                    "minimum": float(minimum),
+                    "examples": 0,
+                    "pass": False,
+                }
+                continue
+            add_check(
+                f"primary_{dimension}:{name}",
+                group.get("accuracy", 0.0),
+                float(minimum),
+            )
+            checks[f"primary_{dimension}:{name}"]["examples"] = int(
+                group.get("examples", 0)
+            )
+
+    panel_accuracy_thresholds = phase.get(
+        "minimum_generation_accuracy_by_panel", {}
+    )
+    panel_validity_thresholds = phase.get("minimum_valid_rate_by_panel", {})
+    if not isinstance(panel_accuracy_thresholds, dict) or not isinstance(
+        panel_validity_thresholds, dict
+    ):
+        raise ValueError("generation panel acceptance thresholds must be objects")
+    panel_names = sorted(
+        set(panel_accuracy_thresholds) | set(panel_validity_thresholds)
+    )
+    for name in panel_names:
+        panel = generation_panels.get(str(name))
+        if panel is None:
+            checks[f"panel:{name}:available"] = {
+                "observed": None,
+                "minimum": 1.0,
+                "pass": False,
+            }
+            continue
+        if name in panel_accuracy_thresholds:
+            add_check(
+                f"panel:{name}:generation_accuracy",
+                panel.get("accuracy", 0.0),
+                float(panel_accuracy_thresholds[name]),
+            )
+        if name in panel_validity_thresholds:
+            add_check(
+                f"panel:{name}:valid_rate",
+                panel.get("valid_rate", 0.0),
+                float(panel_validity_thresholds[name]),
+            )
+
+    if "minimum_teacher_forced_token_accuracy" in phase:
+        add_check(
+            "teacher_forced_token_accuracy",
+            validation.get("teacher_forced_token_accuracy", 0.0),
+            float(phase["minimum_teacher_forced_token_accuracy"]),
+        )
+    if "minimum_teacher_forced_sequence_accuracy" in phase:
+        add_check(
+            "teacher_forced_sequence_accuracy",
+            validation.get("teacher_forced_sequence_accuracy", 0.0),
+            float(phase["minimum_teacher_forced_sequence_accuracy"]),
+        )
+    if "maximum_validation_loss" in phase:
+        observed_loss = float(validation.get("loss", float("inf")))
+        maximum_loss = float(phase["maximum_validation_loss"])
+        checks["validation_loss"] = {
+            "observed": observed_loss,
+            "maximum": maximum_loss,
+            "pass": observed_loss <= maximum_loss,
+        }
+
+    return {
+        "phase": str(phase["name"]),
+        "primary_panel": primary_name,
+        "minimum_generation_accuracy": minimum_accuracy,
+        "minimum_valid_rate": minimum_valid_rate,
+        "generation_accuracy": float(primary.get("accuracy", 0.0)),
+        "valid_rate": float(primary.get("valid_rate", 0.0)),
+        "terminal_epoch": epoch == int(phase["through_epoch"]),
+        "checks": checks,
+        "pass": bool(checks) and all(bool(check["pass"]) for check in checks.values()),
+    }
+
+
 def train_math_tower(
     config: dict[str, Any],
     *,
@@ -698,6 +897,29 @@ def train_math_tower(
     )
     settings = copy.deepcopy(config["math_training"])
     settings.update(contract.get("math_training", {}))
+    generation_validation_settings = copy.deepcopy(DEFAULT_V2_GENERATION_VALIDATION)
+    generation_validation_settings.update(
+        settings.get("generation_validation", {})
+    )
+    configured_generation_panels = list(
+        generation_validation_settings.get("panels", [])
+    )
+    generation_panel_datasets: dict[str, EquationDataset] = {}
+    if configured_generation_panels:
+        seen_panel_names: set[str] = set()
+        for panel in configured_generation_panels:
+            if not isinstance(panel, dict):
+                raise ValueError("generation validation panels must be objects")
+            name = str(panel.get("name", "")).strip()
+            split = str(panel.get("split", "")).strip()
+            if not name or name in seen_panel_names:
+                raise ValueError("generation validation panel names must be unique")
+            if split not in manifest.get("splits", {}):
+                raise ValueError(
+                    f"generation validation panel {name} uses unavailable split {split}"
+                )
+            seen_panel_names.add(name)
+            generation_panel_datasets[name] = split_dataset(root, manifest, split)
     curriculum_config = copy.deepcopy(config)
     curriculum_config["data"]["curriculum"].update(contract.get("curriculum", {}))
     phases = list(contract.get("phases", []))
@@ -962,58 +1184,111 @@ def train_math_tower(
                 float(settings["answer_head_weight"]),
                 max_batches=max_batches,
             )
-            generation_settings = dict(DEFAULT_V2_GENERATION_VALIDATION)
-            generation_settings.update(settings.get("generation_validation", {}))
+            generation_settings = generation_validation_settings
             generation_validation: dict[str, Any] | None = None
+            generation_panels: dict[str, dict[str, Any]] = {}
             if (
                 manifest.get("format") == "cftn_text_broad_math_v2"
                 and bool(generation_settings.get("enabled", False))
                 and epoch % max(1, int(generation_settings.get("every_epochs", 1)))
                 == 0
             ):
-                panel_records = validation_dataset.records
-                if phase is not None:
-                    panel_records = _filter_v2_records_for_phase(
-                        panel_records, phase
+                panel_specs = configured_generation_panels or [
+                    {
+                        "name": "validation",
+                        "split": "validation",
+                        "phase_filtered": True,
+                    }
+                ]
+                for panel_spec in panel_specs:
+                    panel_name = str(panel_spec["name"])
+                    panel_dataset = generation_panel_datasets.get(
+                        panel_name, validation_dataset
                     )
+                    panel_records = panel_dataset.records
+                    if bool(panel_spec.get("phase_filtered", False)) and phase is not None:
+                        panel_records = _filter_v2_records_for_phase(
+                            panel_records, phase
+                        )
                     if not panel_records:
                         raise RuntimeError(
-                            f"generation validation phase {phase['name']} selected no records"
+                            f"generation validation panel {panel_name} selected no records"
                         )
-                generation_rows_path = (
-                    work_dir / f"generation_validation_epoch_{epoch:04d}.jsonl"
+                    generation_rows_name = (
+                        f"generation_validation_{panel_name}_epoch_{epoch:04d}.jsonl"
+                        if configured_generation_panels
+                        else f"generation_validation_epoch_{epoch:04d}.jsonl"
+                    )
+                    generation_rows_path = work_dir / generation_rows_name
+                    generation_panels[panel_name] = evaluate_generation_panel(
+                        model,
+                        tokenizer,
+                        panel_records,
+                        maximum_examples=int(
+                            panel_spec.get(
+                                "examples", generation_settings.get("examples", 96)
+                            )
+                        ),
+                        batch_size=int(
+                            panel_spec.get(
+                                "batch_size",
+                                generation_settings.get("batch_size", 16),
+                            )
+                        ),
+                        max_new_tokens=int(
+                            panel_spec.get(
+                                "max_new_tokens",
+                                generation_settings.get("max_new_tokens", 512),
+                            )
+                        ),
+                        failure_examples=int(
+                            panel_spec.get(
+                                "failure_examples",
+                                generation_settings.get("failure_examples", 8),
+                            )
+                        ),
+                        rows_path=generation_rows_path,
+                        input_view=collator.input_view,
+                    )
+                    generation_panels[panel_name]["split"] = str(
+                        panel_spec.get("split", "validation")
+                    )
+                    if work_dir != artifact_dir:
+                        atomic_copy_file(
+                            generation_rows_path,
+                            artifact_dir / generation_rows_path.name,
+                        )
+                primary_panel_name = str(
+                    (phase or {}).get(
+                        "primary_generation_panel", panel_specs[0]["name"]
+                    )
                 )
-                generation_validation = evaluate_generation_panel(
-                    model,
-                    tokenizer,
-                    panel_records,
-                    maximum_examples=int(
-                        generation_settings.get("examples", 96)
-                    ),
-                    batch_size=int(generation_settings.get("batch_size", 16)),
-                    max_new_tokens=int(
-                        generation_settings.get("max_new_tokens", 512)
-                    ),
-                    failure_examples=int(
-                        generation_settings.get("failure_examples", 8)
-                    ),
-                    rows_path=generation_rows_path,
-                    input_view=collator.input_view,
-                )
-                if work_dir != artifact_dir:
-                    atomic_copy_file(
-                        generation_rows_path,
-                        artifact_dir / generation_rows_path.name,
+                generation_validation = generation_panels.get(primary_panel_name)
+                if generation_validation is None:
+                    raise RuntimeError(
+                        "primary generation validation panel is unavailable: "
+                        + primary_panel_name
                     )
                 validation["generation"] = generation_validation
+                validation["generation_panels"] = generation_panels
             if generation_validation is not None:
+                panel_accuracies = [
+                    float(panel["accuracy"]) for panel in generation_panels.values()
+                ]
+                panel_valid_rates = [
+                    float(panel["valid_rate"]) for panel in generation_panels.values()
+                ]
                 selection_metric = (
-                    float(generation_validation["accuracy"])
-                    + 0.01 * float(generation_validation["valid_rate"])
+                    sum(panel_accuracies) / max(1, len(panel_accuracies))
+                    + 0.01 * min(panel_valid_rates)
                     + 0.0001 * float(validation["teacher_forced_sequence_accuracy"])
                     - 1e-8 * float(validation["loss"])
                 )
-                selection_basis = "greedy_generation_accuracy"
+                selection_basis = (
+                    "mean_greedy_generation_accuracy_across_panels"
+                    if len(generation_panels) > 1
+                    else "greedy_generation_accuracy"
+                )
             elif (
                 manifest.get("format") == "cftn_text_broad_math_v2"
                 or not model.answer_head_enabled
@@ -1027,32 +1302,12 @@ def train_math_tower(
                     validation["answer_head_accuracy"]
                 ) - 1e-6 * float(validation["loss"])
                 selection_basis = "answer_head_accuracy"
-            phase_acceptance = None
-            if (
-                phase is not None
-                and "minimum_generation_accuracy" in phase
-                and "minimum_valid_rate" in phase
-            ):
-                phase_acceptance = {
-                    "phase": str(phase["name"]),
-                    "minimum_generation_accuracy": float(
-                        phase["minimum_generation_accuracy"]
-                    ),
-                    "minimum_valid_rate": float(phase["minimum_valid_rate"]),
-                    "generation_accuracy": float(
-                        (generation_validation or {}).get("accuracy", 0.0)
-                    ),
-                    "valid_rate": float(
-                        (generation_validation or {}).get("valid_rate", 0.0)
-                    ),
-                    "terminal_epoch": epoch == int(phase["through_epoch"]),
-                }
-                phase_acceptance["pass"] = (
-                    phase_acceptance["generation_accuracy"]
-                    >= phase_acceptance["minimum_generation_accuracy"]
-                    and phase_acceptance["valid_rate"]
-                    >= phase_acceptance["minimum_valid_rate"]
-                )
+            phase_acceptance = _phase_generation_acceptance(
+                phase=phase,
+                generation_panels=generation_panels,
+                validation=validation,
+                epoch=epoch,
+            )
             improved = selection_metric > best_metric
             if improved:
                 best_metric = selection_metric

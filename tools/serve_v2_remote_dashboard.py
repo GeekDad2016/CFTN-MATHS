@@ -39,6 +39,7 @@ sensitive_names = {
 sensitive_suffixes = ("_api_key", "_access_token", "_auth_token", "_password", "_secret")
 stage_directories = {
     "train_math": "math",
+    "math_broad_shared_recovery": "math_broad_shared_recovery",
     "math_shared_trace_recovery": "math_shared_trace_recovery",
     "math_answer_recovery": "math_answer_recovery",
     "select_math_checkpoint": "math_checkpoint_selection",
@@ -157,7 +158,11 @@ recovery_root = None
 recovery_contract = {}
 recovery_status = {}
 recovery_terminal_states = {"completed", "failed_acceptance", "error"}
-for candidate_stage in ("math_shared_trace_recovery", "math_answer_recovery"):
+for candidate_stage in (
+    "math_broad_shared_recovery",
+    "math_shared_trace_recovery",
+    "math_answer_recovery",
+):
     candidate_root = artifact_root / candidate_stage
     candidate_contract = read_json(candidate_root / "recovery_contract.json")
     candidate_status = read_json(candidate_root / "status.json")
@@ -232,7 +237,11 @@ for path in artifact_root.rglob("wandb_run.json"):
     parsed = read_json(path)
     if parsed:
         wandb_runs.append({"path": str(path), **redact(parsed)})
-if stage in {"math_shared_trace_recovery", "math_answer_recovery"}:
+if stage in {
+    "math_broad_shared_recovery",
+    "math_shared_trace_recovery",
+    "math_answer_recovery",
+}:
     stdout = tail(artifact_root / f"{stage}.stdout.log")
     stderr = tail(artifact_root / f"{stage}.stderr.log")
 else:
@@ -329,7 +338,8 @@ let trendRows=rows.map(r=>[r.epoch,n(r.global_step),n(r.train_loss),n(get(r,'val
 $('trend').innerHTML='<h3>Accuracy</h3>'+lineChart(accSeries,{zeroOne:true})+'<h3>Loss</h3>'+lineChart(lossSeries)+tbl(trendRows,['Epoch','Step','Train loss','Val loss','Token','Sequence','Gen valid','Gen correct','Selection','Best','Patience','LR','Curriculum','Difficulty','Epoch time']);
 $('breakdowns').innerHTML=breakdownTables(v);
 let failureRows=(g.failure_examples||[]).map(x=>[x.source||'',x.family||'',x.difficulty??'',x.problem||'',x.expected_answer||'',x.parsed_answer??'no valid answer',x.generation||'']);
-$('generation').innerHTML=(Object.keys(g).length?tbl([[n(g.examples),pct(g.valid_rate),pct(g.accuracy),pct(g.canonical_string_accuracy),dur(g.elapsed_seconds)]],['N','Valid format','Equivalent answer','Canonical','Time'])+tbl(failureRows,['Source','Family','Difficulty','Problem','Expected','Parsed','Raw generation']):'<span class=muted>Per-epoch native generation starts with the updated trainer. The current run will still perform full generation checkpoint selection after training.</span>');
+let panelRows=Object.entries(v.generation_panels||{}).map(([name,panel])=>[name,panel.split||'',n(panel.examples),pct(panel.valid_rate),pct(panel.accuracy),dur(panel.elapsed_seconds)]);
+$('generation').innerHTML=(Object.keys(g).length?tbl([[n(g.examples),pct(g.valid_rate),pct(g.accuracy),pct(g.canonical_string_accuracy),dur(g.elapsed_seconds)]],['N','Valid format','Equivalent answer','Canonical','Time'])+(panelRows.length?'<h3>Acceptance panels</h3>'+tbl(panelRows,['Panel','Split','N','Valid format','Accuracy','Time']):'')+tbl(failureRows,['Source','Family','Difficulty','Problem','Expected','Parsed','Raw generation']):'<span class=muted>Per-epoch native generation starts with the updated trainer. The current run will still perform full generation checkpoint selection after training.</span>');
 $('stages').innerHTML=tbl(Object.entries(p.stages||{}).map(([name,x])=>[name,x.state||'',x.returncode??'',x.started_unix?new Date(x.started_unix*1000).toLocaleString():'',x.completed_unix?new Date(x.completed_unix*1000).toLocaleString():'']),['Stage','State','Code','Started','Completed']);$('artifacts').textContent=JSON.stringify(d.stage_artifacts||{},null,2);
 $('gpu').innerHTML=tbl((d.gpu?.gpus||[]).map(x=>[x.index,x.name,x.utilization_percent+'%',x.memory_used_mib+' / '+x.memory_total_mib+' MiB',x.temperature_c+'°C']),['#','GPU','Util','Memory','Temp']);
 $('processes').innerHTML=tbl((d.processes||[]).map(x=>[x.pid,x.ppid,x.elapsed,x.state,x.cpu_percent+'%',x.command]),['PID','PPID','Elapsed','State','CPU','Command']);

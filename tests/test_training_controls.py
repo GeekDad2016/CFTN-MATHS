@@ -10,6 +10,7 @@ from cftn_text.dataset import EquationDataset
 from cftn_text.training import (
     _bridge_collapse_diagnostics,
     _bridge_stability_policy,
+    _phase_generation_acceptance,
     _should_stop_early,
     math_epoch_dataset,
 )
@@ -201,3 +202,139 @@ def test_shared_trace_recovery_contract_is_fail_closed():
     assert contract["phases"][0]["families"] == ["variables_both_sides"]
     assert contract["phases"][0]["minimum_generation_accuracy"] == 0.95
     assert contract["phases"][0]["minimum_valid_rate"] == 0.99
+
+
+def test_source_quota_curriculum_is_deterministic_and_auditable():
+    records = [
+        {
+            "record_id": f"a-{index}",
+            "source": "source_a",
+            "family": "family_a",
+            "difficulty": 1,
+        }
+        for index in range(3)
+    ] + [
+        {
+            "record_id": f"b-{index}",
+            "source": "source_b",
+            "family": "family_b",
+            "difficulty": 2,
+        }
+        for index in range(5)
+    ]
+    config = {
+        "data": {
+            "format": "cftn_text_broad_math_v2",
+            "curriculum": {
+                "enabled": True,
+                "examples_per_epoch": 8,
+                "phases": [
+                    {
+                        "name": "balanced",
+                        "through_epoch": 1,
+                        "max_difficulty": 3,
+                        "source_quotas": {"source_a": 4, "source_b": 4},
+                    }
+                ],
+            },
+        }
+    }
+
+    first, metadata = math_epoch_dataset(
+        EquationDataset(records), config, epoch=1, seed=719
+    )
+    second, _ = math_epoch_dataset(
+        EquationDataset(records), config, epoch=1, seed=719
+    )
+
+    assert [row["record_id"] for row in first.records] == [
+        row["record_id"] for row in second.records
+    ]
+    assert metadata["sampling_policy"] == "source_quotas_v1"
+    assert metadata["sampling_with_replacement"] is True
+    assert metadata["source_sampling"]["source_a"]["replacement_examples"] == 1
+    assert metadata["source_sampling"]["source_b"]["replacement_examples"] == 0
+    assert sum(row["source"] == "source_a" for row in first.records) == 4
+    assert sum(row["source"] == "source_b" for row in first.records) == 4
+
+
+def test_broad_generation_acceptance_requires_every_panel_and_breakdown():
+    phase = {
+        "name": "broad",
+        "through_epoch": 4,
+        "primary_generation_panel": "validation_broad",
+        "minimum_generation_accuracy": 0.70,
+        "minimum_valid_rate": 0.95,
+        "minimum_generation_accuracy_by_source": {
+            "cftn_generated": 0.70,
+            "deepmind_mathematics": 0.60,
+        },
+        "minimum_generation_accuracy_by_panel": {
+            "mathqa_validation": 0.15
+        },
+        "minimum_valid_rate_by_panel": {"mathqa_validation": 0.90},
+        "minimum_teacher_forced_token_accuracy": 0.90,
+    }
+    panels = {
+        "validation_broad": {
+            "accuracy": 0.72,
+            "valid_rate": 0.97,
+            "by_source": {
+                "cftn_generated": {"accuracy": 0.75, "examples": 128},
+                "deepmind_mathematics": {"accuracy": 0.65, "examples": 896},
+            },
+        },
+        "mathqa_validation": {"accuracy": 0.16, "valid_rate": 0.92},
+    }
+    validation = {
+        "teacher_forced_token_accuracy": 0.91,
+        "teacher_forced_sequence_accuracy": 0.30,
+        "loss": 0.5,
+    }
+
+    accepted = _phase_generation_acceptance(
+        phase=phase,
+        generation_panels=panels,
+        validation=validation,
+        epoch=2,
+    )
+    assert accepted is not None and accepted["pass"] is True
+    panels["mathqa_validation"]["accuracy"] = 0.14
+    rejected = _phase_generation_acceptance(
+        phase=phase,
+        generation_panels=panels,
+        validation=validation,
+        epoch=2,
+    )
+    assert rejected is not None and rejected["pass"] is False
+    assert (
+        rejected["checks"]["panel:mathqa_validation:generation_accuracy"]["pass"]
+        is False
+    )
+
+
+def test_broad_shared_recovery_contract_covers_all_training_sources():
+    contract_path = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "v2_math_checkpoint45_broad_shared_recovery.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+    assert contract["format"] == "cftn_text_v2_math_broad_shared_recovery_v1"
+    assert contract["require_acceptance_for_best"] is True
+    assert contract["math_training"]["input_view"] == "shared_problem_v1"
+    assert contract["math_training"]["target_mode"] == "full_trace_v1"
+    assert contract["curriculum"]["examples_per_epoch"] == 400000
+    assert sum(contract["phases"][0]["source_quotas"].values()) == 400000
+    assert set(contract["phases"][0]["source_quotas"]) == {
+        "cftn_generated",
+        "deepmind_mathematics",
+        "gsm8k",
+        "mathqa",
+    }
+    assert contract["phases"][0]["primary_generation_panel"] == "validation_broad"
+    assert contract["phases"][0]["minimum_generation_accuracy_by_panel"] == {
+        "validation_broad": 0.70,
+        "mathqa_validation": 0.15,
+    }

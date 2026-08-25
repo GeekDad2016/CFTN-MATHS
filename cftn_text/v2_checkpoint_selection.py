@@ -65,9 +65,15 @@ def _candidate_provenance(
     candidate_sha256 = file_sha256(resolved)
     source_path = Path(str(contract.get("source_checkpoint", ""))).expanduser()
     source_sha256 = str(contract.get("source_checkpoint_sha256", ""))
+    contract_format = str(contract.get("format", ""))
+    supported_recovery_formats = {
+        "cftn_text_v2_math_shared_trace_recovery_v1",
+        "cftn_text_v2_math_broad_shared_recovery_v1",
+    }
+    acceptance_checks = acceptance.get("checks", {})
+    broad_recovery = contract_format == "cftn_text_v2_math_broad_shared_recovery_v1"
     checks = {
-        "contract_format": contract.get("format")
-        == "cftn_text_v2_math_shared_trace_recovery_v1",
+        "contract_format": contract_format in supported_recovery_formats,
         "require_acceptance_for_best": contract.get("require_acceptance_for_best")
         is True,
         "summary_completed": summary.get("state") == "completed",
@@ -88,6 +94,21 @@ def _candidate_provenance(
         and file_sha256(source_path) == source_sha256,
         "observed_source_sha256": contract.get("observed_source_checkpoint_sha256")
         == source_sha256,
+        "detailed_acceptance_checks": (
+            not broad_recovery
+            or (
+                isinstance(acceptance_checks, dict)
+                and bool(acceptance_checks)
+                and all(
+                    isinstance(check, dict) and check.get("pass") is True
+                    for check in acceptance_checks.values()
+                )
+            )
+        ),
+        "broad_primary_panel": (
+            not broad_recovery
+            or acceptance.get("primary_panel") == "validation_broad"
+        ),
     }
     failed = sorted(name for name, passed in checks.items() if not passed)
     if failed:
@@ -96,7 +117,12 @@ def _candidate_provenance(
             + ", ".join(failed)
         )
     return {
-        "kind": "accepted_math_recovery",
+        "kind": (
+            "accepted_math_broad_recovery"
+            if broad_recovery
+            else "accepted_math_recovery"
+        ),
+        "format": contract_format,
         "recovery_root": str(recovery_root),
         "summary": str(summary_path),
         "contract": str(contract_path),

@@ -287,3 +287,70 @@ def test_external_math_recovery_candidate_requires_complete_acceptance_attestati
             math_root=math_root,
             explicit=True,
         )
+
+
+def test_external_broad_math_recovery_requires_detailed_acceptance_checks(tmp_path):
+    artifact_root = tmp_path / "artifacts"
+    math_root = artifact_root / "math"
+    recovery_root = artifact_root / "math_broad_shared_recovery"
+    math_root.mkdir(parents=True)
+    recovery_root.mkdir(parents=True)
+    source = math_root / "math.best.pth"
+    source.write_bytes(b"sealed-source")
+    source_sha = file_sha256(source)
+    candidate = recovery_root / "math.best.pth"
+    candidate.write_bytes(b"accepted-broad-recovery")
+    candidate_sha = file_sha256(candidate)
+    _write(
+        recovery_root / "recovery_contract.json",
+        {
+            "format": "cftn_text_v2_math_broad_shared_recovery_v1",
+            "require_acceptance_for_best": True,
+            "source_checkpoint": str(source),
+            "source_checkpoint_sha256": source_sha,
+            "observed_source_checkpoint_sha256": source_sha,
+        },
+    )
+    summary = {
+        "state": "completed",
+        "best_checkpoint": str(candidate),
+        "best_checkpoint_sha256": candidate_sha,
+        "final_metrics": {
+            "input_view": "shared_problem_v1",
+            "target_mode": "full_trace_v1",
+            "checkpoint_eligible": True,
+            "checkpoint_promoted": True,
+            "curriculum_acceptance": {
+                "pass": True,
+                "primary_panel": "validation_broad",
+                "generation_accuracy": 0.72,
+                "minimum_generation_accuracy": 0.70,
+                "valid_rate": 0.97,
+                "minimum_valid_rate": 0.95,
+                "checks": {
+                    "primary_generation_accuracy": {"pass": True},
+                    "panel:mathqa_validation:generation_accuracy": {"pass": True},
+                },
+            },
+        },
+    }
+    _write(recovery_root / "summary.json", summary)
+
+    provenance = _candidate_provenance(
+        candidate,
+        artifact_root=artifact_root,
+        math_root=math_root,
+        explicit=True,
+    )
+    assert provenance["kind"] == "accepted_math_broad_recovery"
+    summary["final_metrics"]["curriculum_acceptance"]["checks"][
+        "panel:mathqa_validation:generation_accuracy"
+    ]["pass"] = False
+    _write(recovery_root / "summary.json", summary)
+    with pytest.raises(ValueError, match="detailed_acceptance_checks"):
+        _candidate_provenance(
+            candidate,
+            artifact_root=artifact_root,
+            math_root=math_root,
+            explicit=True,
+        )

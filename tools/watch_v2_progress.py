@@ -14,6 +14,7 @@ from typing import Any
 
 STAGE_DIRECTORIES = {
     "train_math": "math",
+    "math_broad_shared_recovery": "math_broad_shared_recovery",
     "math_shared_trace_recovery": "math_shared_trace_recovery",
     "math_answer_recovery": "math_answer_recovery",
     "select_math_checkpoint": "math_checkpoint_selection",
@@ -34,6 +35,7 @@ STAGE_DIRECTORIES = {
 
 EPOCH_LIMITS = {
     "train_math": 100,
+    "math_broad_shared_recovery": 20,
     "train_learned_dispatcher": 8,
     "train_exact_string_specialist": 30,
     "train_single_specialist_capacity": 8,

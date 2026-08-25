@@ -1,0 +1,84 @@
+{
+  "format": "cftn_text_v2_math_broad_shared_recovery_v1",
+  "source_checkpoint_sha256": "fe2c056a1ee1d4a3514537681d82124b0312f45c27f72f8e73d2afc747d53973",
+  "require_acceptance_for_best": true,
+  "math_training": {
+    "max_epochs": 20,
+    "minimum_epochs": 1,
+    "early_stop_patience": 20,
+    "learning_rate": 0.00005,
+    "minimum_learning_rate": 0.0000025,
+    "warmup_fraction": 0.02,
+    "input_view": "shared_problem_v1",
+    "target_mode": "full_trace_v1",
+    "answer_token_weight": 4.0,
+    "keep_latest_checkpoints": 5,
+    "generation_validation": {
+      "enabled": true,
+      "every_epochs": 1,
+      "batch_size": 16,
+      "max_new_tokens": 256,
+      "failure_examples": 12,
+      "panels": [
+        {
+          "name": "validation_broad",
+          "split": "validation",
+          "examples": 1024
+        },
+        {
+          "name": "mathqa_validation",
+          "split": "mathqa_validation",
+          "examples": 512
+        }
+      ]
+    }
+  },
+  "curriculum": {
+    "examples_per_epoch": 400000
+  },
+  "phases": [
+    {
+      "name": "broad_shared_replay",
+      "through_epoch": 20,
+      "max_difficulty": 3,
+      "source_quotas": {
+        "cftn_generated": 150000,
+        "deepmind_mathematics": 150000,
+        "gsm8k": 50000,
+        "mathqa": 50000
+      },
+      "primary_generation_panel": "validation_broad",
+      "minimum_generation_accuracy": 0.70,
+      "minimum_valid_rate": 0.95,
+      "minimum_generation_accuracy_by_source": {
+        "cftn_generated": 0.70,
+        "deepmind_mathematics": 0.60
+      },
+      "minimum_generation_accuracy_by_difficulty": {
+        "1": 0.75,
+        "2": 0.60,
+        "3": 0.50
+      },
+      "minimum_generation_accuracy_by_family": {
+        "variables_both_sides": 0.90,
+        "signed_fractions": 0.70,
+        "nested_parentheses": 0.70,
+        "two_variable_systems": 0.65,
+        "multi_step_word_problem": 0.60,
+        "distractor_word_problem": 0.55
+      },
+      "minimum_generation_accuracy_by_panel": {
+        "validation_broad": 0.70,
+        "mathqa_validation": 0.15
+      },
+      "minimum_valid_rate_by_panel": {
+        "validation_broad": 0.95,
+        "mathqa_validation": 0.90
+      },
+      "minimum_teacher_forced_token_accuracy": 0.90,
+      "minimum_teacher_forced_sequence_accuracy": 0.15,
+      "maximum_validation_loss": 1.0,
+      "stop_on_pass": true
+    }
+  ]
+}

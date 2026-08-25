@@ -14,6 +14,8 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Validation trend" in PAGE
     assert "Latest validation breakdown" in PAGE
     assert "Generation validation" in PAGE
+    assert "Acceptance panels" in PAGE
+    assert "generation_panels" in PAGE
     assert "Raw artifacts for every stage" in PAGE
     assert "teacher_forced_token_accuracy" in PAGE
     assert "generation.accuracy" in PAGE
@@ -33,6 +35,7 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert 'name in sensitive_names or name.endswith(sensitive_suffixes)' in REMOTE_PROBE
     assert '"math_answer_recovery": "math_answer_recovery"' in REMOTE_PROBE
     assert '"math_shared_trace_recovery": "math_shared_trace_recovery"' in REMOTE_PROBE
+    assert '"math_broad_shared_recovery": "math_broad_shared_recovery"' in REMOTE_PROBE
     assert '"recover_v2_math"' in REMOTE_PROBE
     assert 'recovery_root / "recovery_contract.json"' in REMOTE_PROBE
     assert 'artifact_root / f"{stage}.stdout.log"' in REMOTE_PROBE
