@@ -17,6 +17,13 @@ def main() -> None:
     parser.add_argument("--splits", nargs="+")
     parser.add_argument("--maximum-examples", type=int)
     parser.add_argument("--output-root")
+    parser.add_argument(
+        "--working-root",
+        help=(
+            "Optional local scratch directory for high-frequency status and "
+            "generation rows; completed evidence is published to --output-root"
+        ),
+    )
     add_wandb_arguments(parser)
     args = parser.parse_args()
     config = load_config(args.config)
@@ -30,6 +37,7 @@ def main() -> None:
         splits=args.splits,
         maximum_examples=args.maximum_examples,
         output_root=args.output_root,
+        working_root=args.working_root,
         wandb_options=wandb_options_from_args(
             args, default_run_name="v2-math-evaluation"
         ),

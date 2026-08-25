@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
 
-from .checkpoint import atomic_json_dump, gpu_status, load_checkpoint
+from .checkpoint import (
+    atomic_copy_file,
+    atomic_json_dump,
+    ensure_directory,
+    gpu_status,
+    load_checkpoint,
+)
 from .config import config_sha256
 from .data_generator import file_sha256
 from .specialist_evaluation import generate_math_tower
@@ -29,6 +36,7 @@ def evaluate_v2_math_checkpoint(
     splits: list[str] | None = None,
     maximum_examples: int | None = None,
     output_root: str | Path | None = None,
+    working_root: str | Path | None = None,
     wandb_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     device = resolve_device(device_name)
@@ -57,8 +65,28 @@ def evaluate_v2_math_checkpoint(
         output_root
         or Path(config["project"]["artifact_root"]) / "evaluation_math_v2"
     )
-    artifact_root.mkdir(parents=True, exist_ok=True)
+    ensure_directory(artifact_root)
+    work_root = Path(working_root or artifact_root)
+    ensure_directory(work_root)
     status_path = artifact_root / "status.json"
+    working_status_path = work_root / "status.json"
+    mirrored_status_failures: list[str] = []
+
+    def write_status(payload: dict[str, Any], *, final: bool = False) -> None:
+        atomic_json_dump(payload, working_status_path)
+        if working_status_path.resolve() == status_path.resolve():
+            return
+        try:
+            atomic_json_dump(
+                payload,
+                status_path,
+                retry_attempts=12 if final else 2,
+                retry_base_seconds=0.1 if final else 0.05,
+            )
+        except OSError as exc:
+            mirrored_status_failures.append(repr(exc))
+            if final:
+                raise
     started_at = time.time()
     tracker = initialize_wandb(
         wandb_options,
@@ -117,7 +145,7 @@ def evaluate_v2_math_checkpoint(
                 )
                 generations.extend(generated)
                 answer_head_predictions.extend(predicted)
-                atomic_json_dump(
+                write_status(
                     {
                         "state": "running",
                         "phase": "v2_math_generation",
@@ -129,7 +157,6 @@ def evaluate_v2_math_checkpoint(
                         "elapsed_seconds": time.time() - started_at,
                         "gpu": gpu_status(),
                     },
-                    status_path,
                 )
             metrics, correctness = score_v2_generations(generations, records)
             integer_rows = [
@@ -146,8 +173,8 @@ def evaluate_v2_math_checkpoint(
                 if integer_rows
                 else None
             )
-            rows_path = artifact_root / f"{split}_generations.jsonl"
-            with rows_path.open("w", encoding="utf-8") as handle:
+            working_rows_path = work_root / f"{split}_generations.jsonl"
+            with working_rows_path.open("w", encoding="utf-8") as handle:
                 for record, generation, prediction, correct in zip(
                     records, generations, answer_head_predictions, correctness
                 ):
@@ -165,6 +192,11 @@ def evaluate_v2_math_checkpoint(
                         )
                         + "\n"
                     )
+                handle.flush()
+                os.fsync(handle.fileno())
+            rows_path = artifact_root / f"{split}_generations.jsonl"
+            if working_rows_path.resolve() != rows_path.resolve():
+                atomic_copy_file(working_rows_path, rows_path)
             split_report = {
                 **metrics,
                 "excluded_over_context": excluded_over_context,
@@ -191,15 +223,21 @@ def evaluate_v2_math_checkpoint(
             **gate_results,
             "pass": bool(gate_results) and all(gate_results.values()),
         }
+        report["storage"] = {
+            "working_root": str(work_root.resolve()),
+            "artifact_root": str(artifact_root.resolve()),
+            "local_working_root": work_root.resolve() != artifact_root.resolve(),
+            "mirrored_status_write_failures": mirrored_status_failures,
+        }
         atomic_json_dump(report, artifact_root / "report.json")
-        atomic_json_dump(
+        write_status(
             {
                 "state": "completed",
                 "elapsed_seconds": time.time() - started_at,
                 "report": str((artifact_root / "report.json").resolve()),
                 "gpu": gpu_status(),
             },
-            status_path,
+            final=True,
         )
         tracker.update_summary(
             {"run/state": "completed", "specialist_gate": report["specialist_gate"]}
@@ -207,15 +245,18 @@ def evaluate_v2_math_checkpoint(
         tracker.finish()
         return report
     except BaseException as exc:
-        atomic_json_dump(
-            {
-                "state": "error",
-                "error": repr(exc),
-                "elapsed_seconds": time.time() - started_at,
-                "gpu": gpu_status(),
-            },
-            status_path,
-        )
+        error_status = {
+            "state": "error",
+            "error": repr(exc),
+            "elapsed_seconds": time.time() - started_at,
+            "gpu": gpu_status(),
+        }
+        try:
+            write_status(error_status)
+        except BaseException:
+            # Status publication must never mask the original compute or I/O
+            # failure. The local working status is attempted first above.
+            pass
         tracker.update_summary({"run/state": "error", "run/error": repr(exc)})
         tracker.finish(exit_code=1)
         raise

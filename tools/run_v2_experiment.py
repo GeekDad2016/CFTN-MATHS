@@ -74,6 +74,8 @@ def command_plan(
     *,
     device: str,
     wandb: bool,
+    math_selection_checkpoints: list[str] | None = None,
+    working_root: str | None = None,
 ) -> list[Stage]:
     repository_root = Path(config_path).resolve().parent.parent
     root_value = Path(config["project"]["artifact_root"])
@@ -154,6 +156,22 @@ def command_plan(
                 config_path,
                 "--device",
                 device,
+                *[
+                    value
+                    for checkpoint in (math_selection_checkpoints or [])
+                    for value in ("--checkpoint", str(Path(checkpoint).resolve()))
+                ],
+                *(
+                    [
+                        "--working-root",
+                        str(
+                            (Path(working_root).expanduser().resolve()
+                            / "math_checkpoint_selection")
+                        ),
+                    ]
+                    if working_root
+                    else []
+                ),
             ],
             root / "math_checkpoint_selection" / "report.json",
         ),
@@ -169,6 +187,17 @@ def command_plan(
                 device,
                 "--checkpoint",
                 str(math_checkpoint),
+                *(
+                    [
+                        "--working-root",
+                        str(
+                            (Path(working_root).expanduser().resolve()
+                            / "evaluation_math_v2")
+                        ),
+                    ]
+                    if working_root
+                    else []
+                ),
                 *_wandb_arguments(
                     wandb,
                     config,
@@ -849,6 +878,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--from-stage")
     parser.add_argument("--through-stage")
     parser.add_argument(
+        "--math-selection-checkpoint",
+        action="append",
+        help="Restrict math checkpoint selection to this path; repeat as needed",
+    )
+    parser.add_argument(
+        "--working-root",
+        help="Optional local scratch root for high-frequency evaluation output",
+    )
+    parser.add_argument(
         "--control-root",
         default=os.environ.get("CFTN_CONTROL_ROOT"),
         help="Optional control directory used for safe pause-at-stage-boundary requests",
@@ -857,7 +895,12 @@ def main(argv: list[str] | None = None) -> None:
     config_path = str(Path(args.config).resolve())
     config = load_config(config_path)
     stages = command_plan(
-        config_path, config, device=args.device, wandb=args.wandb
+        config_path,
+        config,
+        device=args.device,
+        wandb=args.wandb,
+        math_selection_checkpoints=args.math_selection_checkpoint,
+        working_root=args.working_root,
     )
     names = [stage.name for stage in stages]
     if args.from_stage and args.from_stage not in names:
@@ -876,6 +919,10 @@ def main(argv: list[str] | None = None) -> None:
         "resume": args.resume,
         "wandb": args.wandb,
         "wandb_api_key_source": "WANDB_API_KEY environment variable",
+        "math_selection_checkpoints": args.math_selection_checkpoint,
+        "working_root": str(Path(args.working_root).expanduser().resolve())
+        if args.working_root
+        else None,
         "single_pipeline_lock": str(
             (_project_path(config, "artifact_root") / "pipeline.lock").resolve()
         ),
