@@ -7,6 +7,7 @@ import pytest
 
 from cftn_text.data_generator import file_sha256
 from cftn_text.v2_checkpoint_selection import (
+    _candidate_provenance,
     candidate_score,
     select_v2_math_checkpoint,
 )
@@ -222,3 +223,67 @@ def test_v2_checkpoint_selection_can_reuse_one_explicit_candidate(
     assert report["candidates"][0]["evaluation_reused"] is True
     assert report["selected"]["source_path"] == str(checkpoint_path.resolve())
     assert Path(report["selected"]["path"]).read_bytes() == checkpoint_path.read_bytes()
+
+
+def test_external_math_recovery_candidate_requires_complete_acceptance_attestation(
+    tmp_path,
+):
+    artifact_root = tmp_path / "artifacts"
+    math_root = artifact_root / "math"
+    recovery_root = artifact_root / "math_shared_trace_recovery"
+    math_root.mkdir(parents=True)
+    recovery_root.mkdir(parents=True)
+    source = math_root / "math.best.pth"
+    source.write_bytes(b"sealed-source")
+    source_sha = file_sha256(source)
+    candidate = recovery_root / "math.best.pth"
+    candidate.write_bytes(b"accepted-recovery")
+    candidate_sha = file_sha256(candidate)
+    _write(
+        recovery_root / "recovery_contract.json",
+        {
+            "format": "cftn_text_v2_math_shared_trace_recovery_v1",
+            "require_acceptance_for_best": True,
+            "source_checkpoint": str(source),
+            "source_checkpoint_sha256": source_sha,
+            "observed_source_checkpoint_sha256": source_sha,
+        },
+    )
+    summary = {
+        "state": "completed",
+        "best_checkpoint": str(candidate),
+        "best_checkpoint_sha256": candidate_sha,
+        "final_metrics": {
+            "input_view": "shared_problem_v1",
+            "target_mode": "full_trace_v1",
+            "checkpoint_eligible": True,
+            "checkpoint_promoted": True,
+            "curriculum_acceptance": {
+                "pass": True,
+                "generation_accuracy": 0.953125,
+                "minimum_generation_accuracy": 0.95,
+                "valid_rate": 1.0,
+                "minimum_valid_rate": 0.99,
+            },
+        },
+    }
+    _write(recovery_root / "summary.json", summary)
+
+    provenance = _candidate_provenance(
+        candidate,
+        artifact_root=artifact_root,
+        math_root=math_root,
+        explicit=True,
+    )
+
+    assert provenance["kind"] == "accepted_math_recovery"
+    assert provenance["generation_accuracy"] == 0.953125
+    summary["final_metrics"]["curriculum_acceptance"]["pass"] = False
+    _write(recovery_root / "summary.json", summary)
+    with pytest.raises(ValueError, match="acceptance_pass"):
+        _candidate_provenance(
+            candidate,
+            artifact_root=artifact_root,
+            math_root=math_root,
+            explicit=True,
+        )

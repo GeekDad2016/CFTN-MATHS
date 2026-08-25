@@ -28,6 +28,87 @@ def candidate_score(candidate: dict[str, Any]) -> tuple[float, float, float, flo
     )
 
 
+def _candidate_provenance(
+    path: Path,
+    *,
+    artifact_root: Path,
+    math_root: Path,
+    explicit: bool,
+) -> dict[str, Any]:
+    """Validate the trust boundary for a math checkpoint selection candidate."""
+
+    resolved = path.resolve()
+    if resolved.is_relative_to(math_root.resolve()):
+        return {"kind": "native_math_artifact"}
+    if not explicit or not resolved.is_relative_to(artifact_root.resolve()):
+        raise ValueError(
+            f"V2 math selection candidate is outside the math artifact: {resolved}"
+        )
+
+    recovery_root = resolved.parent
+    summary_path = recovery_root / "summary.json"
+    contract_path = recovery_root / "recovery_contract.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"external V2 math candidate lacks recovery attestation: {resolved}"
+        ) from exc
+
+    metrics = summary.get("final_metrics") or {}
+    acceptance = metrics.get("curriculum_acceptance") or {}
+    minimum_accuracy = float(acceptance.get("minimum_generation_accuracy", 1.0))
+    minimum_valid_rate = float(acceptance.get("minimum_valid_rate", 1.0))
+    observed_accuracy = float(acceptance.get("generation_accuracy", 0.0))
+    observed_valid_rate = float(acceptance.get("valid_rate", 0.0))
+    candidate_sha256 = file_sha256(resolved)
+    source_path = Path(str(contract.get("source_checkpoint", ""))).expanduser()
+    source_sha256 = str(contract.get("source_checkpoint_sha256", ""))
+    checks = {
+        "contract_format": contract.get("format")
+        == "cftn_text_v2_math_shared_trace_recovery_v1",
+        "require_acceptance_for_best": contract.get("require_acceptance_for_best")
+        is True,
+        "summary_completed": summary.get("state") == "completed",
+        "summary_best_path": Path(str(summary.get("best_checkpoint", ""))).resolve()
+        == resolved,
+        "summary_best_sha256": summary.get("best_checkpoint_sha256")
+        == candidate_sha256,
+        "acceptance_pass": acceptance.get("pass") is True,
+        "generation_accuracy": observed_accuracy >= minimum_accuracy,
+        "valid_rate": observed_valid_rate >= minimum_valid_rate,
+        "checkpoint_eligible": metrics.get("checkpoint_eligible") is True,
+        "checkpoint_promoted": metrics.get("checkpoint_promoted") is True,
+        "input_view": metrics.get("input_view") == "shared_problem_v1",
+        "target_mode": metrics.get("target_mode") == "full_trace_v1",
+        "source_exists": source_path.is_file(),
+        "source_sha256": bool(source_sha256)
+        and source_path.is_file()
+        and file_sha256(source_path) == source_sha256,
+        "observed_source_sha256": contract.get("observed_source_checkpoint_sha256")
+        == source_sha256,
+    }
+    failed = sorted(name for name, passed in checks.items() if not passed)
+    if failed:
+        raise ValueError(
+            "external V2 math recovery candidate failed attestation: "
+            + ", ".join(failed)
+        )
+    return {
+        "kind": "accepted_math_recovery",
+        "recovery_root": str(recovery_root),
+        "summary": str(summary_path),
+        "contract": str(contract_path),
+        "source_checkpoint": str(source_path.resolve()),
+        "source_checkpoint_sha256": source_sha256,
+        "generation_accuracy": observed_accuracy,
+        "minimum_generation_accuracy": minimum_accuracy,
+        "valid_rate": observed_valid_rate,
+        "minimum_valid_rate": minimum_valid_rate,
+    }
+
+
 def select_v2_math_checkpoint(
     config: dict[str, Any],
     *,
@@ -52,7 +133,7 @@ def select_v2_math_checkpoint(
             *sorted(math_root.glob("checkpoint_epoch_*.pth")),
         ]
     )
-    unique: list[tuple[Path, str]] = []
+    unique: list[tuple[Path, str, dict[str, Any]]] = []
     seen_hashes: set[str] = set()
     for path in paths:
         path = path.expanduser().resolve()
@@ -60,21 +141,23 @@ def select_v2_math_checkpoint(
             if candidate_paths:
                 raise FileNotFoundError(path)
             continue
-        if not path.is_relative_to(math_root.resolve()):
-            raise ValueError(
-                f"V2 math selection candidate is outside the math artifact: {path}"
-            )
+        provenance = _candidate_provenance(
+            path,
+            artifact_root=root,
+            math_root=math_root,
+            explicit=bool(candidate_paths),
+        )
         digest = file_sha256(path)
         if digest not in seen_hashes:
             seen_hashes.add(digest)
-            unique.append((path, digest))
+            unique.append((path, digest, provenance))
     if not unique:
         raise FileNotFoundError("V2 math checkpoint selection found no candidates")
 
     _, manifest = load_data_contract(config)
     expected_config_sha256 = config_sha256(config)
     candidates: list[dict[str, Any]] = []
-    for path, digest in unique:
+    for path, digest, provenance in unique:
         checkpoint = load_checkpoint(
             path,
             expected_stage="math",
@@ -133,6 +216,7 @@ def select_v2_math_checkpoint(
             "validation_loss": float(validation.get("loss", 1.0e9)),
             "evaluation_report": str(evaluation_path.resolve()),
             "evaluation_reused": evaluation_reused,
+            "provenance": provenance,
         }
         candidate["score"] = list(candidate_score(candidate))
         candidates.append(candidate)
