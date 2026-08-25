@@ -8,6 +8,7 @@ import math
 import os
 import random
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -208,6 +209,57 @@ def math_epoch_dataset(
         selected, metadata = curriculum_records(
             dataset.records, config, epoch, phase_override=phase_override
         )
+        phase = phase_override or next(
+            (
+                item
+                for item in config["data"].get("curriculum", {}).get("phases", [])
+                if epoch <= int(item["through_epoch"])
+            ),
+            config["data"].get("curriculum", {}).get("phases", [{}])[-1],
+        )
+        selected = _filter_v2_records_for_phase(selected, phase)
+        if not selected:
+            raise RuntimeError(
+                f"curriculum phase {phase.get('name', 'unknown')} selected no records"
+            )
+        metadata = {
+            **metadata,
+            "available_examples": len(selected),
+            "difficulty_counts": dict(
+                sorted(
+                    Counter(
+                        str(record.get("difficulty", "unknown"))
+                        for record in selected
+                    ).items()
+                )
+            ),
+            "source_counts": dict(
+                sorted(
+                    Counter(
+                        str(record.get("source", "unknown")) for record in selected
+                    ).items()
+                )
+            ),
+            "family_counts": dict(
+                sorted(
+                    Counter(
+                        str(record.get("family", "unknown")) for record in selected
+                    ).items()
+                )
+            ),
+            "filters": {
+                "sources": (
+                    sorted(str(value) for value in phase["sources"])
+                    if phase.get("sources") is not None
+                    else None
+                ),
+                "families": (
+                    sorted(str(value) for value in phase["families"])
+                    if phase.get("families") is not None
+                    else None
+                ),
+            },
+        }
     else:
         selected, metadata = curriculum_records(dataset.records, config, epoch)
     target = int(
@@ -242,6 +294,37 @@ def math_epoch_dataset(
         "sampling_with_replacement": sampling_with_replacement,
     }
     return EquationDataset(epoch_records), metadata
+
+
+def _filter_v2_records_for_phase(
+    records: list[dict[str, Any]], phase: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Apply runtime-only semantic filters without changing the sealed generator."""
+
+    configured_sources = phase.get("sources")
+    configured_families = phase.get("families")
+    sources = (
+        {str(value) for value in configured_sources}
+        if configured_sources is not None
+        else None
+    )
+    families = (
+        {str(value) for value in configured_families}
+        if configured_families is not None
+        else None
+    )
+    if sources is not None and not sources:
+        raise ValueError("curriculum phase sources cannot be empty")
+    if families is not None and not families:
+        raise ValueError("curriculum phase families cannot be empty")
+    maximum_difficulty = int(phase.get("max_difficulty", 3))
+    return [
+        record
+        for record in records
+        if int(record.get("difficulty", 3)) <= maximum_difficulty
+        and (sources is None or str(record.get("source", "unknown")) in sources)
+        and (families is None or str(record.get("family", "unknown")) in families)
+    ]
 
 
 def make_scheduler(
@@ -892,9 +975,7 @@ def train_math_tower(
             ):
                 panel_records = validation_dataset.records
                 if phase is not None:
-                    from .v2_data import records_for_curriculum_phase
-
-                    panel_records = records_for_curriculum_phase(
+                    panel_records = _filter_v2_records_for_phase(
                         panel_records, phase
                     )
                     if not panel_records:

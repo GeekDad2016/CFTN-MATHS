@@ -129,6 +129,19 @@ def test_focused_curriculum_can_require_sampling_without_replacement():
             "family": "variables_both_sides",
         }
         for index in range(3)
+    ] + [
+        {
+            "record_id": "wrong-family",
+            "difficulty": 1,
+            "source": "cftn_generated",
+            "family": "arithmetic",
+        },
+        {
+            "record_id": "wrong-source",
+            "difficulty": 1,
+            "source": "deepmind",
+            "family": "variables_both_sides",
+        },
     ]
     config = {
         "data": {
@@ -138,7 +151,13 @@ def test_focused_curriculum_can_require_sampling_without_replacement():
                 "examples_per_epoch": 3,
                 "sampling": "without_replacement",
                 "phases": [
-                    {"name": "focused", "through_epoch": 1, "max_difficulty": 1}
+                    {
+                        "name": "focused",
+                        "through_epoch": 1,
+                        "max_difficulty": 1,
+                        "sources": ["cftn_generated"],
+                        "families": ["variables_both_sides"],
+                    }
                 ],
             },
         }
@@ -152,6 +171,12 @@ def test_focused_curriculum_can_require_sampling_without_replacement():
     assert len({row["record_id"] for row in sampled.records}) == 3
     assert metadata["sampling_policy"] == "without_replacement"
     assert metadata["sampling_with_replacement"] is False
+    assert metadata["source_counts"] == {"cftn_generated": 3}
+    assert metadata["family_counts"] == {"variables_both_sides": 3}
+    assert metadata["filters"] == {
+        "sources": ["cftn_generated"],
+        "families": ["variables_both_sides"],
+    }
     config["data"]["curriculum"]["examples_per_epoch"] = 4
     with pytest.raises(RuntimeError, match="without replacement"):
         math_epoch_dataset(EquationDataset(records), config, epoch=1, seed=719)
