@@ -14,6 +14,8 @@ from typing import Any
 
 STAGE_DIRECTORIES = {
     "train_math": "math",
+    "math_shared_trace_recovery": "math_shared_trace_recovery",
+    "math_answer_recovery": "math_answer_recovery",
     "select_math_checkpoint": "math_checkpoint_selection",
     "evaluate_math": "evaluation_math_v2",
     "train_learned_dispatcher": "learned_dispatcher_v2",

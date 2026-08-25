@@ -4,6 +4,7 @@ import json
 
 import torch
 
+from cftn_text.dataset import PRIVATE_MATH_INPUT_VIEW
 from cftn_text.math_validation import (
     DEFAULT_V2_GENERATION_VALIDATION,
     evaluate_generation_panel,
@@ -114,3 +115,37 @@ def test_generation_panel_reports_failures_and_writes_audit_rows(
     assert report["by_family"]["fraction"]["accuracy"] == 0.0
     assert report["failure_examples"][0]["expected_answer"] == "1/2"
     assert len([json.loads(line) for line in rows_path.read_text().splitlines()]) == 2
+
+
+def test_generation_panel_uses_the_declared_input_view(monkeypatch):
+    record = _record("cftn_generated", "variables_both_sides", 1, "2")
+    record["math_problem"] = "PRIVATE ROLE-MAPPED REQUEST"
+
+    def fake_generate(_model, _tokenizer, problems, *, max_new_tokens):
+        assert problems == ["PRIVATE ROLE-MAPPED REQUEST"]
+        return ["<answer>2</answer>"], [None]
+
+    monkeypatch.setattr(
+        "cftn_text.specialist_evaluation.generate_math_tower", fake_generate
+    )
+
+    class Model(torch.nn.Module):
+        max_sequence_length = 256
+
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+
+    report = evaluate_generation_panel(
+        Model(),
+        ByteMathTokenizer(),
+        [record],
+        maximum_examples=1,
+        batch_size=1,
+        max_new_tokens=32,
+        failure_examples=1,
+        input_view=PRIVATE_MATH_INPUT_VIEW,
+    )
+
+    assert report["input_view"] == PRIVATE_MATH_INPUT_VIEW
+    assert report["accuracy"] == 1.0

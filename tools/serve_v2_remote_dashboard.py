@@ -39,6 +39,7 @@ sensitive_names = {
 sensitive_suffixes = ("_api_key", "_access_token", "_auth_token", "_password", "_secret")
 stage_directories = {
     "train_math": "math",
+    "math_shared_trace_recovery": "math_shared_trace_recovery",
     "math_answer_recovery": "math_answer_recovery",
     "select_math_checkpoint": "math_checkpoint_selection",
     "evaluate_math": "evaluation_math_v2",
@@ -151,11 +152,22 @@ training_contract = redact({
     },
 })
 stage = str(pipeline.get("current_stage") or "")
-recovery_root = artifact_root / "math_answer_recovery"
-recovery_contract = read_json(recovery_root / "recovery_contract.json")
-recovery_status = read_json(recovery_root / "status.json")
+recovery_stage = None
+recovery_root = None
+recovery_contract = {}
+recovery_status = {}
 recovery_terminal_states = {"completed", "failed_acceptance", "error"}
-if recovery_contract and str(recovery_status.get("state") or "starting") not in recovery_terminal_states:
+for candidate_stage in ("math_shared_trace_recovery", "math_answer_recovery"):
+    candidate_root = artifact_root / candidate_stage
+    candidate_contract = read_json(candidate_root / "recovery_contract.json")
+    candidate_status = read_json(candidate_root / "status.json")
+    if candidate_contract and str(candidate_status.get("state") or "starting") not in recovery_terminal_states:
+        recovery_stage = candidate_stage
+        recovery_root = candidate_root
+        recovery_contract = candidate_contract
+        recovery_status = candidate_status
+        break
+if recovery_root is not None:
     recovery_curriculum = dict(recovery_contract.get("curriculum") or {})
     recovery_curriculum["phases"] = list(recovery_contract.get("phases") or [])
     recovery_math_training = dict(recovery_contract.get("math_training") or {})
@@ -168,7 +180,7 @@ if recovery_contract and str(recovery_status.get("state") or "starting") not in 
         "validation_examples": config.get("data", {}).get("validation_examples"),
         "math_training": recovery_math_training,
     })
-    stage = "math_answer_recovery"
+    stage = str(recovery_stage)
     pipeline = dict(pipeline)
     pipeline["state"] = str(recovery_status.get("state") or "starting")
     pipeline["current_stage"] = stage
@@ -220,9 +232,9 @@ for path in artifact_root.rglob("wandb_run.json"):
     parsed = read_json(path)
     if parsed:
         wandb_runs.append({"path": str(path), **redact(parsed)})
-if stage == "math_answer_recovery":
-    stdout = tail(artifact_root / "math_answer_recovery.stdout.log")
-    stderr = tail(artifact_root / "math_answer_recovery.stderr.log")
+if stage in {"math_shared_trace_recovery", "math_answer_recovery"}:
+    stdout = tail(artifact_root / f"{stage}.stdout.log")
+    stderr = tail(artifact_root / f"{stage}.stderr.log")
 else:
     stdout = tail(artifact_root / "pipeline_logs" / f"{stage}.stdout.log") if stage else {}
     stderr = tail(artifact_root / "pipeline_logs" / f"{stage}.stderr.log") if stage else {}

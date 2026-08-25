@@ -1,0 +1,45 @@
+{
+  "format": "cftn_text_v2_math_shared_trace_recovery_v1",
+  "source_checkpoint_sha256": "fe2c056a1ee1d4a3514537681d82124b0312f45c27f72f8e73d2afc747d53973",
+  "require_acceptance_for_best": true,
+  "math_training": {
+    "max_epochs": 20,
+    "minimum_epochs": 1,
+    "early_stop_patience": 20,
+    "learning_rate": 0.00005,
+    "minimum_learning_rate": 0.0000025,
+    "warmup_fraction": 0.02,
+    "input_view": "shared_problem_v1",
+    "target_mode": "full_trace_v1",
+    "answer_token_weight": 4.0,
+    "keep_latest_checkpoints": 5,
+    "generation_validation": {
+      "enabled": true,
+      "every_epochs": 1,
+      "examples": 512,
+      "batch_size": 16,
+      "max_new_tokens": 256,
+      "failure_examples": 12
+    }
+  },
+  "curriculum": {
+    "examples_per_epoch": 25000,
+    "sampling": "without_replacement"
+  },
+  "phases": [
+    {
+      "name": "variables_both_sides_shared_trace",
+      "through_epoch": 20,
+      "max_difficulty": 1,
+      "sources": [
+        "cftn_generated"
+      ],
+      "families": [
+        "variables_both_sides"
+      ],
+      "minimum_generation_accuracy": 0.95,
+      "minimum_valid_rate": 0.99,
+      "stop_on_pass": true
+    }
+  ]
+}

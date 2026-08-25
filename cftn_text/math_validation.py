@@ -9,6 +9,7 @@ from typing import Any, Iterable
 import torch
 import torch.nn.functional as F
 
+from .dataset import SHARED_MATH_INPUT_VIEW, math_problem_for_view
 from .tokenizer import ByteMathTokenizer, SequenceTooLongError
 from .v2_metrics import extract_v2_answer, score_v2_generations
 
@@ -140,6 +141,7 @@ def evaluate_generation_panel(
     max_new_tokens: int,
     failure_examples: int,
     rows_path: str | Path | None = None,
+    input_view: str = SHARED_MATH_INPUT_VIEW,
 ) -> dict[str, Any]:
     """Run a compact native greedy-generation panel during math training."""
 
@@ -151,7 +153,7 @@ def evaluate_generation_panel(
     for record in selected:
         try:
             tokenizer.encode_generation_prefix(
-                str(record["problem"]), model.max_sequence_length
+                math_problem_for_view(record, input_view), model.max_sequence_length
             )
         except SequenceTooLongError:
             excluded_over_context += 1
@@ -164,7 +166,7 @@ def evaluate_generation_panel(
         generated, _ = generate_math_tower(
             model,
             tokenizer,
-            [str(record["problem"]) for record in chunk],
+            [math_problem_for_view(record, input_view) for record in chunk],
             max_new_tokens=int(max_new_tokens),
         )
         generations.extend(generated)
@@ -195,6 +197,7 @@ def evaluate_generation_panel(
     return {
         **metrics,
         "panel_policy": "deterministic_round_robin_source_family_difficulty_v1",
+        "input_view": str(input_view),
         "requested_examples": int(maximum_examples),
         "excluded_over_context": excluded_over_context,
         "excluded_over_context_rate": excluded_over_context

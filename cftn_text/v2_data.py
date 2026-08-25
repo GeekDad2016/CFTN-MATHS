@@ -1615,6 +1615,38 @@ def audit_v2_manifest(manifest: dict[str, Any], root: str | Path) -> dict[str, A
     }
 
 
+def records_for_curriculum_phase(
+    records: Iterable[dict[str, Any]],
+    phase: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Apply an auditable conceptual curriculum filter to V2 records."""
+
+    maximum = int(phase["max_difficulty"])
+    configured_sources = phase.get("sources")
+    configured_families = phase.get("families")
+    sources = (
+        {str(value) for value in configured_sources}
+        if configured_sources is not None
+        else None
+    )
+    families = (
+        {str(value) for value in configured_families}
+        if configured_families is not None
+        else None
+    )
+    if sources is not None and not sources:
+        raise ValueError("curriculum phase sources cannot be empty")
+    if families is not None and not families:
+        raise ValueError("curriculum phase families cannot be empty")
+    return [
+        record
+        for record in records
+        if int(record.get("difficulty", 3)) <= maximum
+        and (sources is None or str(record.get("source", "unknown")) in sources)
+        and (families is None or str(record.get("family", "unknown")) in families)
+    ]
+
+
 def curriculum_records(
     records: list[dict[str, Any]],
     config: dict[str, Any],
@@ -1634,7 +1666,7 @@ def curriculum_records(
         curriculum["phases"][-1],
     )
     maximum = int(phase["max_difficulty"])
-    selected = [record for record in records if int(record.get("difficulty", 3)) <= maximum]
+    selected = records_for_curriculum_phase(records, phase)
     if not selected:
         raise RuntimeError(f"curriculum phase {phase['name']} selected no records")
     difficulty_counts = Counter(str(record.get("difficulty", "unknown")) for record in selected)
@@ -1651,4 +1683,16 @@ def curriculum_records(
         "difficulty_counts": dict(sorted(difficulty_counts.items())),
         "source_counts": dict(sorted(source_counts.items())),
         "family_counts": dict(sorted(family_counts.items())),
+        "filters": {
+            "sources": (
+                sorted(str(value) for value in phase["sources"])
+                if phase.get("sources") is not None
+                else None
+            ),
+            "families": (
+                sorted(str(value) for value in phase["families"])
+                if phase.get("families") is not None
+                else None
+            ),
+        },
     }

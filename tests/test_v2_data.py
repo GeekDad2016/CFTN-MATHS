@@ -54,6 +54,38 @@ def test_recovery_curriculum_override_is_audited_and_reports_cohorts():
     assert metadata["family_counts"] == {"easy": 1}
 
 
+def test_curriculum_filters_source_and_family_not_just_entropy_difficulty():
+    records = [
+        {"difficulty": 1, "source": "cftn_generated", "family": "variables_both_sides"},
+        {"difficulty": 1, "source": "cftn_generated", "family": "arithmetic"},
+        {"difficulty": 1, "source": "deepmind", "family": "variables_both_sides"},
+    ]
+    config = {
+        "data": {
+            "curriculum": {
+                "enabled": True,
+                "phases": [{"name": "unused", "through_epoch": 1, "max_difficulty": 3}],
+            }
+        }
+    }
+    phase = {
+        "name": "focused",
+        "max_difficulty": 1,
+        "sources": ["cftn_generated"],
+        "families": ["variables_both_sides"],
+    }
+
+    selected, metadata = curriculum_records(
+        records, config, 1, phase_override=phase
+    )
+
+    assert selected == [records[0]]
+    assert metadata["filters"] == {
+        "sources": ["cftn_generated"],
+        "families": ["variables_both_sides"],
+    }
+
+
 def test_atomic_writer_recovers_from_partial_fuse_eio_without_duplicate_rows(
     tmp_path: Path, monkeypatch
 ):

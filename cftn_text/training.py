@@ -31,7 +31,12 @@ from .checkpoint import (
 from .config import config_sha256
 from .complementary import apply_view_mode
 from .data_generator import audit_manifest, file_sha256, prepare_manifests
-from .dataset import CFTNCollator, EquationDataset, MathCollator
+from .dataset import (
+    CFTNCollator,
+    EquationDataset,
+    MathCollator,
+    SHARED_MATH_INPUT_VIEW,
+)
 from .gpt_receiver import FrozenCausalLMTower
 from .math_tower import MathTower
 from .math_validation import (
@@ -210,15 +215,31 @@ def math_epoch_dataset(
             "examples_per_epoch", len(dataset)
         )
     )
+    sampling_policy = str(
+        config["data"].get("curriculum", {}).get("sampling", "auto")
+    )
+    if sampling_policy not in {"auto", "without_replacement", "with_replacement"}:
+        raise ValueError(f"unsupported curriculum sampling policy: {sampling_policy}")
+    if sampling_policy == "without_replacement" and target > len(selected):
+        raise RuntimeError(
+            f"curriculum requested {target} examples without replacement, but "
+            f"phase {metadata.get('phase', 'unknown')} exposes only {len(selected)}"
+        )
     rng = random.Random(int(seed) + int(epoch) * 1_000_003)
-    if len(selected) >= target:
+    if sampling_policy == "with_replacement":
+        epoch_records = [selected[rng.randrange(len(selected))] for _ in range(target)]
+        sampling_with_replacement = True
+    elif len(selected) >= target:
         epoch_records = rng.sample(selected, target)
+        sampling_with_replacement = False
     else:
         epoch_records = [selected[rng.randrange(len(selected))] for _ in range(target)]
+        sampling_with_replacement = True
     metadata = {
         **metadata,
         "examples_this_epoch": len(epoch_records),
-        "sampling_with_replacement": len(selected) < target,
+        "sampling_policy": sampling_policy,
+        "sampling_with_replacement": sampling_with_replacement,
     }
     return EquationDataset(epoch_records), metadata
 
@@ -584,6 +605,9 @@ def train_math_tower(
     train_dataset = split_dataset(root, manifest, "train")
     validation_dataset = split_dataset(root, manifest, "validation")
     contract = copy.deepcopy(recovery_contract or {})
+    require_acceptance_for_best = bool(
+        contract.get("require_acceptance_for_best", False)
+    )
     contract_sha256 = (
         hashlib.sha256(
             json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -601,6 +625,7 @@ def train_math_tower(
         tokenizer,
         int(config["data"]["max_math_length"]),
         target_mode=str(settings.get("target_mode", "full_trace_v1")),
+        input_view=str(settings.get("input_view", SHARED_MATH_INPUT_VIEW)),
     )
     early_stopping_enabled = not bool(disable_early_stopping)
     artifact_dir = Path(
@@ -632,7 +657,7 @@ def train_math_tower(
         weight_decay=float(settings["weight_decay"]),
     )
     scheduled_examples = int(
-        config["data"].get("curriculum", {}).get(
+        curriculum_config["data"].get("curriculum", {}).get(
             "examples_per_epoch", len(train_dataset)
         )
     )
@@ -652,6 +677,7 @@ def train_math_tower(
     start_epoch = 1
     global_step = 0
     best_metric = float("-inf")
+    best_checkpoint_metric: float | None = None
     patience = 0
     source_provenance: dict[str, Any] | None = None
     if resume and initial_checkpoint is not None:
@@ -696,6 +722,7 @@ def train_math_tower(
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint["global_step"])
         best_metric = float(checkpoint["best_metric"])
+        best_checkpoint_metric = best_metric
         patience = int(checkpoint["patience"])
     write_status(
         _status_payload(
@@ -865,12 +892,15 @@ def train_math_tower(
             ):
                 panel_records = validation_dataset.records
                 if phase is not None:
-                    maximum_difficulty = int(phase["max_difficulty"])
-                    panel_records = [
-                        record
-                        for record in panel_records
-                        if int(record.get("difficulty", 3)) <= maximum_difficulty
-                    ]
+                    from .v2_data import records_for_curriculum_phase
+
+                    panel_records = records_for_curriculum_phase(
+                        panel_records, phase
+                    )
+                    if not panel_records:
+                        raise RuntimeError(
+                            f"generation validation phase {phase['name']} selected no records"
+                        )
                 generation_rows_path = (
                     work_dir / f"generation_validation_epoch_{epoch:04d}.jsonl"
                 )
@@ -889,6 +919,7 @@ def train_math_tower(
                         generation_settings.get("failure_examples", 8)
                     ),
                     rows_path=generation_rows_path,
+                    input_view=collator.input_view,
                 )
                 if work_dir != artifact_dir:
                     atomic_copy_file(
@@ -917,15 +948,13 @@ def train_math_tower(
                     validation["answer_head_accuracy"]
                 ) - 1e-6 * float(validation["loss"])
                 selection_basis = "answer_head_accuracy"
-            improved = selection_metric > best_metric
-            if improved:
-                best_metric = selection_metric
-                patience = 0
-            else:
-                patience += 1
-            phase_gate = None
-            if phase is not None and epoch == int(phase["through_epoch"]):
-                phase_gate = {
+            phase_acceptance = None
+            if (
+                phase is not None
+                and "minimum_generation_accuracy" in phase
+                and "minimum_valid_rate" in phase
+            ):
+                phase_acceptance = {
                     "phase": str(phase["name"]),
                     "minimum_generation_accuracy": float(
                         phase["minimum_generation_accuracy"]
@@ -937,12 +966,39 @@ def train_math_tower(
                     "valid_rate": float(
                         (generation_validation or {}).get("valid_rate", 0.0)
                     ),
+                    "terminal_epoch": epoch == int(phase["through_epoch"]),
                 }
-                phase_gate["pass"] = (
-                    phase_gate["generation_accuracy"]
-                    >= phase_gate["minimum_generation_accuracy"]
-                    and phase_gate["valid_rate"] >= phase_gate["minimum_valid_rate"]
+                phase_acceptance["pass"] = (
+                    phase_acceptance["generation_accuracy"]
+                    >= phase_acceptance["minimum_generation_accuracy"]
+                    and phase_acceptance["valid_rate"]
+                    >= phase_acceptance["minimum_valid_rate"]
                 )
+            improved = selection_metric > best_metric
+            if improved:
+                best_metric = selection_metric
+                patience = 0
+            else:
+                patience += 1
+            checkpoint_eligible = (
+                not require_acceptance_for_best
+                or phase_acceptance is None
+                or bool(phase_acceptance["pass"])
+            )
+            promote_best = checkpoint_eligible and (
+                improved
+                or (
+                    phase_acceptance is not None
+                    and bool(phase_acceptance["pass"])
+                    and not best_path.exists()
+                )
+            )
+            phase_gate = (
+                phase_acceptance
+                if phase_acceptance is not None
+                and bool(phase_acceptance["terminal_epoch"])
+                else None
+            )
             final_metrics = {
                 "epoch": epoch,
                 "global_step": global_step,
@@ -957,6 +1013,15 @@ def train_math_tower(
                 "curriculum": curriculum,
                 "recovery_contract_sha256": contract_sha256,
                 "source_checkpoint": source_provenance,
+                "input_view": collator.input_view,
+                "target_mode": collator.target_mode,
+                "answer_token_weight": float(
+                    settings.get("answer_token_weight", 1.0)
+                ),
+                "require_acceptance_for_best": require_acceptance_for_best,
+                "checkpoint_eligible": checkpoint_eligible,
+                "checkpoint_promoted": promote_best,
+                "curriculum_acceptance": phase_acceptance,
                 "curriculum_gate": phase_gate,
                 "trainable_parameters": sum(
                     parameter.numel() for parameter in model.parameters()
@@ -1022,7 +1087,8 @@ def train_math_tower(
                     artifact_dir,
                     int(settings.get("keep_latest_checkpoints", 3)),
                 )
-            if improved:
+            if promote_best:
+                best_checkpoint_metric = selection_metric
                 atomic_torch_save(payload, working_best_path)
                 if working_best_path != best_path:
                     atomic_copy_file(working_best_path, best_path)
@@ -1036,6 +1102,14 @@ def train_math_tower(
                     started_at=started_at,
                 ),
                 )
+            if (
+                phase_acceptance is not None
+                and bool(phase_acceptance["pass"])
+                and bool(phase.get("stop_on_pass", False))
+            ):
+                stop_reason = f"curriculum_gate_passed_{phase['name']}"
+                state = "completed"
+                break
             if phase_gate is not None and not phase_gate["pass"]:
                 stop_reason = f"curriculum_gate_failed_{phase['name']}"
                 state = "failed_acceptance"
@@ -1064,13 +1138,17 @@ def train_math_tower(
         )
         wandb_tracker.finish(exit_code=1)
         raise
+    best_checkpoint_exists = best_path.is_file()
     result = {
         "stage": "math",
         "state": state,
         "stop_reason": stop_reason,
         "early_stopping_enabled": early_stopping_enabled,
-        "best_checkpoint": str(best_path.resolve()),
-        "best_checkpoint_sha256": file_sha256(best_path),
+        "best_checkpoint": str(best_path.resolve()) if best_checkpoint_exists else None,
+        "best_checkpoint_sha256": (
+            file_sha256(best_path) if best_checkpoint_exists else None
+        ),
+        "best_checkpoint_metric": best_checkpoint_metric,
         "final_metrics": final_metrics,
         "recovery_contract_sha256": contract_sha256,
         "source_checkpoint": source_provenance,

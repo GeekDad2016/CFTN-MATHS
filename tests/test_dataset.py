@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import torch
 
-from cftn_text.dataset import MathCollator
+from cftn_text.dataset import (
+    MathCollator,
+    PRIVATE_MATH_INPUT_VIEW,
+    SHARED_MATH_INPUT_VIEW,
+)
 from cftn_text.tokenizer import ByteMathTokenizer
 
 
@@ -55,3 +59,29 @@ def test_answer_only_collator_canonicalizes_mixed_trace_styles():
         decoded = tokenizer.decode(row[int(prefix_length) :])
         assert decoded == expected
     assert torch.equal(batch["math_labels"], batch["math_answer_labels"])
+
+
+def test_math_collator_requires_an_explicit_consistent_input_view():
+    tokenizer = ByteMathTokenizer()
+    record = {
+        "problem": "PUBLIC: solve 2*x+1=5.",
+        "math_problem": "PRIVATE: use the hidden role mapping.",
+        "target_trace": "<work>2*x=4</work><answer>2</answer>",
+        "normalized_answer": "2",
+    }
+
+    shared = MathCollator(
+        tokenizer, 512, input_view=SHARED_MATH_INPUT_VIEW
+    )([record])
+    private = MathCollator(
+        tokenizer, 512, input_view=PRIVATE_MATH_INPUT_VIEW
+    )([record])
+    shared_prefix = tokenizer.decode(
+        shared["math_input_ids"][0, : int(shared["math_prefix_lengths"][0])]
+    )
+    private_prefix = tokenizer.decode(
+        private["math_input_ids"][0, : int(private["math_prefix_lengths"][0])]
+    )
+
+    assert "PUBLIC" in shared_prefix and "PRIVATE" not in shared_prefix
+    assert "PRIVATE" in private_prefix and "PUBLIC" not in private_prefix

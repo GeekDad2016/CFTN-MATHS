@@ -140,6 +140,18 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("V2 curriculum through_epoch values must increase")
         if through_epochs[-1] != int(config["math_training"]["max_epochs"]):
             raise ValueError("the final V2 curriculum phase must reach max_epochs")
+        sampling = str(curriculum.get("sampling", "auto"))
+        if sampling not in {"auto", "without_replacement", "with_replacement"}:
+            raise ValueError("V2 curriculum sampling policy is not recognized")
+        math_training = config["math_training"]
+        if math_training.get("input_view") != "shared_problem_v1":
+            raise ValueError(
+                "V2 standalone math training must use the shared problem view"
+            )
+        if math_training.get("target_mode") != "full_trace_v1":
+            raise ValueError("V2 standalone math training must retain worked traces")
+        if float(math_training.get("answer_token_weight", 0.0)) <= 0.0:
+            raise ValueError("V2 math answer token weight must be positive")
         tower = config["math_tower"]
         if tower.get("tokenizer_kind") != "lossless_utf8_bytes_v1":
             raise ValueError("V2 proof math tower must register its byte tokenizer")

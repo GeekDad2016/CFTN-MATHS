@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--config", default="config/v2_broad_math.yaml")
     parser.add_argument(
         "--recovery-contract",
-        default="config/v2_math_checkpoint45_recovery.json",
+        default="config/v2_math_checkpoint45_shared_trace_recovery.json",
     )
     parser.add_argument("--source-checkpoint", required=True)
     parser.add_argument("--artifact-directory", required=True)
@@ -31,7 +31,11 @@ def main() -> None:
     config = load_config(args.config)
     contract_path = Path(args.recovery_contract).expanduser().resolve()
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    if contract.get("format") != "cftn_text_v2_math_answer_recovery_v1":
+    supported_formats = {
+        "cftn_text_v2_math_answer_recovery_v1",
+        "cftn_text_v2_math_shared_trace_recovery_v1",
+    }
+    if contract.get("format") not in supported_formats:
         raise ValueError("unsupported V2 math recovery contract")
     source = Path(args.source_checkpoint).expanduser().resolve()
     observed_source_sha256 = file_sha256(source)
@@ -59,7 +63,7 @@ def main() -> None:
         disable_early_stopping=True,
         wandb_options=wandb_options_from_args(
             args,
-            default_run_name="v2-math-checkpoint45-answer-recovery",
+            default_run_name="v2-math-checkpoint45-shared-trace-recovery",
         ),
         initial_checkpoint=source,
         artifact_directory=artifact_directory,

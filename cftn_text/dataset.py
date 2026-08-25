@@ -14,6 +14,9 @@ from .tokenizer import ByteMathTokenizer, SequenceTooLongError, pad_1d
 _ANSWER_VALUE_SENTINEL = -2_000_000_000
 _MIN_SIGNED_INT64 = -(1 << 63)
 _MAX_SIGNED_INT64 = (1 << 63) - 1
+SHARED_MATH_INPUT_VIEW = "shared_problem_v1"
+PRIVATE_MATH_INPUT_VIEW = "private_math_problem_v1"
+MATH_INPUT_VIEWS = {SHARED_MATH_INPUT_VIEW, PRIVATE_MATH_INPUT_VIEW}
 
 
 def _tensor_safe_answer_value(record: dict[str, Any]) -> int:
@@ -75,6 +78,21 @@ def _external_encode(tokenizer: ExternalTokenizer, text: str) -> list[int]:
         return list(tokenizer.encode(text))
 
 
+def math_problem_for_view(record: dict[str, Any], input_view: str) -> str:
+    """Resolve the exact text contract presented to the standalone math tower."""
+
+    view = str(input_view)
+    if view == SHARED_MATH_INPUT_VIEW:
+        problem = record.get("problem")
+    elif view == PRIVATE_MATH_INPUT_VIEW:
+        problem = record.get("math_problem") or record.get("problem")
+    else:
+        raise ValueError(f"unsupported math input view: {view}")
+    if problem is None or not str(problem).strip():
+        raise ValueError(f"math input view {view} resolved to an empty problem")
+    return str(problem)
+
+
 class MathCollator:
     def __init__(
         self,
@@ -82,12 +100,16 @@ class MathCollator:
         max_length: int,
         *,
         target_mode: str = "full_trace_v1",
+        input_view: str = SHARED_MATH_INPUT_VIEW,
     ) -> None:
         self.tokenizer = tokenizer
         self.max_length = int(max_length)
         self.target_mode = str(target_mode)
+        self.input_view = str(input_view)
         if self.target_mode not in {"full_trace_v1", "answer_only_v1"}:
             raise ValueError(f"unsupported math target mode: {self.target_mode}")
+        if self.input_view not in MATH_INPUT_VIEWS:
+            raise ValueError(f"unsupported math input view: {self.input_view}")
 
     def _target(self, record: dict[str, Any]) -> str:
         if self.target_mode == "full_trace_v1":
@@ -101,7 +123,7 @@ class MathCollator:
         targets = [self._target(record) for record in records]
         encoded = [
             self.tokenizer.encode_training_example(
-                record.get("math_problem", record["problem"]),
+                math_problem_for_view(record, self.input_view),
                 target,
                 self.max_length,
             )
@@ -151,7 +173,13 @@ class CFTNCollator(MathCollator):
         max_gpt_length: int,
         use_chat_template: bool | None = None,
     ) -> None:
-        super().__init__(math_tokenizer, max_math_length)
+        # Joint CFTN training intentionally uses the complementary private
+        # math view. Standalone specialist training uses the shared view.
+        super().__init__(
+            math_tokenizer,
+            max_math_length,
+            input_view=PRIVATE_MATH_INPUT_VIEW,
+        )
         self.gpt_tokenizer = gpt_tokenizer
         self.max_gpt_length = int(max_gpt_length)
         self.use_chat_template = (
