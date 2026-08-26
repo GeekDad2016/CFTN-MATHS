@@ -1,6 +1,7 @@
 """Per-example, per-role loss for the opt-in verified-procedure experiment."""
 from __future__ import annotations
 
+import math
 import re
 import torch
 import torch.nn.functional as F
@@ -10,6 +11,12 @@ from .verified_math_data import GROUPS, VERSION, legacy_spans, validate_verified
 
 
 class ComputationCollator(MathCollator):
+    def supervision_spans(self, row: dict) -> list[dict]:
+        if row.get("schema_version") == VERSION:
+            validate_verified_record(row)
+            return row["supervision_spans"]
+        return legacy_spans(row)
+
     def __call__(self, records: list[dict]) -> dict:
         if self.target_mode != "full_trace_v1":
             raise ValueError("computation supervision requires full trace targets")
@@ -17,11 +24,7 @@ class ComputationCollator(MathCollator):
         roles = torch.full_like(batch["math_labels"], -100)
         for index, row in enumerate(records):
             target = row["target_trace"]
-            if row.get("schema_version") == VERSION:
-                validate_verified_record(row)
-                spans = row["supervision_spans"]
-            else:
-                spans = legacy_spans(row)
+            spans = self.supervision_spans(row)
             prefix = int(batch["math_prefix_lengths"][index])
             size = len(self.tokenizer.encode(target))
             roles[index, prefix:prefix + size + 1] = GROUPS["format"]  # includes EOS
@@ -46,13 +49,17 @@ class ComputationCollator(MathCollator):
         return batch
 
 
-def computation_loss(logits: torch.Tensor, labels: torch.Tensor, roles: torch.Tensor) -> torch.Tensor:
+def computation_loss(logits: torch.Tensor, labels: torch.Tensor, roles: torch.Tensor,
+                     *, weights: tuple[float, float, float] = (0.1, 0.7, 0.2),
+                     require_computation: bool = True) -> torch.Tensor:
     """70% newly computed results, 20% copies, 10% syntax; equal example weight.
 
     Each present role is averaged within an example first. Missing roles are
     renormalized; long traces cannot dominate simply by containing more bytes.
     This is an experimental objective, not a change to the production default.
     """
+    if len(weights) != 3 or any(not math.isfinite(w) or w <= 0 for w in weights):
+        raise ValueError("three finite positive role weights required")
     if logits.shape[:2] != labels.shape or roles.shape != labels.shape:
         raise ValueError("incompatible computation-loss shapes")
     targets, groups = labels[:, 1:], roles[:, 1:]
@@ -60,15 +67,17 @@ def computation_loss(logits: torch.Tensor, labels: torch.Tensor, roles: torch.Te
         raise ValueError("role mask differs from supervised label mask")
     if bool(((groups != -100) & ((groups < 0) | (groups > 2))).any()):
         raise ValueError("invalid supervision role")
-    if bool(~groups.eq(GROUPS["compute"]).any(dim=1).all()):
+    if require_computation and bool(~groups.eq(GROUPS["compute"]).any(dim=1).all()):
         raise ValueError("every example needs a computation target")
+    if not bool(groups.ne(-100).any(dim=1).all()):
+        raise ValueError("every example needs a supervised target")
     losses = F.cross_entropy(logits[:, :-1].float().transpose(1, 2), targets,
                             ignore_index=-100, reduction="none")
     total = losses.new_zeros(losses.shape[0])
-    weights = losses.new_zeros(losses.shape[0])
-    for role, weight in ((0, 0.1), (1, 0.7), (2, 0.2)):
+    present_weights = losses.new_zeros(losses.shape[0])
+    for role, weight in enumerate(weights):
         mask = groups.eq(role)
         count = mask.sum(dim=1)
         total += weight * (losses * mask).sum(dim=1) / count.clamp_min(1)
-        weights += weight * count.gt(0)
-    return (total / weights).mean()
+        present_weights += weight * count.gt(0)
+    return (total / present_weights).mean()

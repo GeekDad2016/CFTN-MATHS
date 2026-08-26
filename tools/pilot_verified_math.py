@@ -227,7 +227,7 @@ def assert_idle() -> None:
             continue
         text = " ".join(os.fsdecode(arg) for arg in argv)
         if any(marker in text for marker in ("tools.recover_v2_math", "tools.run_v2_experiment",
-                  "tools.train_", "tools.evaluate_", "tools.pilot_verified_math")):
+                  "tools.train_", "tools.evaluate_", "tools.pilot_")):
             raise RuntimeError("another CFTN trainer/evaluator/pilot exists")
     gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used",
                                    "--format=csv,noheader,nounits"], text=True)

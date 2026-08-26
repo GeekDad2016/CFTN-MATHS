@@ -180,6 +180,45 @@ explicit non-promotable format. There is no pipeline-launch code in this tool.
 Pilot results, costs, generation rows and any negative findings belong in
 `MATH_SUPERVISION_PILOT_RESULTS.md` after execution.
 
+### Prerequisite follow-up after the first failed screen
+
+The first worked-trace pilot failed every screen; see
+[the preserved results](MATH_SUPERVISION_PILOT_RESULTS.md). More elaborate correct
+labels alone did not make the model learn their operand binding or grammar.
+
+`math_primitive_data.py` and `pilot_math_primitives.py` therefore implement a
+separate, bounded prerequisite experiment, not a production curriculum change:
+
+- Seven short lessons: public operand/coefficient extraction, signed decimal
+  scaling, decimal restoration, signed integer multiplication/subtraction, and
+  exact integer division. Decimal conversions are explicit computations;
+  literal extraction preserves the visible operand spelling.
+- Mathematical-object hashes assign train/validation before rendering. Swapped
+  multiplication operands and equivalent decimal spellings stay in one split;
+  forward/reverse decimal conversion of the same value/scale also stay together.
+  This is not a claim of full algebraic equivalence deduplication.
+- Answer-only and compact worked targets share questions and sampled schedules.
+  The experimental role weights are 50% computation, 25% copying, 25% format,
+  per-example/role normalized. Copy-only lessons explicitly opt out of the
+  computation-required assertion; the existing objective's defaults stay intact.
+- 300 updates on 28 tiny training examples first test representational recall
+  (>=95% exact targets, >=99% valid, no capped decoding). This is not validation.
+- Only after that gate: 800 updates, 512 training objects per prerequisite,
+  25% unchanged replay, then 32 held-out objects per prerequisite and the saved
+  32-case replay panels. Each prerequisite needs >=90% exact payload accuracy,
+  >=99% valid and zero caps; each replay drop must be <=3 percentage points.
+- Only after prerequisites pass: at most 400 composition updates, then separate
+  two-step/decimal-product gates (>=85% accuracy, >=99% valid, zero caps), retained
+  prerequisite/replay gates, and original native multiplication/systems/broad
+  panels. Missing/failed gates never count as success.
+- Detached jobs use durable logs, incremental per-batch generation records,
+  status updates, an exclusive diagnostic lock and 40-minute outer timeout.
+  All data, contracts, checkpoints and failures have fresh preserved targets.
+  There is no production checkpoint promotion or long-pipeline launch.
+
+These tests measure whether short skills can first be learned and generalized.
+They do not certify the full V2 task distribution or a future large tower.
+
 ## Durable structure for larger math towers
 
 Use the same principles before increasing width/depth or targeting a 4B tower:
