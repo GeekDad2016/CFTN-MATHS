@@ -219,6 +219,11 @@ capabilities or better data instead of parameters.
 
 ## Acceptance and claim boundary
 
+The 26 August 2026 dataset/supervision audit and opt-in bounded repair protocol
+are documented in [Math dataset design](docs/MATH_DATASET_DESIGN.md). This is a
+diagnostic branch with immutable original data and unchanged production gates;
+it does not authorize a long training run or downstream release.
+
 The final claim requires native competence, pure-language no-harm, low false
 wake, wake precision/recall, exact per-round required sets, positive
 multi-specialist synergy, causal loss under required direction/message

@@ -15,7 +15,7 @@ from cftn_text.verified_math_data import (
     fingerprint, independent_answer, legacy_spans, operate, procedure,
     validate_verified_record, verified_record,
 )
-from tools.pilot_verified_math import screening_decision, training_schedule, write_rows
+from tools.pilot_verified_math import screening_decision, training_schedule, validate_bundle, write_rows
 
 
 def record(family="two_variable_systems", problem=None, answer=None):
@@ -193,6 +193,41 @@ def test_role_balanced_loss_has_gradients_and_padding_invariance():
     assert torch.allclose(loss, computation_loss(logits[:, :5], labels[:, :5], roles[:, :5]))
     with pytest.raises(ValueError):
         computation_loss(logits, labels, roles.masked_fill(roles.eq(1), 0))
+
+
+def test_role_mean_prevents_long_computation_spans_from_dominating():
+    # Same prediction distribution per role; duplicate only compute positions.
+    short_logits = torch.tensor([[[3., 1.], [1., 3.], [2., 1.], [0., 0.]]])
+    short_labels = torch.tensor([[-100, 0, 0, 0]])
+    short_roles = torch.tensor([[-100, 0, 1, 2]])
+    long_logits = torch.cat([short_logits[:, :2], short_logits[:, 1:2].repeat(1, 5, 1), short_logits[:, 2:]], dim=1)
+    long_labels = torch.tensor([[-100] + [0] * 8])
+    long_roles = torch.tensor([[-100, 0] + [1] * 6 + [2]])
+    assert torch.allclose(computation_loss(short_logits, short_labels, short_roles),
+                          computation_loss(long_logits, long_labels, long_roles))
+
+
+def test_bundle_provenance_and_curriculum_are_checked_not_just_digests():
+    from cftn_text.v2_data import iter_local_records
+
+    row = next(r for r in iter_local_records(count=12, split="train", seed=719)
+               if r["family"] == "two_variable_systems")
+    bundle = {"original": row, "verified": verified_record(row),
+              "band": curriculum_band(row), "computation_key": computation_key(row)}
+    validate_bundle(bundle)
+    bad = copy.deepcopy(bundle)
+    bad["band"] = "made_up"
+    with pytest.raises(ValueError, match="curriculum"):
+        validate_bundle(bad)
+    bad = copy.deepcopy(bundle)
+    bad["verified"]["parent_content_id"] = "unrelated"
+    bad["verified"]["record_id"] = fingerprint({k: v for k, v in bad["verified"].items() if k != "record_id"})
+    with pytest.raises(ValueError, match="parent"):
+        validate_bundle(bad)
+    bad = copy.deepcopy(bundle)
+    bad["computation_key"] = "unrelated"
+    with pytest.raises(ValueError, match="split key"):
+        validate_bundle(bad)
 
 
 def test_curriculum_schedule_is_identical_and_replays_every_step():

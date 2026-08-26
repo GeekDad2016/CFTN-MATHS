@@ -158,6 +158,31 @@ def prepare(root: Path, destination: Path, per_family: int = 2048) -> dict:
     return manifest
 
 
+def validate_bundle(bundle: dict) -> None:
+    original, traced = bundle["original"], bundle["verified"]
+    validate_v2_record(original)
+    if original["split"] != "train":
+        raise ValueError("evaluation data in training split")
+    if bundle["computation_key"] != computation_key(original):
+        raise ValueError("incorrect mathematical split key")
+    if original["family"] in TARGET_FAMILIES:
+        if traced is None:
+            raise ValueError("targeted family is missing verified supervision")
+        validate_verified_record(traced)
+        if (traced["parent_record_id"] != original["record_id"]
+                or traced["parent_content_id"] != original["content_id"]
+                or any(traced[key] != original[key] for key in
+                       ("problem", "normalized_answer", "source", "family", "split", "difficulty"))):
+            raise ValueError("derivative parent record mismatch")
+        expected_band = curriculum_band(original)
+    else:
+        if original["family"] not in REPLAY_FAMILIES or traced is not None:
+            raise ValueError("unexpected replay family or changed replay target")
+        expected_band = "replay"
+    if bundle["band"] != expected_band:
+        raise ValueError("incorrect numerical curriculum band")
+
+
 def checked_derivative(root: Path) -> tuple[dict, dict]:
     manifest = json.loads((root / "manifest.json").read_text())
     unsigned = dict(manifest)
@@ -178,13 +203,12 @@ def checked_derivative(root: Path) -> tuple[dict, dict]:
             raise ValueError("derivative count mismatch")
         data[name] = rows
     for bundle in data["train"]:
-        validate_v2_record(bundle["original"])
-        if bundle["original"]["split"] != "train":
-            raise ValueError("evaluation data in training split")
-        if bundle["verified"]:
-            validate_verified_record(bundle["verified"])
-            if bundle["verified"]["parent_record_id"] != bundle["original"]["record_id"]:
-                raise ValueError("derivative parent record mismatch")
+        validate_bundle(bundle)
+    train_keys = [b["computation_key"] for b in data["train"]]
+    eval_keys = {computation_key(r) for name, rows in data.items()
+                 if name not in ("train", "mathqa_triage") for r in rows}
+    if len(set(train_keys)) != len(train_keys) or set(train_keys) & eval_keys:
+        raise ValueError("duplicate training computations or train/evaluation overlap")
     return manifest, data
 
 
@@ -401,7 +425,7 @@ def run(args) -> None:
                 supervised_tokens += int(batch["math_labels"].ne(-100).sum())
                 if step == 1 or step % 25 == 0 or step == args.steps:
                     status = {"state": "training", "arm": arm, "step": step, "steps": args.steps,
-                              "loss_training_batch": float(loss), "grad_norm": float(grad),
+                              "loss_training_batch": float(loss.detach()), "grad_norm": float(grad),
                               "elapsed_seconds": time.monotonic() - train_started}
                     append_jsonl(status, arm_dir / "metrics.jsonl")
                     atomic_json_dump(status, output / "status.json")
@@ -419,7 +443,7 @@ def run(args) -> None:
         reports[arm] = evaluate(model, panels, arm, arm_dir, contract["max_new_tokens"])
         del model
         torch.cuda.empty_cache()
-    # Validate source preservation after every arm and all evaluation work.
+    # Validate source preservation after all arms and evaluation work.
     for path, expected in ((source, SOURCE_SHA), (protected, PROTECTED_SHA)):
         if file_sha256(path) != expected:
             raise RuntimeError("source checkpoint changed during pilot")
