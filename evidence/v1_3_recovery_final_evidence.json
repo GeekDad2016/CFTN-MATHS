@@ -1,0 +1,220 @@
+{
+  "format": "cftn_text_v1_3_recovery_final_evidence_v1",
+  "recorded_date": "2026-08-27",
+  "conclusion": {
+    "original_registered_pipeline": "failed_at_stage_10",
+    "original_completed_stages": 9,
+    "original_total_stages": 12,
+    "original_stage_11_sealed_evaluation_ran": false,
+    "original_stage_12_evidence_assembly_ran": false,
+    "recovered_typed_runtime": "passed",
+    "accepted_runtime": "learned finite-intent dispatcher, lossless typed request compiler, native specialists, and deterministic result composer",
+    "rejected_runtime_components": [
+      "thresholded legacy latent wake/halt path",
+      "learned answer composer on native specialist buses"
+    ]
+  },
+  "provenance": {
+    "v1_3_revision_sha256": "2e67634056aba0401af71cb590713cd24b58d8ba28e48f6c0350d659140dc481",
+    "v1_3_manifest_sha256": "7eeb8f8992910a3381f6009bf5c68c9936a3321aae59d28a02a8b2def0c61e80",
+    "v1_2_initialization_checkpoint_sha256": "6d3d13eefdcb17f6c848c11baf69f4f60040a8b16f0da34c4882fa2dd3235082",
+    "v1_2_final_report_sha256": "3dfaa77f318520bddcddb1a14bf486307991c626de05e7126366d3e7aa2bdec2",
+    "math_checkpoint_sha256": "97a48a484157f10e9ce41a8d9fef8ea8b168180d26ebee00d50f549bc506eb27",
+    "string_checkpoint_sha256": "8a8e102f011b23ed8aa00d8816124f0d868e1ac90c8f4712870c38471b62a70c"
+  },
+  "registered_pipeline": {
+    "completed_stage_names": [
+      "audit_v1_2_pass",
+      "prepare_v1_3_data",
+      "calibrate_frozen_gpt_language",
+      "train_exact_string_specialist",
+      "seal_native_specialists",
+      "train_single_specialist_capacity",
+      "train_dense_mixed_messages",
+      "train_dense_recurrent",
+      "train_supervised_soft_wake"
+    ],
+    "stage_9": {
+      "name": "supervised_soft_wake",
+      "state": "completed",
+      "checkpoint_sha256": "71e1bf670097f494b722576f051908f27568446e4b4dc5b8b5e291558f4fb2c8",
+      "summary_sha256": "f4170740bb935777b920fe974830d8338b24df20547030fff9cfbf97af08defe",
+      "gpt_teacher_forced_sequence_accuracy": 0.8422,
+      "gpt_teacher_forced_token_accuracy": 0.8611502962395712,
+      "exact_required_set_accuracy": 0.9948,
+      "wake_precision": 1.0,
+      "wake_recall": 0.9948,
+      "pure_language_false_wake_rate": 0.0,
+      "causal_message_loss_gap": 8.159227659743205
+    },
+    "stage_10": {
+      "name": "hardened_wake",
+      "state": "failed_acceptance",
+      "best_checkpoint": null,
+      "summary_sha256": "91cfc8d67815a220c78a5c5a77664d7b07e71f240208d30a1ef4eaf71cb82e7b",
+      "gpt_teacher_forced_sequence_accuracy": 0.3974,
+      "gpt_teacher_forced_token_accuracy": 0.43174398452299384,
+      "exact_required_set_accuracy": 0.6,
+      "wake_precision": 1.0,
+      "wake_recall": 0.4538,
+      "pure_language_false_wake_rate": 0.0,
+      "causal_message_loss_gap": 4.68365270951215,
+      "checkpoint_eligible": false
+    },
+    "missing_registered_outputs": [
+      "sealed_evaluation/report.json",
+      "v1_3_final_report.json"
+    ]
+  },
+  "recovery_ledger": [
+    {
+      "name": "hardened_wake_attempt1_always_open_collapse",
+      "state": "failed_acceptance",
+      "finding": "answer utility drove irrelevant specialist wakes and 100 percent pure-language false wake"
+    },
+    {
+      "name": "hardened_wake_attempt2_task_gradient_drift_stopped_epoch3",
+      "state": "stopped_after_degradation",
+      "finding": "exact routing fell from 88.74 percent after epoch 1 to 56.40 percent after epoch 2"
+    },
+    {
+      "name": "hardened_wake",
+      "state": "failed_acceptance",
+      "finding": "gate-only recovery disproved the narrow-calibration hypothesis"
+    },
+    {
+      "name": "oracle_hard_adapter_continuation",
+      "state": "completed",
+      "checkpoint_sha256": "236d3b4b71b595cf99f6babf2d17f090823f5a2b716e32c671487a471becdb99",
+      "finding": "protected solved classes passed but multi-parallel sequence accuracy remained 0.034"
+    },
+    {
+      "name": "route_schedule_sweep_all_lengths",
+      "state": "completed",
+      "finding": "all 84 one-, two-, and three-round schedules failed to provide a useful routing or RL action policy"
+    },
+    {
+      "name": "oracle_hard_fusion_recovery",
+      "state": "completed",
+      "checkpoint_sha256": "231566e1d17dca7a35bd7028c7af38bb9f450c38ff9f727fa7d278dcbb8cd790",
+      "checkpoint_eligible": true
+    },
+    {
+      "name": "oracle_hard_answer_bus_recovery",
+      "state": "completed",
+      "checkpoint_sha256": "cd5ef65a948607f53629bfd0e3837f3e6966c0497fbccfe15e11bb8f270f9ccf",
+      "clean_registered_bus_composer_accuracy": 1.0,
+      "checkpoint_eligible": true
+    },
+    {
+      "name": "oracle_hard_answer_bus_native_evaluation",
+      "state": "failed_acceptance",
+      "report_sha256": "104e1317fb0453e6cf6bd6783a51f0a89716002b1d1a7e5dc4f0814dec6589e4",
+      "examples": 748,
+      "answer_bus_valid_rate": 0.963903743315508,
+      "task_accuracy": {
+        "exact_string": 0.16666666666666666,
+        "explicit_math": 0.234375,
+        "language_dependent_math": 0.34375,
+        "multi_parallel": 0.0,
+        "multi_sequential": 0.1015625
+      },
+      "finding": "clean answer-bus training did not transfer to native specialist outputs"
+    },
+    {
+      "name": "oracle_hard_answer_bus_native_continuation",
+      "state": "failed_acceptance",
+      "best_checkpoint": null,
+      "finding": "native/noisy answer-composer fine-tuning did not repair reverse or multi-parallel composition"
+    },
+    {
+      "name": "typed_dispatcher_native",
+      "state": "passed",
+      "report_sha256": "bc8f5344281f5160848f0bcb0a85554c5e874dae504271945d53acd49bed7531",
+      "finding": "typed lossless requests and deterministic composition passed without latent requests"
+    },
+    {
+      "name": "learned_dispatcher_native_v1",
+      "state": "passed",
+      "report_sha256": "5020566c1fec7907e0ee617d5719881abf0b366b2efd7ce43ff252aae9d1071a",
+      "finding": "learned public-prompt intent dispatch passed without oracle metadata"
+    }
+  ],
+  "learned_dispatcher": {
+    "state": "passed",
+    "summary_sha256": "e157fda5a09e1ca91fc5728ba48f52895c586121c193a1e1da99b12e73f2d40e",
+    "checkpoint_sha256": "82c166ecada2d5aa148bdd63b6d205ad976adc44493b2e159d40aea859b7f6d0",
+    "confidence_threshold": 0.9,
+    "train_examples": 155000,
+    "validation_examples": 5500,
+    "validation_accuracy": 1.0,
+    "validation_coverage_at_threshold": 1.0,
+    "heldout_paraphrase_examples": 5500,
+    "heldout_paraphrase_accuracy": 1.0,
+    "heldout_paraphrase_coverage_at_threshold": 1.0,
+    "synthetic_semantic_holdout_examples": 4500,
+    "synthetic_semantic_holdout_accuracy": 1.0,
+    "synthetic_semantic_holdout_coverage_at_threshold": 1.0
+  },
+  "final_native_typed_dispatch": {
+    "state": "passed",
+    "format": "cftn_text_v1_3_native_answer_bus_evaluation_v1",
+    "mode": "learned_dispatcher_no_latent",
+    "examples": 748,
+    "oracle_metadata_visible_to_runtime": false,
+    "deterministic_answer_composition": true,
+    "answer_bus_valid_rate": 1.0,
+    "specialist_payload_valid_rate": 1.0,
+    "dispatch_plan_valid_rate": 1.0,
+    "dispatch_completion_rate": 1.0,
+    "task_accuracy": {
+      "exact_string": {
+        "examples": 300,
+        "accuracy": 0.9933333333333333
+      },
+      "explicit_math": {
+        "examples": 64,
+        "accuracy": 1.0
+      },
+      "language_dependent_math": {
+        "examples": 64,
+        "accuracy": 1.0
+      },
+      "multi_parallel": {
+        "examples": 192,
+        "accuracy": 0.9947916666666666
+      },
+      "multi_sequential": {
+        "examples": 128,
+        "accuracy": 1.0
+      }
+    },
+    "acceptance_gates": {
+      "answer_bus_valid_rate": true,
+      "exact_string_reverse": true,
+      "explicit_math": true,
+      "language_dependent_math": true,
+      "multi_parallel": true,
+      "multi_sequential": true,
+      "pass": true
+    },
+    "collaboration_checkpoint_sha256": "cd5ef65a948607f53629bfd0e3837f3e6966c0497fbccfe15e11bb8f270f9ccf",
+    "dispatcher_checkpoint_sha256": "82c166ecada2d5aa148bdd63b6d205ad976adc44493b2e159d40aea859b7f6d0",
+    "source_report_sha256": "5020566c1fec7907e0ee617d5719881abf0b366b2efd7ce43ff252aae9d1071a"
+  },
+  "verified_local_artifacts": {
+    "artifact_root": "G:\\ctfn-text\\artifacts\\v1_3_multi_specialist",
+    "dispatcher_root": "C:\\CFTN\\learned_dispatcher_v1_3_final_v2",
+    "native_report_root": "C:\\CFTN\\learned_dispatcher_native_v1",
+    "checkpoint_hashes_verified_on_2026_08_27": true,
+    "raw_original_pipeline_status_is_stale": true,
+    "raw_failed_runs_preserved": true
+  },
+  "scope_limitations": [
+    "The accepted specialist runtime is limited to the registered V1.3 task grammar and held-out variants of that grammar.",
+    "It is not evidence of open-world dispatch or broad mathematical competence.",
+    "The frozen GPT-2 fallback is not a reliable instruction-following or factual chat model.",
+    "The original preregistered Stage-11 causal suite did not run and must not be retroactively claimed as completed.",
+    "The final typed native panel is a separate recovery acceptance test, not the missing original Stage 11."
+  ]
+}

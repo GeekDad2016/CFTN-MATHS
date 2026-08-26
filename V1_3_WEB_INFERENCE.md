@@ -3,6 +3,11 @@
 The V1.3 web console serves the confirmed learned typed-dispatch runtime on a
 trusted local network. It exposes the final answer, complete execution trace,
 and independent enable/disable controls for the GPT, math, and string towers.
+The original preregistered pipeline failed at its learned hard-wake Stage 10;
+the console serves the separately accepted typed-dispatch recovery, not the
+rejected latent wake/halt path. Final metrics and immutable hashes are recorded
+in `V1_3_EXPERIMENT_RESULTS.md` and
+`evidence/v1_3_recovery_final_evidence.json`.
 
 ## Start the console
 

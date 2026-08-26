@@ -249,11 +249,82 @@ must be carried into V2 before its composition/fusion stage; adding RL to V2
 routing before establishing a rewarding hard action is specifically ruled
 out.
 
-## Remaining tests
+## Fusion recovery outcome (2026-08-22)
 
-- Full 5,000-example zero-update fusion validation and first recovery epoch.
-- Multi-parallel exact/string component accuracy after each fusion epoch.
-- Gate-probability margin distribution around the 0.5 threshold.
-- Zero-message receiver versus receiver-disabled numerical identity.
-- Separate hard-halt zero-update panel after wake routing passes.
-- Final autoregressive Stage-11 causal suite with actual execution counts.
+The fusion recovery completed six epochs and selected its accepted epoch-4
+checkpoint
+(`231566e1d17dca7a35bd7028c7af38bb9f450c38ff9f727fa7d278dcbb8cd790`).
+Only `message_fusion` and `gpt_receivers` were optimized. The specialists,
+request and return bridges, specialist receivers, wake gates, and halt gate
+remained frozen. The selected checkpoint preserved the protected solved
+classes, protocol-aware lower bound, and causal gap and improved the registered
+focus-class selection score.
+
+Fusion was necessary but not sufficient. It improved the simultaneous-message
+consumer and provided the accepted source for the next experiment, but native
+free-running exact composition still required an independently gated output
+path.
+
+## Answer-bus recovery and native-transfer failure (2026-08-23)
+
+A typed lossless byte answer bus and pointer-copy answer composer were trained
+from the accepted fusion checkpoint. The clean registered-bus phase selected
+checkpoint
+`cd5ef65a948607f53629bfd0e3837f3e6966c0497fbccfe15e11bb8f270f9ccf`
+with 100% generated answer-composer accuracy and all clean-bus acceptance gates
+passing.
+
+The subsequent 748-example native evaluation failed despite 96.39% answer-bus
+format validity:
+
+- exact-string task accuracy: 16.67%;
+- explicit math: 23.44%;
+- language-dependent math: 34.38%;
+- multi-parallel: 0%; and
+- multi-sequential: 10.16%.
+
+This established a clean-versus-native bus distribution mismatch. Format
+validity was not evidence that native specialist outputs transferred through
+the learned composer. A controlled native/noisy continuation preserved the
+failed report and source checkpoint but also failed acceptance; no continuation
+checkpoint was promoted.
+
+## Typed-request and deterministic-composition resolution (2026-08-24)
+
+Direct tower diagnostics then separated request construction from tower
+capability. Complete typed native requests produced the expected registered
+specialist payloads. The final accepted runtime therefore removed two learned
+exactness bottlenecks:
+
+1. A learned dispatcher predicts only one finite intent and confidence.
+2. A constrained compiler copies operands from immutable public-prompt spans
+   into typed native requests; it never generates operands or reads oracle
+   metadata.
+3. Specialist payloads are carried through typed result references.
+4. Final exact results are composed deterministically rather than through the
+   failed learned answer composer.
+5. The legacy latent wake/halt request path is bypassed for accepted inference.
+
+The learned dispatcher checkpoint
+`82c166ecada2d5aa148bdd63b6d205ad976adc44493b2e159d40aea859b7f6d0`
+passed 5,500 validation examples, 5,500 held-out paraphrases, and 4,500
+independent semantic/unsupported examples at 100% accuracy and 100% coverage
+with confidence threshold 0.9.
+
+The final public-prompt native panel passed all gates over 748 examples with no
+oracle metadata visible to runtime: 100% dispatch-plan validity, dispatch
+completion, specialist-payload validity, and answer-bus validity; 99.33% exact
+string, 100% explicit math, 100% language-dependent math, 99.48%
+multi-parallel, and 100% multi-sequential accuracy.
+
+The machine-readable final ledger is
+`evidence/v1_3_recovery_final_evidence.json`. The original registered Stage 11
+and Stage 12 were not run and are not retroactively claimed as complete.
+
+## Tests still outside the accepted claim
+
+- A separately calibrated learned hard-halt runtime was not completed. The
+  accepted typed dispatcher provides the active conditional gate instead.
+- The original preregistered Stage-11 dense-versus-conditional compute table was
+  not produced.
+- Open-world dispatch beyond the registered task grammar remains untested.

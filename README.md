@@ -170,8 +170,13 @@ allow sequential expert dependencies.
 
 The complete task matrix, training sequence, ablations, compute measurements,
 and fixed acceptance criteria are preregistered in
-[V1_3_EXPERIMENT_PLAN.md](V1_3_EXPERIMENT_PLAN.md). Its eventual findings are
-recorded in [V1_3_EXPERIMENT_RESULTS.md](V1_3_EXPERIMENT_RESULTS.md).
+[V1_3_EXPERIMENT_PLAN.md](V1_3_EXPERIMENT_PLAN.md). The original pipeline
+completed Stage 9 and failed acceptance at Stage 10; its registered Stages 11
+and 12 did not run. A later typed-dispatch recovery passed native end-to-end
+acceptance without oracle metadata. The dual result, checkpoint hashes, failed
+recovery ledger, final metrics, and exact claim boundary are recorded in
+[V1_3_EXPERIMENT_RESULTS.md](V1_3_EXPERIMENT_RESULTS.md) and the compact
+[machine-readable evidence ledger](evidence/v1_3_recovery_final_evidence.json).
 
 The isolated V1.3 implementation is now under
 `config/v1_3_multi_specialist.yaml`, `cftn_text/v1_3_*`, and the matching
