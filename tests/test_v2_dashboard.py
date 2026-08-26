@@ -33,6 +33,10 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "x!==null&&x!==undefined&&x!==''" in PAGE
     assert "refreshes every 30 seconds" in PAGE
     assert "setInterval(load,30000)" in PAGE
+    assert "Full repaired math curriculum" in PAGE
+    assert "Broad replay samples/epoch" in PAGE
+    assert '"math_full_supervision*"' in REMOTE_PROBE
+    assert '"train_v2_full_supervision"' in REMOTE_PROBE
 
 
 def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():

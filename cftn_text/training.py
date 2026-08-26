@@ -1287,6 +1287,9 @@ def train_math_tower(
             if resume:
                 retention_baseline = json.loads(baseline_path.read_text())
             else:
+                model.eval()
+                write_status(_status_payload(stage="math", state="evaluating_baseline", epoch=0,
+                             global_step=global_step, started_at=started_at))
                 retention_baseline = evaluate_generation_panel(
                     model, tokenizer, validation_dataset.records,
                     maximum_examples=int(contract["retention_baseline"]["examples"]),
@@ -1583,6 +1586,10 @@ def train_math_tower(
                 and bool(phase_acceptance["terminal_epoch"])
                 else None
             )
+            if contract.get("promote_final_phase_only"):
+                # Compare accepted candidates, not scores from failed epochs.
+                promote_best = checkpoint_eligible and (
+                    best_checkpoint_metric is None or selection_metric > best_checkpoint_metric)
             final_metrics = {
                 "epoch": epoch,
                 "global_step": global_step,
