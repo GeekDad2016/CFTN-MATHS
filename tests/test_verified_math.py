@@ -16,6 +16,7 @@ from cftn_text.verified_math_data import (
     validate_verified_record, verified_record,
 )
 from tools.pilot_verified_math import screening_decision, training_schedule, validate_bundle, write_rows
+from tools.analyze_math_supervision_pilot import first_procedure_error
 
 
 def record(family="two_variable_systems", problem=None, answer=None):
@@ -43,6 +44,17 @@ def test_system_procedure_verified_by_independent_elimination_and_residuals():
     assert "nx=subtract(-1404,-157)=-1247" in traced["target_trace"]
     assert [s["result"] for s in traced["steps"] if s["name"] in ("r1", "r2")] == ["0", "0"]
     assert traced["parent_record_id"] == original["record_id"]
+
+
+def test_first_error_analysis_distinguishes_arithmetic_from_wrong_binding():
+    row = record()
+    trace = verified_record(row)["target_trace"]
+    assert first_procedure_error(row, trace)["error"] is None
+    wrong_value = trace.replace("ad=multiply(4,12)=48", "ad=multiply(4,12)=49")
+    assert first_procedure_error(row, wrong_value)["error"] == "wrong_computed_value"
+    wrong_operand = trace.replace("ad=multiply(4,12)=48", "ad=multiply(4,13)=52")
+    assert first_procedure_error(row, wrong_operand)["error"] == "wrong_operand_binding"
+    assert first_procedure_error(row, trace[:25])["error"] == "malformed_or_incomplete_step"
 
 
 @pytest.mark.parametrize("a,b,answer", [(0, 15, "0"), (-13, -21, "273"),
