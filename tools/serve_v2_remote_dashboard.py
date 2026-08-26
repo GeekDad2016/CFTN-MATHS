@@ -27,7 +27,7 @@ except ImportError:
 
 artifact_root = Path("/workspace/cftn-text/artifacts/v2_broad_math_400k_r4")
 data_root = Path("/workspace/CFTN-MATHS/data/manifests/v2_broad_math_400k_r4")
-markers = ("run_v2.py", "prepare_v2_data", "train_math_tower", "recover_v2_math", "train_v2_dispatcher", "train_v1_3_integration", "evaluate_v2", "evaluate_v1_3", "train_v2_verified_school")
+markers = ("run_v2.py", "prepare_v2_data", "train_math_tower", "recover_v2_math", "train_v2_dispatcher", "train_v1_3_integration", "evaluate_v2", "evaluate_v1_3", "train_v2_verified_school", "train_v2_full_supervision")
 sensitive_names = {
     "api_key",
     "authorization",
@@ -145,6 +145,7 @@ recovery_roots = sorted(
     {
         path
         for pattern in (
+            "math_full_supervision*",
             "math_capacity_recovery*",
             "math_broad_shared_recovery*",
             "math_shared_trace_recovery*",
@@ -198,7 +199,7 @@ for candidate_root in recovery_roots:
     candidate_stage = candidate_root.name
     candidate_contract = read_json(candidate_root / "recovery_contract.json")
     candidate_status = read_json(candidate_root / "status.json")
-    if candidate_contract and str(candidate_status.get("state") or "starting") not in recovery_terminal_states:
+    if candidate_contract and (candidate_root.name.startswith("math_full_supervision") or str(candidate_status.get("state") or "starting") not in recovery_terminal_states):
         recovery_stage = candidate_stage
         recovery_root = candidate_root
         recovery_contract = candidate_contract
@@ -232,6 +233,8 @@ if recovery_root is not None:
     pipeline["stages"] = pipeline_stages
 school_trial = {}
 for trial_root in sorted(artifact_root.glob("math_verified_school_trial*"), key=modified_unix, reverse=True):
+    if recovery_root is not None and recovery_root.name.startswith("math_full_supervision"):
+        break
     if not trial_root.is_dir():
         continue
     trial_contract = read_json(trial_root / "contract.json")

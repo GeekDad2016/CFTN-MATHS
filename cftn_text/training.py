@@ -252,6 +252,13 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 
 
 def load_data_contract(config: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    if config.get("data", {}).get("full_supervision_root"):
+        from .full_math_data import audit_full_data
+        root = Path(config["data"]["full_supervision_root"]).resolve()
+        manifest = audit_full_data(root)
+        if manifest["manifest_sha256"] != config["data"].get("full_supervision_sha256"):
+            raise ValueError("full-supervision data identity differs from run config")
+        return root, manifest
     root = Path(config["project"]["data_root"]).expanduser().resolve()
     manifest_path = root / "manifest.json"
     if not manifest_path.exists():
@@ -285,6 +292,9 @@ def load_data_contract(config: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
 
 def split_dataset(root: Path, manifest: dict[str, Any], split: str) -> EquationDataset:
     metadata = manifest["splits"][split]
+    if manifest.get("derivative_format") == "cftn_full_math_supervision_v1":
+        from .full_math_data import read_rows
+        return EquationDataset(read_rows(root / metadata["path"]))
     return EquationDataset(root / metadata["path"])
 
 
@@ -387,7 +397,19 @@ def math_epoch_dataset(
         for source in sorted(normalized_quotas):
             available = grouped[source]
             requested = normalized_quotas[source]
-            if requested <= len(available):
+            if phase.get("balance_families_within_source", False):
+                families = {}
+                for record in available:
+                    families.setdefault(record["family"], []).append(record)
+                sampled, replacement_examples = [], 0
+                for index, family in enumerate(sorted(families)):
+                    pool = families[family]
+                    count = requested // len(families) + int(index < requested % len(families))
+                    sampled.extend(rng.sample(pool, min(count, len(pool))))
+                    extra = max(0, count - len(pool))
+                    sampled.extend(rng.choice(pool) for _ in range(extra))
+                    replacement_examples += extra
+            elif requested <= len(available):
                 sampled = rng.sample(available, requested)
                 replacement_examples = 0
             else:
@@ -477,6 +499,8 @@ def _filter_v2_records_for_phase(
         record
         for record in records
         if int(record.get("difficulty", 3)) <= maximum_difficulty
+        and (record.get("source") != "verified_school_full"
+             or int(record["difficulty"]) <= int(phase.get("max_school_difficulty", 3)))
         and (sources is None or str(record.get("source", "unknown")) in sources)
         and (families is None or str(record.get("family", "unknown")) in families)
     ]
@@ -951,6 +975,10 @@ def _phase_generation_acceptance(
                 group.get("examples", 0)
             )
 
+    for name, minimum in phase.get("minimum_trace_exact_by_family", {}).items():
+        observed = primary.get("trace_exact_by_family", {}).get(name, {})
+        add_check(f"primary_trace:{name}", observed.get("rate", 0.0), minimum)
+
     panel_accuracy_thresholds = phase.get(
         "minimum_generation_accuracy_by_panel", {}
     )
@@ -1082,13 +1110,19 @@ def train_math_tower(
     curriculum_config["data"]["curriculum"].update(contract.get("curriculum", {}))
     phases = list(contract.get("phases", []))
     tokenizer = ByteMathTokenizer()
-    collator = MathCollator(
+    collator_class = MathCollator
+    if settings.get("objective") == "computation_roles_v1":
+        from .full_math_data import FullMathCollator
+        collator_class = FullMathCollator
+    collator = collator_class(
         tokenizer,
         int(config["data"]["max_math_length"]),
         target_mode=str(settings.get("target_mode", "full_trace_v1")),
         input_view=str(settings.get("input_view", SHARED_MATH_INPUT_VIEW)),
     )
     early_stopping_enabled = not bool(disable_early_stopping)
+    validation_collator = MathCollator(tokenizer, int(config["data"]["max_math_length"]),
+                                      target_mode=collator.target_mode, input_view=collator.input_view)
     artifact_dir = Path(
         artifact_directory
         or (Path(config["project"]["artifact_root"]) / "math")
@@ -1247,6 +1281,23 @@ def train_math_tower(
         },
     )
     try:
+        retention_baseline = None
+        if contract.get("retention_baseline"):
+            baseline_path = artifact_dir / "retention_baseline.json"
+            if resume:
+                retention_baseline = json.loads(baseline_path.read_text())
+            else:
+                retention_baseline = evaluate_generation_panel(
+                    model, tokenizer, validation_dataset.records,
+                    maximum_examples=int(contract["retention_baseline"]["examples"]),
+                    batch_size=int(generation_validation_settings["batch_size"]),
+                    max_new_tokens=int(generation_validation_settings["max_new_tokens"]),
+                    failure_examples=8, rows_path=work_dir / "retention_baseline_rows.jsonl",
+                    input_view=collator.input_view,
+                    require_eos=bool(generation_validation_settings.get("require_eos", False)))
+                atomic_json_dump(retention_baseline, baseline_path)
+                if work_dir != artifact_dir:
+                    atomic_copy_file(work_dir / "retention_baseline_rows.jsonl", artifact_dir / "retention_baseline_rows.jsonl")
         for epoch in range(start_epoch, int(settings["max_epochs"]) + 1):
             model.train()
             phase = next(
@@ -1296,19 +1347,23 @@ def train_math_tower(
                         batch["math_attention_mask"],
                         batch["math_prefix_lengths"],
                     )
-                    lm_loss = answer_weighted_causal_language_loss(
-                        output.logits,
-                        batch["math_labels"],
-                        batch["math_answer_labels"],
-                        answer_weight=float(settings.get("answer_token_weight", 1.0)),
-                    )
+                    if settings.get("objective") == "computation_roles_v1":
+                        from .computation_supervision import computation_loss
+                        lm_loss = computation_loss(output.logits, batch["math_labels"], batch["math_roles"],
+                                                   weights=tuple(settings["role_weights"]))
+                    else:
+                        lm_loss = answer_weighted_causal_language_loss(
+                            output.logits, batch["math_labels"], batch["math_answer_labels"],
+                            answer_weight=float(settings.get("answer_token_weight", 1.0)))
                     classes = model.answer_classes(batch["answer_values"])
                     answer_loss = optional_answer_loss(output.answer_logits, classes)
                     loss = lm_loss + float(settings["answer_head_weight"]) * answer_loss
+                if not bool(torch.isfinite(loss)):
+                    raise FloatingPointError("non-finite math training loss")
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), float(settings["gradient_clip"])
+                    model.parameters(), float(settings["gradient_clip"]), error_if_nonfinite=True
                 )
                 scaler.step(optimizer)
                 scaler.update()
@@ -1354,7 +1409,7 @@ def train_math_tower(
             training_finished_at = time.time()
             validation_loader = make_loader(
                 validation_dataset,
-                collator,
+                validation_collator,
                 batch_size=int(settings["eval_batch_size"]),
                 shuffle=False,
                 seed=seed,
@@ -1434,6 +1489,7 @@ def train_math_tower(
                         ),
                         rows_path=generation_rows_path,
                         input_view=collator.input_view,
+                        require_eos=bool(generation_settings.get("require_eos", False)),
                     )
                     generation_panels[panel_name]["split"] = str(
                         panel_spec.get("split", "validation")
@@ -1493,6 +1549,13 @@ def train_math_tower(
                 validation=validation,
                 epoch=epoch,
             )
+            if retention_baseline is not None:
+                observed = generation_panels["broad"]
+                minimum = max(0.0, float(retention_baseline["accuracy"]) - float(contract["retention_baseline"]["maximum_drop"]))
+                phase_acceptance["checks"]["broad_retention"] = {
+                    "observed": observed["accuracy"], "minimum": minimum,
+                    "pass": observed["accuracy"] >= minimum}
+                phase_acceptance["pass"] = all(c["pass"] for c in phase_acceptance["checks"].values())
             improved = selection_metric > best_metric
             if improved:
                 best_metric = selection_metric
@@ -1504,6 +1567,8 @@ def train_math_tower(
                 or phase_acceptance is None
                 or bool(phase_acceptance["pass"])
             )
+            if contract.get("promote_final_phase_only"):
+                checkpoint_eligible = checkpoint_eligible and phase is phases[-1]
             promote_best = checkpoint_eligible and (
                 improved
                 or (
@@ -1534,6 +1599,8 @@ def train_math_tower(
                 "source_checkpoint": source_provenance,
                 "input_view": collator.input_view,
                 "target_mode": collator.target_mode,
+                "objective": settings.get("objective", "answer_weighted_causal_language_loss"),
+                "role_weights": settings.get("role_weights"),
                 "answer_token_weight": float(
                     settings.get("answer_token_weight", 1.0)
                 ),
@@ -1599,8 +1666,8 @@ def train_math_tower(
                 work_dir,
                 int(
                     settings.get(
-                        "keep_latest_checkpoints",
-                        config["monitoring"]["keep_latest_checkpoints"],
+                        "keep_working_checkpoints",
+                        settings.get("keep_latest_checkpoints", config["monitoring"]["keep_latest_checkpoints"]),
                     )
                 ),
             )

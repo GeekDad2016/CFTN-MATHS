@@ -142,6 +142,7 @@ def evaluate_generation_panel(
     failure_examples: int,
     rows_path: str | Path | None = None,
     input_view: str = SHARED_MATH_INPUT_VIEW,
+    require_eos: bool = False,
 ) -> dict[str, Any]:
     """Run a compact native greedy-generation panel during math training."""
 
@@ -161,16 +162,30 @@ def evaluate_generation_panel(
         eligible.append(record)
     started_at = time.time()
     generations: list[str] = []
+    terminations = []
     for start in range(0, len(eligible), max(1, int(batch_size))):
         chunk = eligible[start : start + max(1, int(batch_size))]
-        generated, _ = generate_math_tower(
-            model,
-            tokenizer,
-            [math_problem_for_view(record, input_view) for record in chunk],
-            max_new_tokens=int(max_new_tokens),
-        )
+        if require_eos:
+            from tools.pilot_math_primitives import generate_with_termination
+            decoded = generate_with_termination(model, tokenizer,
+                [math_problem_for_view(record, input_view) for record in chunk], int(max_new_tokens))
+            generated = [d["generation"] for d in decoded]
+            terminations.extend(decoded)
+        else:
+            generated, _ = generate_math_tower(
+                model, tokenizer, [math_problem_for_view(record, input_view) for record in chunk],
+                max_new_tokens=int(max_new_tokens))
         generations.extend(generated)
-    metrics, correctness = score_v2_generations(generations, eligible)
+    clean = ([d["eos_terminated"] and not d["unexpected_control_token"] and not d["context_limit_hit"] and not d["budget_hit"]
+              for d in terminations] if require_eos else [True] * len(generations))
+    metrics, correctness = score_v2_generations([g if ok else "" for g, ok in zip(generations, clean)], eligible)
+    trace_groups = defaultdict(lambda: {"examples": 0, "correct": 0})
+    for record, generation, ok in zip(eligible, generations, clean):
+        group = trace_groups[str(record.get("family", "unknown"))]
+        group["examples"] += 1
+        group["correct"] += int(ok and generation.strip() == str(record.get("target_trace", "")))
+    trace_exact = {name: {**group, "rate": group["correct"] / max(1, group["examples"])}
+                   for name, group in trace_groups.items()}
     rows = []
     for record, generation, correct in zip(eligible, generations, correctness):
         rows.append(
@@ -196,6 +211,10 @@ def evaluate_generation_panel(
     elapsed = time.time() - started_at
     return {
         **metrics,
+        "trace_exact_by_family": trace_exact,
+        "require_eos": require_eos,
+        "unclean_terminations": len(clean) - sum(clean),
+        "budget_hits": sum(d["budget_hit"] for d in terminations),
         "panel_policy": "deterministic_round_robin_source_family_difficulty_v1",
         "input_view": str(input_view),
         "requested_examples": int(maximum_examples),

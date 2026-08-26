@@ -1,0 +1,67 @@
+{
+  "format": "cftn_full_math_training_v1",
+  "source_checkpoint_sha256": "ebe0c1cd120234caf45d445ff5ac4f04c6a2ebecd8d79828bb7838657eb64e53",
+  "protected_checkpoint_sha256": "fe2c056a1ee1d4a3514537681d82124b0312f45c27f72f8e73d2afc747d53973",
+  "require_acceptance_for_best": true,
+  "promote_final_phase_only": true,
+  "production_acceptance": false,
+  "remaining_pipeline_enabled": false,
+  "retention_baseline": {"examples": 512, "maximum_drop": 0.03},
+  "curriculum": {"enabled": true, "examples_per_epoch": 400000, "sampling": "auto"},
+  "math_training": {
+    "max_epochs": 100, "minimum_epochs": 50, "early_stop_patience": 10,
+    "batch_size": 32, "eval_batch_size": 32, "num_workers": 4,
+    "learning_rate": 0.0001, "minimum_learning_rate": 0.00002,
+    "warmup_fraction": 0.001, "weight_decay": 0.01, "gradient_clip": 1.0,
+    "precision": "bf16", "answer_head_weight": 0.0,
+    "objective": "computation_roles_v1", "role_weights": [0.25, 0.5, 0.25],
+    "input_view": "shared_problem_v1", "target_mode": "full_trace_v1",
+    "report_every_steps": 100, "keep_latest_checkpoints": 100, "keep_working_checkpoints": 2,
+    "generation_validation": {
+      "enabled": true, "every_epochs": 1, "batch_size": 16,
+      "max_new_tokens": 512, "failure_examples": 20, "require_eos": true,
+      "panels": [
+        {"name": "school", "split": "school_validation", "phase_filtered": true, "examples": 960, "max_new_tokens": 256},
+        {"name": "wording", "split": "school_wording", "phase_filtered": true, "examples": 960, "max_new_tokens": 256},
+        {"name": "broad", "split": "validation", "phase_filtered": false, "examples": 512}
+      ]
+    }
+  },
+  "phases": [
+    {
+      "name": "foundations_with_broad_replay", "through_epoch": 20,
+      "max_difficulty": 3, "max_school_difficulty": 1,
+      "source_quotas": {"verified_school_full": 240000, "cftn_generated": 70000, "deepmind_mathematics": 80000, "gsm8k": 10000},
+      "primary_generation_panel": "school", "minimum_generation_accuracy": 0.99, "minimum_valid_rate": 1.0,
+      "minimum_generation_accuracy_by_family": {"addition": 0.99, "subtraction": 0.99, "multiplication": 0.99, "division": 0.99, "linear_equation": 0.99},
+      "minimum_trace_exact_by_family": {"addition": 0.95, "subtraction": 0.95, "multiplication": 0.95, "division": 0.95, "linear_equation": 0.95}
+    },
+    {
+      "name": "two_digit_with_broad_replay", "through_epoch": 40,
+      "max_difficulty": 3, "max_school_difficulty": 2,
+      "source_quotas": {"verified_school_full": 200000, "cftn_generated": 80000, "deepmind_mathematics": 100000, "gsm8k": 20000},
+      "primary_generation_panel": "school", "minimum_generation_accuracy": 0.99, "minimum_valid_rate": 1.0,
+      "minimum_generation_accuracy_by_family": {"addition": 0.99, "subtraction": 0.99, "multiplication": 0.99, "division": 0.99, "linear_equation": 0.99},
+      "minimum_trace_exact_by_family": {"addition": 0.95, "subtraction": 0.95, "multiplication": 0.95, "division": 0.95, "linear_equation": 0.95}
+    },
+    {
+      "name": "three_digit_with_broad_replay", "through_epoch": 60,
+      "max_difficulty": 3, "max_school_difficulty": 3,
+      "source_quotas": {"verified_school_full": 160000, "cftn_generated": 100000, "deepmind_mathematics": 120000, "gsm8k": 20000},
+      "primary_generation_panel": "school", "minimum_generation_accuracy": 0.99, "minimum_valid_rate": 1.0,
+      "minimum_generation_accuracy_by_family": {"addition": 0.99, "subtraction": 0.99, "multiplication": 0.99, "division": 0.99, "linear_equation": 0.99},
+      "minimum_trace_exact_by_family": {"addition": 0.95, "subtraction": 0.95, "multiplication": 0.95, "division": 0.95, "linear_equation": 0.95}
+    },
+    {
+      "name": "broad_math_consolidation", "through_epoch": 100, "stop_on_pass": true,
+      "max_difficulty": 3, "max_school_difficulty": 3,
+      "source_quotas": {"verified_school_full": 80000, "cftn_generated": 140000, "deepmind_mathematics": 160000, "gsm8k": 20000},
+      "primary_generation_panel": "broad", "minimum_generation_accuracy": 0.70, "minimum_valid_rate": 0.95,
+      "minimum_generation_accuracy_by_source": {"cftn_generated": 0.70, "deepmind_mathematics": 0.60},
+      "minimum_generation_accuracy_by_difficulty": {"1": 0.75, "2": 0.60, "3": 0.50},
+      "minimum_generation_accuracy_by_family": {"variables_both_sides": 0.90, "signed_fractions": 0.70, "nested_parentheses": 0.70, "two_variable_systems": 0.65, "multi_step_word_problem": 0.60, "distractor_word_problem": 0.55},
+      "minimum_generation_accuracy_by_panel": {"school": 0.99, "wording": 0.90},
+      "minimum_valid_rate_by_panel": {"school": 1.0, "wording": 0.99}
+    }
+  ]
+}
