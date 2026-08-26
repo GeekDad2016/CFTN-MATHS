@@ -91,3 +91,12 @@ Planned durable run: `math_full_supervision_v1`, W&B online, with a fresh
 `/tmp/cftn-full-supervision-v1` working directory. The full run's own contract,
 effective config, data manifest, launcher PID/command, W&B identity, status,
 metrics and epoch checkpoints are the authoritative live evidence.
+
+Launched on tested training revision `7c7e167` with PID/PGID 5575. The source
+school checkpoint is only an initialization candidate, not accepted production
+math. Local dashboard-only follow-ups must not pull/switch the active Pod
+checkout. Its trend chart keeps school, wording and broad generation separate:
+the primary selection panel changes in the final phase, so one unlabelled
+accuracy line would be misleading. Role-weighted training loss and ordinary
+cross-entropy on unchanged original-format validation traces are different
+objectives; compare generated-answer capability, not their absolute magnitudes.
