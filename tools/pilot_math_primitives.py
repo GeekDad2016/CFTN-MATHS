@@ -13,7 +13,7 @@ import time
 
 import torch
 
-from cftn_text.checkpoint import append_jsonl, atomic_json_dump, atomic_torch_save, load_checkpoint
+from cftn_text.checkpoint import atomic_json_dump, atomic_torch_save, load_checkpoint
 from cftn_text.computation_supervision import computation_loss
 from cftn_text.config import load_config
 from cftn_text.data_generator import file_sha256
@@ -29,6 +29,18 @@ from tools.pilot_verified_math import (
 )
 
 _PAYLOAD = re.compile(r"(?:<work>[^<>]+</work>)?<answer>([^<>]+)</answer>")
+
+
+def verified_snapshot(payload: list | dict, path: Path) -> None:
+    """Canonical diagnostic evidence uses atomic replacement plus readback.
+
+    A migrated volume produced leading NUL holes in three append-only JSONL
+    files despite fsync. Preserve those originals; new runs avoid appends for
+    their canonical generation/metric evidence and fail on readback mismatch.
+    """
+    atomic_json_dump(payload, path)
+    if json.loads(path.read_text(encoding="utf-8")) != payload:
+        raise OSError("diagnostic snapshot readback mismatch")
 
 
 def primitive_score(row: dict, text: str, cap: int) -> dict:
@@ -226,7 +238,7 @@ def run_locked(args) -> None:
                     item["correct"] &= clean_stop
                     item["exact_target"] &= clean_stop
                     generated.append(item)
-                    append_jsonl(item, directory / f"{family}.generations.jsonl")
+                verified_snapshot(generated, directory / f"{family}.generations.json")
             n = len(rows)
             report = {"examples": n, "correct": sum(r["correct"] for r in generated),
                       "accuracy": sum(r["correct"] for r in generated) / n,
@@ -273,6 +285,7 @@ def run_locked(args) -> None:
         arm_dir = output / arm
         arm_dir.mkdir()
         reports[arm], costs[arm] = {}, {}
+        training_metrics = []
         for stage in ("memorization", "foundations", "composition"):
             tick, tokens = time.monotonic(), 0
             torch.cuda.reset_peak_memory_stats()
@@ -305,7 +318,8 @@ def run_locked(args) -> None:
                     record = {"state": "training", "arm": arm, "stage": stage, "step": step,
                               "steps": len(schedules[stage]), "loss_training_batch": float(loss.detach()),
                               "gradient_norm": float(grad)}
-                    append_jsonl(record, arm_dir / "metrics.jsonl")
+                    training_metrics.append(record)
+                    verified_snapshot(training_metrics, arm_dir / "metrics.json")
                     status(**record)
             torch.cuda.synchronize()
             costs[arm][stage] = {"training_seconds": time.monotonic() - tick, "supervised_tokens": tokens,

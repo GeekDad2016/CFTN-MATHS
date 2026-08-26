@@ -1,4 +1,5 @@
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,8 @@ from cftn_text.math_primitive_data import (
 )
 from cftn_text.tokenizer import ByteMathTokenizer, SequenceTooLongError
 from cftn_text.verified_math_data import fingerprint
-from tools.pilot_math_primitives import generate_with_termination, native_gate, prerequisite_gate, primitive_score, schedule
+from tools.pilot_math_primitives import generate_with_termination, native_gate, prerequisite_gate, primitive_score, schedule, verified_snapshot
+from tools.review_primitive_pilot import parse_padded_jsonl
 
 
 @pytest.mark.parametrize("question,expected", [
@@ -166,3 +168,34 @@ def test_generation_budget_uses_actual_tokens_and_requires_eos():
     capped = generate_with_termination(Scripted(tokens + [0]), tokenizer, ["Calculate 2*3."], len(tokens) + 5)[0]
     assert capped["generation"] == answer  # decoding hides the invalid PAD tokens
     assert capped["budget_hit"] and capped["unexpected_control_token"] and not capped["eos_terminated"]
+
+
+def test_only_complete_leading_padding_recoverable():
+    records = [{"record_id": "1", "generation": "hello"}, {"record_id": "2", "generation": "world"}]
+    raw = b"".join((json.dumps(r) + "\n").encode() for r in records)
+    parsed, count = parse_padded_jsonl(b"\0" * 4057 + raw)
+    assert parsed == records and count == 4057
+    assert parse_padded_jsonl(raw) == (records, 0)
+    for bad in (b"\0" * 8193 + raw, raw[:10] + b"\0" + raw[10:], b"\0" * 4096 + raw[:-8]):
+        with pytest.raises(ValueError):
+            parse_padded_jsonl(bad)
+
+
+def test_atomic_snapshot_repeated_readback(tmp_path):
+    path = tmp_path / "generations.json"
+    rows = []
+    for index in range(32):
+        rows.append({"record_id": str(index), "generation": "x" * (300 + index)})
+        verified_snapshot(rows, path)
+        assert json.loads(path.read_text()) == rows
+    assert b"\0" not in path.read_bytes()
+
+
+def test_atomic_snapshot_detects_bad_readback(tmp_path, monkeypatch):
+    import tools.pilot_math_primitives as module
+    path = tmp_path / "generations.json"
+    def bad_write(payload, destination):
+        destination.write_text("[]")
+    monkeypatch.setattr(module, "atomic_json_dump", bad_write)
+    with pytest.raises(OSError, match="readback"):
+        verified_snapshot([{"record_id": "missing"}], path)
