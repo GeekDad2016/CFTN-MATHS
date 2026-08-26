@@ -199,7 +199,12 @@ def render(steps: list[Step], answer: str) -> tuple[str, list[dict]]:
         spans.append(_span(len(target), len(target) + len(step.result), "compute", step.name))
         target += step.result
     target += "</work><answer>"
-    spans.append(_span(len(target), len(target) + len(answer), "copy", "answer"))
+    # Systems copy their previously computed x/y fields. A scalar payload can
+    # instead require a representation conversion (e.g. -773/500 -> -1.546).
+    # That conversion is a computation target, not low-weight copying.
+    is_system = answer.startswith("x=") and ";y=" in answer
+    answer_kind = "copy" if is_system or answer == steps[-1].result else "compute"
+    spans.append(_span(len(target), len(target) + len(answer), answer_kind, "answer"))
     return target + answer + "</answer>", spans
 
 

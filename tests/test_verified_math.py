@@ -195,6 +195,18 @@ def test_legacy_payload_focus_excludes_answer_tags_and_default_collator_unchange
         legacy_spans(mathqa())
 
 
+def test_fraction_to_decimal_output_is_computation_not_copying():
+    row = verified_record(record("arithmetic__mul"))
+    assert row["steps"][-1]["result"] == "-773/500"
+    assert row["normalized_answer"] == "-1.546"
+    assert row["supervision_spans"][-1]["kind"] == "compute"
+    integer = verified_record(record("arithmetic__mul", "Calculate 3*4.", "12"))
+    assert integer["supervision_spans"][-1]["kind"] == "copy"
+    batch = ComputationCollator(ByteMathTokenizer(), 4096)([row])
+    start = int(batch["math_prefix_lengths"][0]) + row["supervision_spans"][-1]["start"]
+    assert batch["math_roles"][0, start:start + len("-1.546")].eq(1).all()
+
+
 def test_role_balanced_loss_has_gradients_and_padding_invariance():
     torch.manual_seed(3)
     labels = torch.tensor([[-100, 1, 2, 3, 1, -100]])

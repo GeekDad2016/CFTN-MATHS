@@ -101,6 +101,15 @@ production loss defaults are unchanged.
   and padding remain masked. This is distinct from multiplying the entire
   answer suffix, including tags/EOS, by four.
 
+Post-pilot code review found that a scalar's final fraction-to-decimal
+representation conversion must be labelled **compute**, not copy. A regression
+test now enforces this. The initial pilot corpus and results remain unchanged;
+a newly built derivative has a different procedure-code/manifest hash. Do not
+claim that the initial GPU pilot tested this later label correction. Also, the
+current multiplication recipe still leaves decimal digit extraction/scaling
+implicit before its partial products; explicit operand-binding/scaling lessons
+are a next curriculum experiment, not a demonstrated fix.
+
 The pilot excludes MathQA from **all** arms. It therefore tests procedural
 supervision/loss, not the causal effect of removing MathQA. The broad original
 acceptance tests have not been filtered or declared passed.
