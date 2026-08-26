@@ -22,6 +22,10 @@ def first_procedure_error(row: dict, text: str) -> dict:
         if index >= len(generated_steps):
             return dict(result, error="missing_step", first_step=want.name)
         raw = generated_steps[index]
+        # Without a closing delimiter, "...=4" could be a truncated "...=48".
+        # Do not count that unfinished final field as a demonstrated arithmetic error.
+        if index == len(generated_steps) - 1 and "</work>" not in text and not work.endswith(";"):
+            return dict(result, error="malformed_or_incomplete_step", first_step=want.name, observed=raw[:160])
         match = re.fullmatch(r"([a-z][a-z0-9]*)=([a-z]+)\(([^,()]+),([^,()]+)\)=([^;<>]+)", raw)
         if not match:
             return dict(result, error="malformed_or_incomplete_step", first_step=want.name, observed=raw[:160])
