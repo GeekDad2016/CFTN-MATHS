@@ -8,13 +8,10 @@ from __future__ import annotations
 
 import argparse
 import collections
-import dataclasses
 import json
-import math
 import os
 from pathlib import Path
 import random
-import re
 import subprocess
 import time
 
@@ -33,8 +30,8 @@ from cftn_text.training import build_math_tower_for_checkpoint
 from cftn_text.v2_data import validate_v2_record
 from cftn_text.v2_metrics import extract_v2_answer, score_v2_generations
 from cftn_text.verified_math_data import (
-    TARGET_FAMILIES, REPLAY_FAMILIES, VERSION, Step, audit_mathqa_program,
-    computation_key, curriculum_band, fingerprint, legacy_spans, procedure,
+    TARGET_FAMILIES, REPLAY_FAMILIES, VERSION, audit_mathqa_program,
+    computation_key, curriculum_band, fingerprint, legacy_spans,
     validate_verified_record, verified_record,
 )
 

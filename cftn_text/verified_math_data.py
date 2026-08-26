@@ -6,7 +6,6 @@ or contradictory rows fail closed, rather than being silently called verified.
 """
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import re
@@ -92,6 +91,7 @@ def question_operands(row: dict) -> tuple[Fraction, ...]:
             rf"(?:Calculate |Work out |What is )?{a}\s*\*\s*{a}[.?]?",
             rf"(?:What is )?{a} times {a}[.?]?",
             rf"(?:What is the product|Product) of {a} and {a}[.?]?",
+            rf"Multiply {a} and {a}\.",
         )
     else:
         raise ValueError("family has no verified procedure")

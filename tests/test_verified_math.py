@@ -56,7 +56,7 @@ def test_signed_decimal_multiplication(a, b, answer):
     assert traced["steps"][-1]["name"] == "value"
 
 
-@pytest.mark.parametrize("problem", ["Work out -2 * 3.", "-2 times 3", "Product of -2 and 3.", "What is -2*3?"])
+@pytest.mark.parametrize("problem", ["Work out -2 * 3.", "-2 times 3", "Product of -2 and 3.", "What is -2*3?", "Multiply -2 and 3."])
 def test_supported_visible_multiplication_templates(problem):
     assert independent_answer(record("arithmetic__mul", problem, "-6")) == "-6"
 
