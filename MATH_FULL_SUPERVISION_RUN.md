@@ -65,3 +65,29 @@ Local edits are committed and pushed; all tests and training execute on RunPod.
 The SSH dashboard recognizes `math_full_supervision*`, exposes the full
 curriculum/validation trends, and refreshes every 30 seconds. No new heartbeat
 or parallel experiment is needed.
+
+## Build and launch evidence
+
+Full derivative: `/workspace/cftn-text/data/full_supervision_v1_20260826`.
+Manifest SHA-256: `9b01e6b6a943342364ba6ac4e0b7f7e681fe01b7e2a05855448558ffc15a6494`.
+The completed audit covers all 479,270 sealed parent records and the derivative:
+504,430 training rows, consisting of 150,000 repaired generated rows, 212,690
+unchanged DeepMind targets, 7,473 GSM8K targets, and 134,267 added school rows
+(132,691 distinct normalized math objects; scalar-equivalent equations are
+grouped). 29,837 MathQA program rows are preserved in quarantine: 4,927 restricted
+program/answer mismatches, 17,362 unsupported/ambiguous, and 7,548 internally
+consistent but still requiring semantic review. These are triage categories,
+not a claim that all those questions have wrong labels.
+
+Maximum training example length is 1,052 byte tokens, below the unchanged 4,096
+context. Both school holdout panels contain 960 examples. All original
+evaluation files match their sealed hashes. Source weights were unchanged by
+two disposable CUDA optimizer-step checks; both the mixed and longest-32
+batches had finite loss/gradients in all 24 blocks. Peak allocated memory was
+24,380 MiB. This preflight is not another training comparison or an accuracy
+claim. The complete RunPod regression suite passed 375 tests.
+
+Planned durable run: `math_full_supervision_v1`, W&B online, with a fresh
+`/tmp/cftn-full-supervision-v1` working directory. The full run's own contract,
+effective config, data manifest, launcher PID/command, W&B identity, status,
+metrics and epoch checkpoints are the authoritative live evidence.

@@ -45,7 +45,15 @@ def checked_settings(path):
 
 
 def run(args):
-    assert_idle()
+    ignored = set()
+    if args.launcher_pid:
+        proc = Path(f"/proc/{args.launcher_pid}/cmdline")
+        if proc.exists():
+            argv = proc.read_bytes().decode().split("\0")
+            if "tools.train_v2_full_supervision" not in argv or "launch" not in argv:
+                raise ValueError("unexpected launcher process")
+            ignored.add(args.launcher_pid)
+    assert_idle(ignore_pids=ignored)
     settings = checked_settings(args.settings)
     if subprocess.check_output(["git", "status", "--porcelain"], text=True).strip():
         raise ValueError("clean tested revision required")
@@ -54,7 +62,9 @@ def run(args):
                          (args.protected, settings["protected_checkpoint_sha256"])):
         if file_sha256(path) != digest:
             raise ValueError("immutable source/protected hash mismatch")
-    manifest = audit_full_data(args.data)
+    # train_math_tower performs the mandatory full audit before GPU allocation;
+    # reading its identity here avoids doing that multi-minute audit twice.
+    manifest = json.loads((Path(args.data) / "manifest.json").read_text())
     output, work = Path(args.output), Path(args.work)
     if not args.resume:
         output.mkdir(parents=True, exist_ok=False)
@@ -126,6 +136,7 @@ def main():
     parser.add_argument("--settings", default="config/v2_full_supervision.json")
     parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="offline")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--launcher-pid", type=int)
     args = parser.parse_args()
     if os.name != "posix":
         raise RuntimeError("full dataset building, tests, and training run on RunPod only")
@@ -147,6 +158,7 @@ def main():
         command = [sys.executable, "-u", "-m", "tools.train_v2_full_supervision", "run"]
         for name in ("data", "source", "protected", "output", "work", "config", "settings", "wandb_mode"):
             command += ["--" + name.replace("_", "-"), str(getattr(args, name))]
+        command += ["--launcher-pid", str(os.getpid())]
         with paths[1].open("x") as stdout, paths[2].open("x") as stderr:
             proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
         launch = {"pid": proc.pid, "pgid": proc.pid, "command": command, "worktree": str(Path.cwd())}

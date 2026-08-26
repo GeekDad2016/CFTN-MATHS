@@ -212,11 +212,11 @@ def checked_derivative(root: Path) -> tuple[dict, dict]:
     return manifest, data
 
 
-def assert_idle() -> None:
+def assert_idle(*, ignore_pids: set[int] | None = None) -> None:
     if os.name != "posix":
         raise RuntimeError("RunPod/Linux execution only")
     for path in Path("/proc").iterdir():
-        if not path.name.isdigit() or int(path.name) == os.getpid():
+        if not path.name.isdigit() or int(path.name) == os.getpid() or int(path.name) in (ignore_pids or set()):
             continue
         try:
             argv = (path / "cmdline").read_bytes().split(b"\0")
