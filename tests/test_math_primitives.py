@@ -13,7 +13,7 @@ from cftn_text.math_primitive_data import (
 from cftn_text.tokenizer import ByteMathTokenizer, SequenceTooLongError
 from cftn_text.verified_math_data import fingerprint
 from tools.pilot_math_primitives import generate_with_termination, native_gate, prerequisite_gate, primitive_score, schedule, verified_snapshot
-from tools.review_primitive_pilot import parse_padded_jsonl
+from tools.review_primitive_pilot import check_checkpoint_contract, parse_padded_jsonl
 
 
 @pytest.mark.parametrize("question,expected", [
@@ -199,3 +199,13 @@ def test_atomic_snapshot_detects_bad_readback(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "atomic_json_dump", bad_write)
     with pytest.raises(OSError, match="readback"):
         verified_snapshot([{"record_id": "missing"}], path)
+
+
+def test_checkpoint_contract_checks_content_not_json_container_type():
+    contract = {"arms": ("answer_only", "compact_worked"), "source": "protected", "steps": 800}
+    checkpoint = {"format": "cftn_primitive_pilot_not_promotable_v1", "contract": contract}
+    serialized = json.loads(json.dumps(contract))
+    check_checkpoint_contract(checkpoint, serialized)
+    serialized["source"] = "wrong"
+    with pytest.raises(ValueError, match="contract"):
+        check_checkpoint_contract(checkpoint, serialized)

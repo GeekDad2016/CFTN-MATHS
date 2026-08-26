@@ -17,6 +17,7 @@ import torch
 from cftn_text.data_generator import file_sha256
 from cftn_text.math_primitive_data import COMPOSITIONS, FOUNDATIONS, lesson
 from cftn_text.v2_metrics import score_v2_generations
+from cftn_text.verified_math_data import fingerprint
 from tools.pilot_math_primitives import primitive_score, verified_snapshot
 from tools.pilot_verified_math import PROTECTED_SHA, SOURCE_SHA, checked_derivative
 
@@ -30,6 +31,14 @@ def parse_padded_jsonl(raw: bytes) -> tuple[list[dict], int]:
     if not rows or any(not isinstance(row, dict) for row in rows):
         raise ValueError("expected complete JSONL object records")
     return rows, padding
+
+
+def check_checkpoint_contract(checkpoint: dict, contract: dict) -> None:
+    # Torch preserves tuples while the JSON summary round-trip turns them into
+    # arrays. Compare canonical serialized content, not Python container types.
+    if (checkpoint["format"] != "cftn_primitive_pilot_not_promotable_v1"
+            or fingerprint(checkpoint["contract"]) != fingerprint(contract)):
+        raise ValueError("unexpected pilot checkpoint contract")
 
 
 def review(root: Path, output: Path, data_root: Path, source: Path, protected: Path) -> dict:
@@ -51,7 +60,6 @@ def review(root: Path, output: Path, data_root: Path, source: Path, protected: P
     corpus = {}
     for row in corpus_rows:
         corpus.setdefault(row["family"], {})[row["split"]] = row["questions"]
-    from cftn_text.verified_math_data import fingerprint
     if fingerprint(corpus) != summary["contract"]["corpus_sha256"]:
         raise ValueError("corpus hash mismatch")
     plans, source_hashes, recovered = [], {}, []
@@ -108,8 +116,7 @@ def review(root: Path, output: Path, data_root: Path, source: Path, protected: P
     for path in sorted(root.rglob("*.pth")):
         digest = file_sha256(path)
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        if checkpoint["format"] != "cftn_primitive_pilot_not_promotable_v1" or checkpoint["contract"] != summary["contract"]:
-            raise ValueError("unexpected pilot checkpoint contract")
+        check_checkpoint_contract(checkpoint, summary["contract"])
         if not all(bool(torch.isfinite(v).all()) for v in checkpoint["model_state"].values() if torch.is_tensor(v)):
             raise ValueError("non-finite saved model weights")
         if file_sha256(path) != digest:
