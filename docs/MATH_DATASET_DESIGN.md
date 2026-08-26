@@ -221,6 +221,10 @@ They do not certify the full V2 task distribution or a future large tower.
 
 ## Durable structure for larger math towers
 
+The current implementation milestone is the [single V1-style three-epoch math
+repair trial](MATH_V1_STYLE_REPAIR_TRIAL.md), replacing further primitive-arm
+comparisons with one graded worked-solution training path.
+
 Use the same principles before increasing width/depth or targeting a 4B tower:
 
 1. **Define support.** Specify operations, numeric ranges, number representations,
