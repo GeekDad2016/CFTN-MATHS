@@ -1,6 +1,5 @@
 import copy
-from fractions import Fraction
-import random
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -12,7 +11,7 @@ from cftn_text.math_primitive_data import (
 )
 from cftn_text.tokenizer import ByteMathTokenizer, SequenceTooLongError
 from cftn_text.verified_math_data import fingerprint
-from tools.pilot_math_primitives import native_gate, prerequisite_gate, primitive_score, schedule
+from tools.pilot_math_primitives import generate_with_termination, native_gate, prerequisite_gate, primitive_score, schedule
 
 
 @pytest.mark.parametrize("question,expected", [
@@ -132,3 +131,38 @@ def test_strict_scoring_and_fail_closed_gates():
     target = {f: {"accuracy": .5, "budget_hits": 0} for f in ("two_variable_systems", "arithmetic__mul", "broad_diagnostic")}
     gate = native_gate(target, target, baseline, baseline)
     assert not gate["pass"] and not gate["production_acceptance"]
+
+
+def test_correct_answer_without_correct_work_cannot_pass_worked_gate():
+    families = FOUNDATIONS + ("variables_both_sides", "nested_parentheses")
+    report = {f: {"accuracy": 1., "valid_rate": 1., "budget_hits": 0, "exact_target_rate": 0.} for f in families}
+    assert prerequisite_gate(report, report)["pass"]
+    assert not prerequisite_gate(report, report, require_exact_trace=True)["pass"]
+
+
+def test_generation_budget_uses_actual_tokens_and_requires_eos():
+    class Scripted(torch.nn.Module):
+        max_sequence_length = 4096
+
+        def __init__(self, script):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(1))
+            self.script = script
+
+        def forward(self, ids, mask, prefixes):
+            logits = torch.full((*ids.shape, 260), -1000.)
+            for i in range(len(ids)):
+                last = int(mask[i].sum()) - 1
+                offset = last + 1 - int(prefixes[i])
+                logits[i, last, self.script[min(offset, len(self.script) - 1)]] = 1.
+            return SimpleNamespace(logits=logits)
+
+    tokenizer = ByteMathTokenizer()
+    answer = "<answer>6</answer>"
+    tokens = tokenizer.encode(answer)
+    normal = generate_with_termination(Scripted(tokens + [2]), tokenizer, ["Calculate 2*3."], 256)[0]
+    assert normal["generation"] == answer and normal["eos_terminated"]
+    assert not normal["budget_hit"] and normal["generated_tokens"] == len(tokens) + 1
+    capped = generate_with_termination(Scripted(tokens + [0]), tokenizer, ["Calculate 2*3."], len(tokens) + 5)[0]
+    assert capped["generation"] == answer  # decoding hides the invalid PAD tokens
+    assert capped["budget_hit"] and capped["unexpected_control_token"] and not capped["eos_terminated"]

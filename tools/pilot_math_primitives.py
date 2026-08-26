@@ -20,8 +20,7 @@ from cftn_text.data_generator import file_sha256
 from cftn_text.math_primitive_data import (
     ARMS, COMPOSITIONS, FOUNDATIONS, PrimitiveCollator, lesson, make_corpus,
 )
-from cftn_text.specialist_evaluation import generate_math_tower
-from cftn_text.tokenizer import ByteMathTokenizer
+from cftn_text.tokenizer import ByteMathTokenizer, pad_1d
 from cftn_text.training import build_math_tower_for_checkpoint
 from cftn_text.v2_metrics import score_v2_generations
 from cftn_text.verified_math_data import REPLAY_FAMILIES, TARGET_FAMILIES, fingerprint
@@ -39,13 +38,49 @@ def primitive_score(row: dict, text: str, cap: int) -> dict:
             "budget_hit": len(ByteMathTokenizer().encode(text)) >= cap}
 
 
-def prerequisite_gate(reports: dict, baseline_replay: dict) -> dict:
+def prerequisite_gate(reports: dict, baseline_replay: dict, *, require_exact_trace: bool = False) -> dict:
     gates = {family: (reports.get(family, {}).get("accuracy", 0) >= .90
                       and reports[family]["valid_rate"] >= .99
-                      and reports[family]["budget_hits"] == 0) for family in FOUNDATIONS}
+                      and reports[family]["budget_hits"] == 0
+                      and (not require_exact_trace or reports[family].get("exact_target_rate", 0) >= .90)) for family in FOUNDATIONS}
     gates["replay"] = all(reports.get(f, {}).get("accuracy", 0) >= baseline_replay[f]["accuracy"] - .03
                           for f in REPLAY_FAMILIES)
     return {"gates": gates, "pass": all(gates.values()), "production_acceptance": False}
+
+
+@torch.inference_mode()
+def generate_with_termination(model, tokenizer, problems, cap):
+    """Diagnostic greedy decoder retaining EOS/control-token evidence.
+
+    Decoded byte length alone can miss capped runs containing special tokens or
+    count UTF-8 replacement characters incorrectly. Production decoder is unchanged.
+    """
+    device = next(model.parameters()).device
+    sequences = [tokenizer.encode_generation_prefix(p, model.max_sequence_length) for p in problems]
+    prefixes = [len(s) for s in sequences]
+    prefix_tensor = torch.tensor(prefixes, device=device, dtype=torch.long)
+    ended = [False] * len(problems)
+    for _ in range(cap):
+        ids, mask = pad_1d(sequences, tokenizer.pad_token_id)
+        ids, mask = ids.to(device), mask.to(device)
+        logits = model(ids, mask, prefix_tensor).logits
+        last = mask.sum(dim=1) - 1
+        tokens = logits[torch.arange(len(problems), device=device), last].argmax(-1).tolist()
+        for i, token in enumerate(tokens):
+            if ended[i] or len(sequences[i]) >= model.max_sequence_length:
+                continue
+            sequences[i].append(token)
+            ended[i] = token == tokenizer.eos_token_id
+        if all(ended) or all(done or len(s) >= model.max_sequence_length for done, s in zip(ended, sequences)):
+            break
+    result = []
+    for i, sequence in enumerate(sequences):
+        tokens = sequence[prefixes[i]:]
+        result.append({"generation": tokenizer.decode(tokens), "generated_tokens": len(tokens),
+                       "eos_terminated": ended[i], "budget_hit": not ended[i] and len(tokens) >= cap,
+                       "unexpected_control_token": any(t in (0, 1, 3) for t in tokens),
+                       "context_limit_hit": not ended[i] and len(sequence) >= model.max_sequence_length})
+    return result
 
 
 def native_gate(report: dict, baseline: dict, replay: dict, baseline_replay: dict) -> dict:
@@ -134,8 +169,8 @@ def run_locked(args) -> None:
                 "max_total_seconds": 2100, "max_seconds_per_training_stage": 600,
                 "primitive_generation_cap": 256, "native_generation_cap": 1024,
                 "memorization_gate": "training-set exact target >=.95 and valid >=.99, no budget hits",
-                "foundation_gate": "every family >=.90 native accuracy, >=.99 valid, zero caps; replay drop <=.03",
-                "composition_gate": "each family >=.85 native accuracy, >=.99 valid, zero caps; replay drop <=.03",
+                "foundation_gate": "every family >=.90 native accuracy (and exact targets for compact work), >=.99 valid/EOS, zero caps; replay drop <=.03",
+                "composition_gate": "each family >=.85 native accuracy (and exact targets for compact work), >=.99 valid/EOS, zero caps; replay drop <=.03",
                 "native_screen": "targeted mean +.05 vs saved zero-update; neither target worse; replay/broad drop <=.03; zero target caps",
                 "production_acceptance": False, "checkpoint_promotion": False,
                 "long_training_authorized": False, "inference_solver": False,
@@ -180,11 +215,16 @@ def run_locked(args) -> None:
                 deadline()
                 status(state="evaluating", arm=arm, stage=stage, family=family, batch=offset // 16 + 1)
                 chunk = rows[offset:offset + 16]
-                texts, _ = generate_math_tower(model, tokenizer, [r["problem"] for r in chunk], max_new_tokens=cap)
-                for row, text in zip(chunk, texts):
+                decoded = generate_with_termination(model, tokenizer, [r["problem"] for r in chunk], cap)
+                for row, decoding in zip(chunk, decoded):
+                    text = decoding["generation"]
                     item = {"record_id": row["record_id"], "problem": row["problem"],
                             "expected": row["normalized_answer"], "expected_trace": row["target_trace"],
-                            "generation": text, **primitive_score(row, text, cap)}
+                            **primitive_score(row, text, cap), **decoding}
+                    clean_stop = decoding["eos_terminated"] and not decoding["unexpected_control_token"]
+                    item["format_valid"] &= clean_stop
+                    item["correct"] &= clean_stop
+                    item["exact_target"] &= clean_stop
                     generated.append(item)
                     append_jsonl(item, directory / f"{family}.generations.jsonl")
             n = len(rows)
@@ -196,8 +236,11 @@ def run_locked(args) -> None:
                       "elapsed_seconds": time.monotonic() - tick,
                       "generated_bytes": sum(len(r["generation"].encode()) for r in generated)}
             if family in REPLAY_FAMILIES or stage == "native":
-                metrics, _ = score_v2_generations([g["generation"] for g in generated], rows)
-                report["accuracy"], report["valid_rate"] = metrics["accuracy"], metrics["valid_rate"]
+                metrics, successes = score_v2_generations([g["generation"] for g in generated], rows)
+                # Keep standard V2 scoring alongside stricter termination checks.
+                clean = [g["eos_terminated"] and not g["unexpected_control_token"] for g in generated]
+                report["accuracy"] = sum(ok and stop for ok, stop in zip(successes, clean)) / n
+                report["valid_rate"] = sum(g["format_valid"] for g in generated) / n
                 report["v2_metrics"] = metrics
             reports[family] = report
             atomic_json_dump(reports, directory / "validation.json")
@@ -283,10 +326,11 @@ def run_locked(args) -> None:
                           and all(v["valid_rate"] >= .99 and v["budget_hits"] == 0 for v in report.values()))
                 decision = {"pass": passed, "training_recall_only": True}
             else:
-                decision = prerequisite_gate(report, reports["baseline"])
+                decision = prerequisite_gate(report, reports["baseline"], require_exact_trace=arm == "compact_worked")
                 if stage == "composition":
                     decision["composition_gates"] = {f: (report[f]["accuracy"] >= .85
-                        and report[f]["valid_rate"] >= .99 and report[f]["budget_hits"] == 0) for f in COMPOSITIONS}
+                        and report[f]["valid_rate"] >= .99 and report[f]["budget_hits"] == 0
+                        and (arm != "compact_worked" or report[f]["exact_target_rate"] >= .85)) for f in COMPOSITIONS}
                     decision["pass"] &= all(decision["composition_gates"].values())
             decisions[f"{arm}/{stage}"] = decision
             atomic_json_dump({"reports": reports, "costs": costs, "decisions": decisions}, output / "interim.json")
