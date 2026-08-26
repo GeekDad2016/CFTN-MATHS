@@ -33,8 +33,11 @@ def first_procedure_error(row: dict, text: str) -> dict:
         if (got.name, got.op) != (want.name, want.op):
             return dict(result, error="wrong_step_or_operation", first_step=want.name, observed=raw[:160])
         try:
-            operands_match = (Fraction(got.left) == Fraction(want.left) and
-                              Fraction(got.right) == Fraction(want.right))
+            left, right = Fraction(got.left), Fraction(got.right)
+            wanted_left, wanted_right = Fraction(want.left), Fraction(want.right)
+            operands_match = ((left, right) == (wanted_left, wanted_right) or
+                              (got.op in ("add", "multiply") and
+                               (left, right) == (wanted_right, wanted_left)))
             if not operands_match:
                 return dict(result, error="wrong_operand_binding", first_step=want.name, observed=raw[:160])
             got.check()
@@ -67,7 +70,8 @@ def analyze(root: Path) -> dict:
             families[family] = {"examples": len(rows), "first_error_counts": dict(errors),
                                 "correct_prefix_step_histogram": dict(stages), "rows": details}
         result["arms"][arm] = families
-    result["caveat"] = "Legacy arms were not trained for this procedure grammar; their grammar failures are not comparable arithmetic scores."
+    result["caveat"] = ("This checks the prescribed procedure, accepting commutative operand swaps, not every possible correct derivation. "
+                        "Legacy arms were not trained for this grammar; their grammar failures are not comparable arithmetic scores.")
     return result
 
 

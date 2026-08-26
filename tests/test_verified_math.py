@@ -50,6 +50,8 @@ def test_first_error_analysis_distinguishes_arithmetic_from_wrong_binding():
     row = record()
     trace = verified_record(row)["target_trace"]
     assert first_procedure_error(row, trace)["error"] is None
+    swapped = trace.replace("ad=multiply(4,12)=48", "ad=multiply(12,4)=48")
+    assert first_procedure_error(row, swapped)["error"] is None
     wrong_value = trace.replace("ad=multiply(4,12)=48", "ad=multiply(4,12)=49")
     assert first_procedure_error(row, wrong_value)["error"] == "wrong_computed_value"
     wrong_operand = trace.replace("ad=multiply(4,12)=48", "ad=multiply(4,13)=52")
