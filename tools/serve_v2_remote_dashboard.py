@@ -27,7 +27,7 @@ except ImportError:
 
 artifact_root = Path("/workspace/cftn-text/artifacts/v2_broad_math_400k_r4")
 data_root = Path("/workspace/CFTN-MATHS/data/manifests/v2_broad_math_400k_r4")
-markers = ("run_v2.py", "prepare_v2_data", "train_math_tower", "recover_v2_math", "train_v2_dispatcher", "train_v1_3_integration", "evaluate_v2", "evaluate_v1_3")
+markers = ("run_v2.py", "prepare_v2_data", "train_math_tower", "recover_v2_math", "train_v2_dispatcher", "train_v1_3_integration", "evaluate_v2", "evaluate_v1_3", "train_v2_verified_school")
 sensitive_names = {
     "api_key",
     "authorization",
@@ -75,6 +75,13 @@ def read_yaml(path):
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError, yaml.YAMLError):
         return {}
+
+def read_array(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, list) else []
+    except (OSError, ValueError):
+        return []
 
 def redact(value):
     if isinstance(value, dict):
@@ -223,6 +230,60 @@ if recovery_root is not None:
         "source_checkpoint_sha256": recovery_contract.get("source_checkpoint_sha256"),
     }
     pipeline["stages"] = pipeline_stages
+school_trial = {}
+for trial_root in sorted(artifact_root.glob("math_verified_school_trial*"), key=modified_unix, reverse=True):
+    if not trial_root.is_dir():
+        continue
+    trial_contract = read_json(trial_root / "contract.json")
+    if trial_contract.get("format") != "cftn_v2_verified_school_trial_v1":
+        continue
+    trial_status = read_json(trial_root / "status.json")
+    epochs = read_array(trial_root / "epoch_reports.json")
+    trial_summary = read_json(trial_root / "summary.json")
+    latest_epoch = int(epochs[-1].get("epoch", 0)) if epochs else 0
+    observing_epoch = int(trial_status.get("epoch", latest_epoch))
+    process_observation = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            argv = (proc / "cmdline").read_bytes().split(b"\0")
+            if b"tools.train_v2_verified_school" not in argv or str(trial_root).encode() not in argv:
+                continue
+            if not argv or "python" not in Path(os.fsdecode(argv[0])).name:
+                continue
+            wait = (proc / "wchan").read_text().strip()
+            output_open = any(str(fd.readlink()).startswith(str(trial_root) + "/") for fd in (proc / "fd").iterdir())
+            process_observation.append({"pid": int(proc.name), "wait_channel": wait,
+                                        "persistent_output_open": output_open})
+        except (OSError, PermissionError):
+            continue
+    examples = []
+    for path in sorted((trial_root / f"epoch_{latest_epoch:03d}" / "validation" / "current").glob("*.json")):
+        mismatches = [r for r in read_array(path) if r.get("generation") != r.get("expected_trace")
+                      or not r.get("eos_terminated") or r.get("unexpected_control_token")]
+        examples.extend({"family": path.stem, **row} for row in mismatches[:5])
+    school_trial = redact({
+        "name": trial_root.name, "directory": str(trial_root), "status": trial_status,
+        "status_modified_unix": modified_unix(trial_root), "contract": trial_contract,
+        "process_observation": process_observation,
+        "live_validation": read_json(trial_root / f"epoch_{observing_epoch:03d}" / "validation.json"),
+        "manifest": read_json(trial_root / "manifest.json"), "epochs": epochs,
+        "training_metrics": read_array(trial_root / "metrics.json")[-250:],
+        "baseline": read_json(trial_root / "epoch_000" / "validation.json"),
+        "baseline_native": read_json(trial_root / "epoch_000" / "native.json"),
+        "final_native": read_json(trial_root / f"epoch_{trial_contract['settings']['epochs']:03d}" / "native.json"),
+        "summary": {k: trial_summary[k] for k in ("state", "trial_only", "elapsed_seconds", "production_acceptance", "checkpoint_promotion", "source_preserved") if k in trial_summary},
+        "nonexact_examples": examples, "examples_epoch": latest_epoch,
+        "checkpoints": [read_json(p) for p in sorted(trial_root.glob("checkpoint_epoch_*.json"))],
+    })
+    stage = trial_root.name
+    stage_directories[stage] = stage
+    pipeline = dict(pipeline)
+    pipeline.update(state=trial_status.get("state", "starting"), current_stage=stage,
+                    repository_revision=trial_contract.get("revision"))
+    pipeline["stages"] = {**pipeline.get("stages", {}), stage: {"state": trial_status.get("state", "starting"), "trial_only": True}}
+    break
 stage_artifacts = {}
 for stage_name, directory in stage_directories.items():
     stage_root = artifact_root if directory == "." else artifact_root / directory
@@ -241,6 +302,10 @@ for stage_name, directory in stage_directories.items():
             "summary": summary,
             "report": report,
         }
+if school_trial:
+    stage_artifacts[stage] = {"directory": school_trial["directory"], "status": school_trial["status"],
+                              "metrics": school_trial["epochs"], "summary": school_trial["summary"],
+                              "contract": school_trial["contract"]}
 processes = []
 for line in command(["ps", "-eo", "pid=,ppid=,etime=,stat=,%cpu=,%mem=,args="]).splitlines():
     if any(marker in line for marker in markers):
@@ -264,14 +329,14 @@ for path in artifact_root.rglob("wandb_run.json"):
     parsed = read_json(path)
     if parsed:
         wandb_runs.append({"path": str(path), **redact(parsed)})
-if recovery_root is not None and stage == recovery_stage:
+if school_trial or (recovery_root is not None and stage == recovery_stage):
     stdout = tail(artifact_root / f"{stage}.stdout.log")
     stderr = tail(artifact_root / f"{stage}.stderr.log")
 else:
     stdout = tail(artifact_root / "pipeline_logs" / f"{stage}.stdout.log") if stage else {}
     stderr = tail(artifact_root / "pipeline_logs" / f"{stage}.stderr.log") if stage else {}
 disk = command(["df", "-h", "/workspace"]).splitlines()[-1:] 
-print(json.dumps({"format": "cftn_text_remote_dashboard_v2", "updated_unix": time.time(), "artifact_root": str(artifact_root), "data_root": str(data_root), "pipeline": pipeline, "training_contract": training_contract, "data_preparation": redact(read_json(data_root / "prepare_status.json")), "data_manifest": redact(read_json(data_root / "manifest.json")), "stage_artifacts": stage_artifacts, "current_stage_artifact": stage_artifacts.get(stage, {}), "gpu": {"gpus": gpus}, "processes": processes, "checkpoints": checkpoints, "wandb": {"preflight": redact(read_json(artifact_root / "startup_preflight.json")).get("wandb", {}), "runs": wandb_runs}, "logs": {"stdout": stdout, "stderr": stderr}, "disk": disk}, separators=(",", ":")))
+print(json.dumps({"format": "cftn_text_remote_dashboard_v2", "updated_unix": time.time(), "artifact_root": str(artifact_root), "data_root": str(data_root), "pipeline": pipeline, "training_contract": training_contract, "school_trial": school_trial, "data_preparation": redact(read_json(data_root / "prepare_status.json")), "data_manifest": redact(read_json(data_root / "manifest.json")), "stage_artifacts": stage_artifacts, "current_stage_artifact": stage_artifacts.get(stage, {}), "gpu": {"gpus": gpus}, "processes": processes, "checkpoints": checkpoints, "wandb": {"preflight": redact(read_json(artifact_root / "startup_preflight.json")).get("wandb", {}), "runs": wandb_runs}, "logs": {"stdout": stdout, "stderr": stderr}, "disk": disk}, separators=(",", ":")))
 PY
 '''
 
@@ -353,7 +418,53 @@ function trainingAssessment(d,p,a,issues,curr){let rows=a.metrics||[];if(!rows.l
 function gateValue(name,value){return /(accuracy|rate)/i.test(name)?pct(value):n(value)}
 function acceptancePanel(last,curr){if(!last?.epoch)return '<span class=muted>No completed validation epoch yet.</span>';let acceptance=last.curriculum_acceptance||{},checks=acceptance.checks||{},entries=Object.entries(checks),passed=entries.filter(([,v])=>v.pass).length,rows=entries.map(([name,v])=>[name.replaceAll(':',' · ').replaceAll('_',' '),gateValue(name,v.observed),numeric(v.minimum)?'≥ '+gateValue(name,v.minimum):numeric(v.maximum)?'≤ '+gateValue(name,v.maximum):'—',v.pass?'PASS':'MISS']),eligible=last.checkpoint_eligible===true,promoted=last.checkpoint_promoted===true,terminal=acceptance.terminal_epoch===true,level=acceptance.pass?'ok':'warn',headline=acceptance.pass?'All acceptance gates pass':passed+' / '+entries.length+' gates pass',decision=eligible?(promoted?'Eligible and promoted':'Eligible, not promoted'):'Not checkpoint-eligible';return `<div class="callout ${acceptance.pass?'okay':''}"><span class="pill ${level}">${esc(headline)}</span><p><b>Epoch ${n(last.epoch)}</b> · ${terminal?'terminal gate':'interim measurement'} · <b>${esc(decision)}</b>.</p><p>${terminal?'This epoch is an authoritative phase decision.':'The authoritative '+esc(String(curr.active.name||'phase').replaceAll('_',' '))+' decision is at epoch '+n(curr.active.through_epoch)+'.'} Selection ${n(last.selection_metric)}; best ${n(last.best_metric)}.</p></div>`+tbl(rows,['Gate','Observed','Requirement','Result'])}
 function breakdownTables(validation){let b=validation?.breakdowns||{},html='';for(const key of ['by_source','by_family','by_difficulty']){let rows=Object.entries(b[key]||{}).map(([name,v])=>[name,n(v.examples),n(v.language_loss),pct(v.teacher_forced_token_accuracy),pct(v.teacher_forced_sequence_accuracy)]);if(rows.length)html+=`<h3>${esc(key.replace('by_','By '))}</h3>`+tbl(rows,['Cohort','N','Loss','Token','Sequence'])}return html||'<span class=muted>Aggregate metrics only for this active run. Cohort breakdowns start with the updated trainer.</span>'}
-function draw(d){if(d.error){$('stamp').textContent='SSH error: '+d.error;return}let p=d.pipeline||{},a=d.current_stage_artifact||{},status=a.status||{},live=status.metrics||{},rows=a.metrics||[],last=latest(rows),v=last.validation||{},g=v.generation||{},q=d.data_preparation||{},done=q.completed??q.total_records??0,total=q.total??q.total_records??0,dp=total?done/total:0,issues=health(d,p,a),batch=live.epoch_batch_completed,totalBatch=live.epoch_batches_total,ep=live.epoch_progress??(totalBatch?batch/totalBatch:0);
+function drawSchool(d){
+const t=d.school_trial,s=t.status||{},c=t.contract?.settings||{},epochs=t.epochs||[],last=latest(epochs),live=latest(t.training_metrics||[]),baseline=t.baseline||{},partial=s.state==='evaluating'&&Number(s.epoch)>Number(last.epoch||0)&&Object.keys(t.live_validation||{}).length>0,v=partial?t.live_validation:last.validation||{},families=c.families||[],gate=partial?{}:last.curriculum_gate||{},checks=gate.gates||{},threshold=c.band_gate||{},gpu=d.gpu?.gpus?.[0]||{};
+const terminal=['completed','error','failed_acceptance'].includes(s.state),band=s.band||s.final_band||last.band||'foundations',epoch=s.epoch??last.epoch??0;
+const mean=panels=>families.length&&families.every(f=>numeric(panels['current/'+f]?.accuracy))?families.reduce((a,f)=>a+Number(panels['current/'+f].accuracy),0)/families.length:null;
+const oldMean=mean(baseline),newMean=mean(v),passed=Object.values(checks).filter(x=>x===true).length,progress=s.state==='completed'?1:s.state==='training'?Number(s.batch||0)/Math.max(1,Number(s.batches||0)):null;
+const problems=[];
+const age=Math.max(0,d.updated_unix-t.status_modified_unix),storageWait=(t.process_observation||[]).some(p=>p.wait_channel==='request_wait_answer'&&p.persistent_output_open);
+if(s.state==='error')problems.push(s.error||'Trial error');
+if(!terminal&&!(d.processes||[]).some(p=>p.command.includes('train_v2_verified_school')))problems.push('Expected trial process is missing');
+if(!terminal&&age>120&&storageWait)problems.push('Waiting on persistent storage; last status '+dur(age)+' ago');
+else if(!terminal&&age>300)problems.push('No status movement for '+dur(age));
+if(/traceback|cuda error|out of memory|non-finite/i.test(d.logs?.stderr?.text||''))problems.push('Error recorded in stderr');
+const card=(label,value,detail='',level='')=>`<div class=card><b>${esc(label)}</b><div class="metric ${level}">${esc(value)}</div><div class=submetric>${esc(detail)}</div></div>`;
+$('stamp').textContent='Updated '+new Date(d.updated_unix*1000).toLocaleString()+' · refreshes every 30 seconds · read-only SSH · '+t.name;
+$('summary').innerHTML=card('Three-epoch repair trial',s.state||'starting',terminal?'No long training run started':'One bounded trainer',problems.length?'bad':'')+
+card('Epoch',n(epoch)+' / '+n(c.epochs),s.state==='training'?n(s.batch)+' / '+n(s.batches)+' batches':s.panel?'Evaluating '+s.panel:'Completed validation epochs: '+epochs.length)+
+card('Generated answer accuracy',pct(newMean),(partial?'Partial validation · ':'')+(numeric(oldMean)?'Foundation baseline: '+pct(oldMean):'Awaiting baseline'),gate.pass?'ok':'warn')+
+card('Curriculum gates',Object.keys(checks).length?passed+' / '+Object.keys(checks).length:'Awaiting validation','No production checkpoint promotion',gate.pass?'ok':'warn')+
+card('Training-average loss',n(live.loss_training_average),'Not validation loss · LR '+lr(live.learning_rate))+
+card('GPU',numeric(gpu.utilization_percent)?n(gpu.utilization_percent)+'%':'—',n(gpu.memory_used_mib)+' / '+n(gpu.memory_total_mib)+' MiB')+
+card('Health',problems.length?'Attention':terminal?'Finished':'Running',problems.join(' · ')||'No recorded runtime error',problems.length?'bad':'ok');
+$('current').innerHTML=tbl([[s.state,epoch,band,live.global_step,n(live.gradient_norm),dur(s.elapsed_seconds),s.panel||'',dur(age)]],[ 'State','Epoch','Numerical band','Global step','Gradient norm','Elapsed (recorded)','Evaluation panel','Status age'])+
+(progress===null?'':`<div class=bar><i style="width:${100*Math.min(1,progress)}%"></i></div>`)+`<details><summary>Raw live status and latest training average</summary><pre>${esc(JSON.stringify({status:s,training:live},null,2))}</pre></details>`;
+let gateRows=families.map(f=>{let p=v['current/'+f]||{};return [f,n(p.examples),pct(p.accuracy)+' / ≥'+pct(threshold.answer_accuracy),pct(p.valid_rate)+' / '+pct(threshold.valid_rate),pct(p.trace_exact_rate)+' / ≥'+pct(threshold.trace_exact_rate),n(p.budget_hits),f in checks?(checks[f]?'PASS':'MISS'):'Pending']});
+let replayNames=Object.keys(v).filter(k=>k.startsWith('replay/')),replayRows=replayNames.map(k=>[k.slice(7),pct(baseline[k]?.accuracy),pct(v[k].accuracy),signed(100*(v[k].accuracy-baseline[k]?.accuracy),2,' pp')]);
+$('acceptance').innerHTML=`<div class=callout><span class="pill ${gate.pass?'ok':'warn'}">${gate.pass?'Band gates passed':epochs.length?'Band gates not passed':'Awaiting first epoch'}</span><p>Requires ≥${pct(threshold.answer_accuracy)} generated answers, ${pct(threshold.valid_rate)} intact format, ≥${pct(threshold.trace_exact_rate)} exact worked solutions, zero output caps, and replay drop ≤${pct(threshold.maximum_replay_drop)}. At least ${n(c.minimum_epochs_per_band)} epochs in a band before advancing.</p><p><b>Trial completion is not acceptance.</b> Checkpoints remain non-promotable.</p></div>`+
+tbl(gateRows,['Family','N','Correct answers','Intact format','Exact work','Caps','Gate'])+'<h3>Retention of existing skills</h3>'+tbl(replayRows,['Replay family','Baseline','Latest','Change']);
+let counts=t.manifest?.counts||{},bandRows=(c.bands||[]).map(b=>[b,Object.values(counts[b]||{}).reduce((a,p)=>a+(p.train||0),0),b===band?'Current / final band':'Requires preceding gate',b==='foundations'?'Small signed arithmetic; V1 linear limits a≤8, |x|≤20, |b|≤50':b==='two_digit'?'Larger operands; V1 linear limits 16 / 50 / 125':'Larger operands; V1 linear limits 32 / 100 / 250']);
+$('curriculum').innerHTML=`<p><b>V1-style worked maths:</b> ${esc(families.join(', '))}. Exactly ${n(c.examples_per_epoch)} sampled examples per epoch; ${pct(c.replay_fraction)} unchanged replay. The number range expands only after measured acceptance, not automatically at a fixed epoch.</p>`+
+tbl(bandRows,['Band','Unique school training objects','State','Scope'])+`<p>Complete school examples: at most ${n(t.manifest?.maximum_encoded_length)} tokens. School train/validation object overlap: ${n(t.manifest?.train_validation_object_overlap)}. Advanced imported maths is not enabled in this trial.</p>`;
+const increasing=numeric(oldMean)&&numeric(newMean)&&newMean>oldMean;
+$('assessment').innerHTML=`<div class=callout><span class="pill ${problems.length?'bad':gate.pass?'ok':'warn'}">${problems.length?'Runtime attention required':gate.pass?'Current band passed':increasing?'Learning improved; mastery not yet demonstrated':'Awaiting convincing generated-answer results'}</span><p>${numeric(newMean)?'Latest current-band mean: '+pct(newMean)+'. ':''}These are <b>generated answers</b>, not teacher-forced token/sequence scores. Held-out wording, larger numbers and legacy transfer are separate diagnostics below.</p><p>${s.state==='completed'?'All three epochs finished. No automatic production continuation was started.':'Training is capped at three epochs.'}</p></div>`;
+let history=[{epoch:0,band:'foundations',validation:baseline},...epochs,...(partial?[{epoch:s.epoch,band,validation:v,partial:true}]:[])],colors=['#60a5fa','#5bd190','#c084fc','#ffc857','#ff7d74'],charts='';
+for(const b of [...new Set(history.map(e=>e.band))]){let group=history.filter(e=>e.band===b);charts+='<h3>'+esc(b)+' · generated-answer accuracy</h3>'+lineChart(families.map((f,i)=>({label:f,color:colors[i%colors.length],values:group.map(e=>({x:e.epoch,y:numeric(e.validation?.['current/'+f]?.accuracy)?Number(e.validation['current/'+f].accuracy):NaN}))})),{zeroOne:true})}
+$('trend').innerHTML=charts+tbl(history.map(e=>[e.epoch===0?'0 (baseline)':e.partial?e.epoch+' (partial validation)':e.epoch,e.band,...families.map(f=>pct(e.validation?.['current/'+f]?.accuracy)),n(e.training_loss),e.curriculum_gate?(e.curriculum_gate.pass?'PASS':'MISS'):e.partial?'Pending':'Not trained',dur(e.cost?.training_seconds)]),['Epoch','Band',...families,'Train loss','Band gate','Training time'])+'<h3>Training averages (not validation loss)</h3>'+lineChart([{label:'Training-average loss by epoch',color:'#60a5fa',values:epochs.map(e=>({x:e.epoch,y:Number(e.training_loss)}))}]);
+$('breakdowns').innerHTML=tbl(Object.entries(v).map(([name,p])=>[name,n(p.examples),pct(p.accuracy),pct(p.trace_exact_rate),pct(p.valid_rate),n(p.budget_hits),dur(p.elapsed_seconds)]),['Panel','N','Generated answer','Exact work','Intact format','Caps','Time'])+'<p class=muted>current = trained numerical band; wording = unseen phrasing; next_band = larger untrained support; replay = preserved old tasks.</p>';
+const native=t.final_native||{},oldNative=t.baseline_native||{},nativeNames=Object.keys(oldNative);
+$('generation').innerHTML='<h3>Original V2 transfer (baseline → final)</h3>'+tbl(nativeNames.map(k=>[k,n(oldNative[k].examples),pct(oldNative[k].accuracy),pct(native[k]?.accuracy),numeric(native[k]?.accuracy)?signed(100*(native[k].accuracy-oldNative[k].accuracy),2,' pp'):'Pending',n(native[k]?.budget_hits)]),['Panel','N','Baseline','Final','Change','Final caps'])+'<p class=muted>Paired 512-token diagnostic, not production acceptance. Final transfer is measured after epoch 3.</p>'+`<details><summary>Non-exact worked responses · epoch ${n(t.examples_epoch)} (up to 5 per family)</summary><p class=muted>A correct final answer can still have a non-exact worked trace. Full expected and generated text is shown.</p>`+tbl((t.nonexact_examples||[]).map(r=>[r.family,r.problem,r.expected,r.expected_trace,r.generation,r.eos_terminated?'EOS':'Unterminated',r.record_id]),['Family','Question','Answer','Expected work','Generated work','Termination','Record ID'])+'</details>';
+$('stages').innerHTML=tbl(Object.entries(d.pipeline?.stages||{}).map(([name,p])=>[name,p.state||'',p.trial_only?'Bounded trial':'Historical pipeline']),['Stage','State','Kind']);
+$('artifacts').textContent=JSON.stringify({trial:t.name,manifest:t.manifest,contract:t.contract,epochs:t.epochs,summary:t.summary},null,2);
+$('gpu').innerHTML=tbl((d.gpu?.gpus||[]).map(x=>[x.name,x.utilization_percent+'%',x.memory_used_mib+' / '+x.memory_total_mib+' MiB',x.temperature_c+'°C']),['GPU','Utilization','Memory','Temperature']);
+$('processes').innerHTML=tbl((d.processes||[]).map(x=>[x.pid,x.ppid,x.elapsed,x.state,x.command]),['PID','Parent','Elapsed','State','Command']);
+$('checkpoints').innerHTML=tbl((t.checkpoints||[]).map(x=>[x.path,x.sha256,x.production_eligible?'Eligible':'NOT production eligible']),['Trial checkpoint','SHA-256','Eligibility'])+'<p class=muted>Protected checkpoint preserved: '+esc(t.summary?.source_preserved===true?'verified after run':'checked before launch; rechecked at completion')+'</p>';
+$('wandb').innerHTML='<p>W&amp;B is disabled for this short trial. All results, generations and checkpoints are stored on the persistent pod volume and displayed here.</p>';
+$('stdout').textContent=d.logs?.stdout?.text||'';$('stderr').textContent=d.logs?.stderr?.text||'';
+}
+function draw(d){if(d.error){$('stamp').textContent='SSH error: '+d.error;return}if(d.school_trial?.name){drawSchool(d);return}let p=d.pipeline||{},a=d.current_stage_artifact||{},status=a.status||{},live=status.metrics||{},rows=a.metrics||[],last=latest(rows),v=last.validation||{},g=v.generation||{},q=d.data_preparation||{},done=q.completed??q.total_records??0,total=q.total??q.total_records??0,dp=total?done/total:0,issues=health(d,p,a),batch=live.epoch_batch_completed,totalBatch=live.epoch_batches_total,ep=live.epoch_progress??(totalBatch?batch/totalBatch:0);
 $('stamp').textContent='Updated '+new Date(d.updated_unix*1000).toLocaleString()+' · refreshes every 30 seconds · '+(d.disk||[]).join('');let curr=curriculumState(d,status,live,rows,ep),assessment=trainingAssessment(d,p,a,issues,curr),gpu0=d.gpu?.gpus?.[0]||{},gate=last.curriculum_acceptance||{},gateEntries=Object.values(gate.checks||{}),gatePassed=gateEntries.filter(x=>x.pass).length;
 $('summary').innerHTML=`<div class=card><b>Pipeline</b><div class="metric ${p.state==='error'?'bad':'ok'}">${esc(p.state||'missing')}</div><code>${esc(p.current_stage||'not running')}</code></div><div class=card><b>Epoch progress</b><div class=metric>${n(status.epoch??live.epoch)} · ${(100*Number(ep||0)).toFixed(1)}%</div><div>${n(batch)} / ${n(totalBatch)} batches</div><div class=bar><i style="width:${Math.max(0,Math.min(100,100*Number(ep||0)))}%"></i></div></div><div class=card><b>Rolling train loss</b><div class=metric>${n(live.train_loss_so_far)}</div><div class=submetric>${n(live.steps_per_second)} steps/s · LR ${lr(live.learning_rate)}</div></div><div class=card><b>GPU</b><div class="metric ${Number(gpu0.utilization_percent)>10?'ok':'warn'}">${numeric(gpu0.utilization_percent)?n(gpu0.utilization_percent)+'%':'—'}</div><div class=submetric>${n(gpu0.memory_used_mib)} / ${n(gpu0.memory_total_mib)} MiB · ${numeric(gpu0.temperature_c)?n(gpu0.temperature_c)+'°C':'—'}</div></div><div class=card><b>Latest broad generation</b><div class="metric ${get(last,'validation.generation.accuracy',0)>=0.3?'ok':'warn'}">${pct(get(last,'validation.generation.accuracy'))}</div><div class=submetric>valid format ${pct(get(last,'validation.generation.valid_rate'))} · epoch ${n(last.epoch)}</div></div><div class=card><b>Latest sequence accuracy</b><div class="metric ${get(last,'validation.teacher_forced_sequence_accuracy',0)>=0.3?'ok':'warn'}">${pct(get(last,'validation.teacher_forced_sequence_accuracy'))}</div><div class=submetric>token ${pct(get(last,'validation.teacher_forced_token_accuracy'))} · val loss ${n(get(last,'validation.loss'))}</div></div><div class=card><b>Acceptance gates</b><div class="metric ${gate.pass?'ok':'warn'}">${gateEntries.length?gatePassed+' / '+gateEntries.length:'—'}</div><div class=submetric>${last.checkpoint_eligible?'checkpoint eligible':'checkpoint not eligible'} · selection ${n(last.selection_metric)}</div></div><div class=card><b>System health</b><div class="metric health ${issues.length?'bad':'ok'}">${issues.length?'Attention':'Healthy'}</div><div class=submetric>${esc(issues.join(' · ')||assessment.label)}</div></div>`;
 $('current').innerHTML=tbl([[status.state||'',status.epoch??live.epoch??'',status.global_step??'',n(live.train_loss_so_far),lr(live.learning_rate),n(live.examples_per_second),n(live.steps_per_second),dur(status.elapsed_seconds),dur(live.eta_seconds_to_max_epochs_excluding_validation)]],['State','Epoch','Global step','Rolling train loss','LR','Examples/s','Steps/s','Elapsed','ETA'])+`<details><summary>All current status metrics</summary><pre>${esc(JSON.stringify(status,null,2))}</pre></details>`;
