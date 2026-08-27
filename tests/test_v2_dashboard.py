@@ -21,9 +21,14 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Acceptance gates" in PAGE
     assert "checkpoint not eligible" in PAGE
     assert "Awaiting second validation" in PAGE
-    assert "Latest validation breakdown" in PAGE
-    assert "Generation validation" in PAGE
-    assert "Acceptance panels" in PAGE
+    assert "How to read validation" in PAGE
+    assert "Current-phase learning" in PAGE
+    assert "Retention versus source baseline" in PAGE
+    assert "Future curriculum probes" in PAGE
+    assert "Global teacher-forced diagnostics" in PAGE
+    assert "Generation examples" in PAGE
+    assert "Current phase learned; retention below floor" in PAGE
+    assert "Exact full trace" in PAGE
     assert "generation_panels" in PAGE
     assert "Raw artifacts for every stage" in PAGE
     assert "teacher_forced_token_accuracy" in PAGE
@@ -37,6 +42,9 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Other skill buckets/epoch" in PAGE
     assert "competency_gated_v1" in PAGE
     assert "DeepMind numeric" in PAGE
+    assert 'class="summary-grid"' in PAGE
+    assert ".summary-grid{grid-template-columns:1fr" in PAGE
+    assert "repeat(2,minmax(0,1fr))" not in PAGE
     assert '"math_full_supervision*"' in REMOTE_PROBE
     assert '"math_competency_curriculum*"' in REMOTE_PROBE
     assert '"train_v2_full_supervision"' in REMOTE_PROBE
@@ -63,6 +71,9 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert '"recover_v2_math"' in REMOTE_PROBE
     assert 'recovery_root / "recovery_contract.json"' in REMOTE_PROBE
     assert 'artifact_root.glob(f"{stage}*.stdout.log")' in REMOTE_PROBE
+    assert 'read_json(stage_root / "retention_baseline.json")' in REMOTE_PROBE
+    assert '"retention_baseline": retention_baseline' in REMOTE_PROBE
+    assert '"retention_baseline": recovery_contract.get("retention_baseline")' in REMOTE_PROBE
 
 
 def test_remote_probe_returns_structured_ssh_failure(monkeypatch):
@@ -151,5 +162,115 @@ assert.ok(elements.stamp.textContent.includes('refreshes every 30 seconds'));
 console.log('school dashboard render checks passed');
 """
     result = subprocess.run([node], input=bootstrap + script + "\nconst fixture=" + json.dumps(fixture) + ";\n" + checks,
-                            capture_output=True, text=True, check=True)
+                            capture_output=True, text=True, encoding="utf-8", check=True)
     assert "render checks passed" in result.stdout
+
+
+def test_competency_dashboard_separates_phase_retention_future_and_global_metrics():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("JavaScript rendering check requires Node; acceptance executes on RunPod with Node")
+    phase = {
+        "name": "verified_integer_foundations",
+        "minimum_epochs": 2,
+        "maximum_epochs": 8,
+        "advance_after_consecutive_passes": 2,
+        "primary_generation_panel": "school",
+        "minimum_generation_accuracy": 0.99,
+        "minimum_valid_rate": 1.0,
+        "minimum_generation_accuracy_by_panel": {"generated_foundations": 0.9, "wording": 0.9},
+        "minimum_valid_rate_by_panel": {"generated_foundations": 0.99, "wording": 0.99},
+        "quota_groups": [],
+    }
+    panels = {
+        "school": {"examples": 320, "accuracy": 1.0, "valid_rate": 1.0},
+        "generated_foundations": {"examples": 384, "accuracy": 1.0, "valid_rate": 1.0},
+        "wording": {"examples": 320, "accuracy": 0.92, "valid_rate": 1.0},
+        "generated_rational": {"examples": 384, "accuracy": 0.08, "valid_rate": 1.0,
+                               "failure_examples": [{"problem": "<img src=x>", "expected_answer": "1", "generation": "bad"}]},
+        "broad": {"examples": 512, "accuracy": 0.18, "valid_rate": 1.0,
+                  "by_source": {"cftn_generated": {"examples": 60, "accuracy": 0.8},
+                                "deepmind_mathematics": {"examples": 452, "accuracy": 0.1}},
+                  "by_difficulty": {"1": {"examples": 10, "accuracy": 1.0},
+                                    "2": {"examples": 472, "accuracy": 0.14},
+                                    "3": {"examples": 30, "accuracy": 0.1}},
+                  "by_family": {"comparison__pair": {"examples": 10, "accuracy": 0.4},
+                                "algebra__polynomial_roots": {"examples": 10, "accuracy": 0.1}}},
+    }
+    checks = {
+        "broad_retention": {"observed": 0.18, "minimum": 0.263, "pass": False},
+        "primary_generation_accuracy": {"observed": 1.0, "minimum": 0.99, "pass": True},
+        "primary_valid_rate": {"observed": 1.0, "minimum": 1.0, "pass": True},
+        "panel:generated_foundations:generation_accuracy": {"observed": 1.0, "minimum": 0.9, "pass": True},
+        "panel:generated_foundations:valid_rate": {"observed": 1.0, "minimum": 0.99, "pass": True},
+        "panel:wording:generation_accuracy": {"observed": 0.92, "minimum": 0.9, "pass": True},
+        "panel:wording:valid_rate": {"observed": 1.0, "minimum": 0.99, "pass": True},
+    }
+    breakdowns = {
+        "by_source": {"cftn_generated": {"examples": 5000, "language_loss": 2.4,
+                                          "teacher_forced_token_accuracy": 0.77,
+                                          "teacher_forced_sequence_accuracy": 0.0},
+                      "deepmind_mathematics": {"examples": 7000, "language_loss": 0.4,
+                                               "teacher_forced_token_accuracy": 0.88,
+                                               "teacher_forced_sequence_accuracy": 0.14}},
+        "by_difficulty": {"1": {"examples": 834, "language_loss": 2.2,
+                                  "teacher_forced_token_accuracy": 0.82,
+                                  "teacher_forced_sequence_accuracy": 0.0}},
+        "by_family": {"algebra__polynomial_roots": {"examples": 146, "language_loss": 0.7,
+                                                      "teacher_forced_token_accuracy": 0.8,
+                                                      "teacher_forced_sequence_accuracy": 0.0}},
+    }
+    row = {"epoch": 3, "global_step": 30000, "train_loss": 0.2, "learning_rate": 1e-5,
+           "validation": {"loss": 1.1, "teacher_forced_token_accuracy": 0.84,
+                          "teacher_forced_sequence_accuracy": 0.08, "generation_panels": panels,
+                          "breakdowns": breakdowns},
+           "competency_curriculum_state": {"phase_index": 0, "phase_epoch": 3, "consecutive_passes": 0},
+           "curriculum_acceptance": {"pass": False, "phase": phase["name"], "phase_epoch": 3,
+                                     "primary_panel": "school", "checks": checks},
+           "curriculum_transition": {"advance": False, "complete": False, "failed": False,
+                                     "phase": phase["name"], "phase_epoch": 3, "maximum_epochs": 8,
+                                     "consecutive_passes": 0, "required_consecutive_passes": 2}}
+    fixture = {
+        "updated_unix": 2000,
+        "pipeline": {"state": "running", "current_stage": "math_competency_curriculum_v2", "stages": {}},
+        "processes": [{"pid": 1, "command": "python trainer"}], "logs": {}, "gpu": {"gpus": []},
+        "training_contract": {"competency_curriculum": True, "full_supervision": True,
+                              "validation_examples": 12000,
+                              "curriculum": {"transition_policy": "competency_gated_v1",
+                                             "examples_per_epoch": 400000, "phases": [phase]},
+                              "math_training": {}},
+        "current_stage_artifact": {"status": {"state": "training", "epoch": 4, "metrics": {}},
+                                   "metrics": [row],
+                                   "retention_baseline": {"accuracy": 0.293,
+                                                          "by_source": {"cftn_generated": {"examples": 60, "accuracy": 0.9},
+                                                                        "deepmind_mathematics": {"examples": 452, "accuracy": 0.21}},
+                                                          "by_difficulty": {"1": {"examples": 10, "accuracy": 1.0},
+                                                                            "2": {"examples": 472, "accuracy": 0.23},
+                                                                            "3": {"examples": 30, "accuracy": 1.0}},
+                                                          "by_family": {"comparison__pair": {"examples": 10, "accuracy": 0.78},
+                                                                        "algebra__polynomial_roots": {"examples": 10, "accuracy": 0.0}}}},
+        "data_manifest": {"splits": {"validation": {"count": 12000}}}, "stage_artifacts": {},
+        "checkpoints": [], "wandb": {}, "disk": [],
+    }
+    script = PAGE.split("<script>", 1)[1].split("</script>", 1)[0].replace("load();setInterval(load,30000)", "")
+    bootstrap = "const elements={}; const document={getElementById:x=>elements[x]||(elements[x]={innerHTML:'',textContent:''})};\n"
+    checks_js = """
+const assert=require('node:assert/strict');
+draw(fixture);
+assert.ok(elements.summary.innerHTML.includes('Latest phase answers'));
+assert.ok(elements.assessment.innerHTML.includes('Current phase learned; retention below floor'));
+assert.ok(elements.phaseValidation.innerHTML.includes('generated foundations'));
+assert.ok(!elements.phaseValidation.innerHTML.includes('generated rational'));
+assert.ok(elements.retentionValidation.innerHTML.includes('Retention below floor'));
+assert.ok(elements.retentionValidation.innerHTML.includes('Source baseline'));
+assert.ok(elements.futureValidation.innerHTML.includes('generated rational'));
+assert.ok(elements.futureValidation.innerHTML.includes('Diagnostic only'));
+assert.ok(elements.breakdowns.innerHTML.includes('12,000'));
+assert.ok(elements.breakdowns.innerHTML.includes('Exact full trace'));
+assert.ok(!elements.generation.innerHTML.includes('<img'));
+assert.ok(elements.generation.innerHTML.includes('&lt;img'));
+console.log('competency dashboard render checks passed');
+"""
+    result = subprocess.run([node], input=bootstrap + script + "\nconst fixture=" + json.dumps(fixture) + ";\n" + checks_js,
+                            capture_output=True, text=True, encoding="utf-8", check=True)
+    assert "competency dashboard render checks passed" in result.stdout
