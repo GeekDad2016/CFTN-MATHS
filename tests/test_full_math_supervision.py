@@ -16,6 +16,7 @@ from cftn_text.v2_data import iter_local_records, make_v2_record
 from cftn_text.v2_school_data import FAMILIES
 from cftn_text.verified_math_data import fingerprint
 from tools.train_v2_full_supervision import checked_settings
+from tools.run_v2_math_curriculum import checked_settings as checked_competency_settings
 
 
 @pytest.mark.parametrize("family,values", [(f, (3, -2, 10) if f == "linear_equation" else (12, -3)) for f in FAMILIES])
@@ -103,6 +104,20 @@ def test_full_settings_fail_closed(tmp_path):
     bad.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="weakened"):
         checked_settings(bad)
+
+
+def test_competency_settings_stage_verified_signal_and_fail_closed(tmp_path):
+    path = Path(__file__).parents[1] / "config/v2_full_supervision_v2.json"
+    value = checked_competency_settings(path)
+    assert value["curriculum"]["transition_policy"] == "competency_gated_v1"
+    assert [phase["maximum_epochs"] for phase in value["phases"]] == [8, 10, 12, 18, 22, 30]
+    assert all(phase["advance_after_consecutive_passes"] >= 2 for phase in value["phases"])
+    assert all(sum(group["examples"] for group in phase["quota_groups"]) == 400000 for phase in value["phases"])
+    value["phases"][0]["quota_groups"][0]["examples"] -= 1
+    bad = tmp_path / "bad_competency.json"
+    bad.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="quota groups"):
+        checked_competency_settings(bad)
 
 
 def test_exact_trace_gate_cannot_be_satisfied_by_correct_answer_only():

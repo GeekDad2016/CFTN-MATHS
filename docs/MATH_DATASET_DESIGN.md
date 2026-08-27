@@ -278,3 +278,13 @@ Use the same principles before increasing width/depth or targeting a 4B tower:
     mathematics, add proof-aware/formal or expert-reviewed verification rather
     than treating plausible text as a verified solution. Distillation teachers
     may propose work; their output is not ground truth without checking.
+
+## Implemented competency-gated successor
+
+The next controlled recipe is documented in
+[`MATH_COMPETENCY_CURRICULUM_V2.md`](../MATH_COMPETENCY_CURRICULUM_V2.md).
+It preserves the sealed corpus and 24-layer tower while replacing fixed epoch
+transitions and source-only sampling with repeated free-generation gates and
+disjoint skill buckets. This isolates curriculum/supervision from another
+capacity change. Imported DeepMind answers remain explicitly unverified; no
+plausible synthetic reasoning is relabelled as a verified procedure.

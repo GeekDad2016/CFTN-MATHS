@@ -11,6 +11,8 @@ from cftn_text.training import (
     _bridge_collapse_diagnostics,
     _bridge_stability_policy,
     _phase_generation_acceptance,
+    _initial_competency_curriculum_state,
+    _update_competency_curriculum_state,
     _should_stop_early,
     math_epoch_dataset,
 )
@@ -256,6 +258,90 @@ def test_source_quota_curriculum_is_deterministic_and_auditable():
     assert metadata["source_sampling"]["source_b"]["replacement_examples"] == 0
     assert sum(row["source"] == "source_a" for row in first.records) == 4
     assert sum(row["source"] == "source_b" for row in first.records) == 4
+
+
+def test_disjoint_skill_quota_groups_are_balanced_and_auditable():
+    records = [
+        {
+            "record_id": f"school-{index}",
+            "source": "verified_school_full",
+            "family": "addition" if index % 2 else "division",
+            "difficulty": 1,
+        }
+        for index in range(8)
+    ] + [
+        {
+            "record_id": f"broad-{index}",
+            "source": "deepmind_mathematics",
+            "family": "numbers__gcd" if index % 2 else "numbers__is_prime",
+            "difficulty": 2,
+        }
+        for index in range(8)
+    ]
+    phase = {
+        "name": "skills",
+        "through_epoch": 1,
+        "max_difficulty": 3,
+        "quota_groups": [
+            {"name": "verified", "examples": 6, "filters": {"sources": ["verified_school_full"]}},
+            {"name": "numeric", "examples": 4, "filters": {"sources": ["deepmind_mathematics"]}},
+        ],
+    }
+    config = {"data": {"format": "cftn_text_broad_math_v2", "curriculum": {
+        "enabled": True, "examples_per_epoch": 10, "phases": [phase]}}}
+    first, metadata = math_epoch_dataset(EquationDataset(records), config, epoch=1, seed=719)
+    second, _ = math_epoch_dataset(EquationDataset(records), config, epoch=1, seed=719)
+    assert [row["record_id"] for row in first.records] == [row["record_id"] for row in second.records]
+    assert metadata["sampling_policy"] == "quota_groups_v1"
+    assert metadata["sampled_source_counts"] == {
+        "deepmind_mathematics": 4,
+        "verified_school_full": 6,
+    }
+    assert metadata["quota_groups"]["verified"]["family_counts"] == {
+        "addition": 3,
+        "division": 3,
+    }
+
+
+def test_skill_quota_groups_reject_overlap():
+    records = [{"record_id": "same", "source": "a", "family": "f", "difficulty": 1}]
+    phase = {"name": "bad", "through_epoch": 1, "max_difficulty": 3, "quota_groups": [
+        {"name": "one", "examples": 1, "filters": {"sources": ["a"]}},
+        {"name": "two", "examples": 1, "filters": {"families": ["f"]}},
+    ]}
+    config = {"data": {"format": "cftn_text_broad_math_v2", "curriculum": {
+        "enabled": True, "examples_per_epoch": 2, "phases": [phase]}}}
+    with pytest.raises(ValueError, match="overlap"):
+        math_epoch_dataset(EquationDataset(records), config, epoch=1, seed=719)
+
+
+def test_competency_curriculum_advances_only_after_repeated_passes():
+    phases = [
+        {"name": "first", "minimum_epochs": 2, "maximum_epochs": 4,
+         "advance_after_consecutive_passes": 2},
+        {"name": "final", "minimum_epochs": 2, "maximum_epochs": 3,
+         "advance_after_consecutive_passes": 2, "stop_on_pass": True},
+    ]
+    state = _initial_competency_curriculum_state()
+    state, transition = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
+    assert not transition["advance"] and transition["consecutive_passes"] == 0
+    state, transition = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
+    assert not transition["advance"] and transition["consecutive_passes"] == 1
+    state, transition = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
+    assert transition["advance"] and state == {"phase_index": 1, "phase_epoch": 0, "consecutive_passes": 0}
+    state, _ = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
+    state, _ = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
+    state, transition = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
+    assert transition["complete"] and not transition["failed"]
+
+
+def test_competency_curriculum_fails_closed_at_phase_cap():
+    phases = [{"name": "first", "minimum_epochs": 2, "maximum_epochs": 2,
+               "advance_after_consecutive_passes": 2}]
+    state = _initial_competency_curriculum_state()
+    state, _ = _update_competency_curriculum_state(phases=phases, state=state, accepted=False)
+    _, transition = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
+    assert transition["failed"] and not transition["complete"]
 
 
 def test_broad_generation_acceptance_requires_every_panel_and_breakdown():

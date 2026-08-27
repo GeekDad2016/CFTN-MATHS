@@ -1,0 +1,187 @@
+{
+  "format": "cftn_full_math_training_v2",
+  "protected_checkpoint_sha256": "fe2c056a1ee1d4a3514537681d82124b0312f45c27f72f8e73d2afc747d53973",
+  "require_acceptance_for_best": true,
+  "promote_final_phase_only": true,
+  "production_acceptance": false,
+  "remaining_pipeline_enabled": false,
+  "retention_baseline": {"examples": 512, "maximum_drop": 0.03},
+  "curriculum": {
+    "enabled": true,
+    "examples_per_epoch": 400000,
+    "sampling": "auto",
+    "transition_policy": "competency_gated_v1"
+  },
+  "math_training": {
+    "max_epochs": 100,
+    "minimum_epochs": 1,
+    "early_stop_patience": 10,
+    "batch_size": 32,
+    "eval_batch_size": 32,
+    "num_workers": 4,
+    "learning_rate": 0.0001,
+    "minimum_learning_rate": 0.00002,
+    "warmup_fraction": 0.001,
+    "weight_decay": 0.01,
+    "gradient_clip": 1.0,
+    "precision": "bf16",
+    "answer_head_weight": 0.0,
+    "objective": "computation_roles_v1",
+    "role_weights": [0.25, 0.5, 0.25],
+    "input_view": "shared_problem_v1",
+    "target_mode": "full_trace_v1",
+    "report_every_steps": 100,
+    "keep_latest_checkpoints": 100,
+    "keep_working_checkpoints": 2,
+    "generation_validation": {
+      "enabled": true,
+      "every_epochs": 1,
+      "batch_size": 16,
+      "max_new_tokens": 512,
+      "failure_examples": 20,
+      "require_eos": true,
+      "panels": [
+        {"name": "school", "split": "school_validation", "phase_filtered": true, "examples": 640, "max_new_tokens": 256},
+        {"name": "wording", "split": "school_wording", "phase_filtered": true, "examples": 640, "max_new_tokens": 256},
+        {"name": "generated_foundations", "split": "validation", "examples": 384, "filters": {"sources": ["cftn_generated"], "families": ["variables_both_sides"]}},
+        {"name": "generated_rational", "split": "validation", "examples": 384, "filters": {"sources": ["cftn_generated"], "families": ["signed_fractions", "nested_parentheses"]}},
+        {"name": "generated_language", "split": "validation", "examples": 384, "filters": {"sources": ["cftn_generated"], "families": ["two_variable_systems", "multi_step_word_problem", "distractor_word_problem"]}},
+        {"name": "deepmind_numeric", "split": "validation", "examples": 512, "filters": {"sources": ["deepmind_mathematics"], "families": ["arithmetic__add_or_sub", "arithmetic__add_or_sub_in_base", "arithmetic__add_sub_multiple", "arithmetic__div", "arithmetic__mixed", "arithmetic__mul", "arithmetic__mul_div_multiple", "arithmetic__nearest_integer_root", "arithmetic__simplify_surd", "comparison__closest", "comparison__kth_biggest", "comparison__pair", "comparison__pair_composed", "comparison__sort", "measurement__conversion", "measurement__time", "numbers__base_conversion", "numbers__div_remainder", "numbers__div_remainder_composed", "numbers__gcd", "numbers__gcd_composed", "numbers__is_factor", "numbers__is_prime", "numbers__lcm", "numbers__lcm_composed", "numbers__list_prime_factors", "numbers__place_value", "numbers__round_number"]}},
+        {"name": "deepmind_symbolic", "split": "validation", "examples": 512, "filters": {"sources": ["deepmind_mathematics"], "families": ["algebra__linear_1d", "algebra__linear_1d_composed", "algebra__linear_2d", "algebra__linear_2d_composed", "algebra__polynomial_roots", "algebra__polynomial_roots_composed", "algebra__sequence_next_term", "algebra__sequence_nth_term", "calculus__differentiate", "calculus__differentiate_composed", "polynomials__add", "polynomials__coefficient_named", "polynomials__collect", "polynomials__compose", "polynomials__evaluate", "polynomials__evaluate_composed", "polynomials__expand", "polynomials__simplify_power", "probability__swr_p_level_set", "probability__swr_p_sequence"]}},
+        {"name": "broad", "split": "validation", "phase_filtered": false, "examples": 512}
+      ]
+    }
+  },
+  "phases": [
+    {
+      "name": "verified_integer_foundations",
+      "through_epoch": 8,
+      "minimum_epochs": 2,
+      "maximum_epochs": 8,
+      "advance_after_consecutive_passes": 2,
+      "max_difficulty": 3,
+      "max_school_difficulty": 1,
+      "quota_groups": [
+        {"name": "school_foundations", "examples": 200000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_foundations", "examples": 120000, "filters": {"sources": ["cftn_generated"], "families": ["variables_both_sides"]}},
+        {"name": "numeric_replay", "examples": 60000, "filters": {"sources": ["deepmind_mathematics"], "families": ["arithmetic__add_or_sub", "arithmetic__div", "arithmetic__mul", "comparison__pair", "numbers__is_factor", "numbers__is_prime"]}},
+        {"name": "language_replay", "examples": 20000, "filters": {"sources": ["gsm8k"]}}
+      ],
+      "primary_generation_panel": "school",
+      "minimum_generation_accuracy": 0.99,
+      "minimum_valid_rate": 1.0,
+      "minimum_generation_accuracy_by_family": {"addition": 0.99, "subtraction": 0.99, "multiplication": 0.99, "division": 0.99, "linear_equation": 0.99},
+      "minimum_trace_exact_by_family": {"addition": 0.95, "subtraction": 0.95, "multiplication": 0.95, "division": 0.95, "linear_equation": 0.95},
+      "minimum_generation_accuracy_by_panel": {"wording": 0.90, "generated_foundations": 0.90},
+      "minimum_valid_rate_by_panel": {"wording": 0.99, "generated_foundations": 0.99}
+    },
+    {
+      "name": "verified_rational_and_nested",
+      "through_epoch": 18,
+      "minimum_epochs": 3,
+      "maximum_epochs": 10,
+      "advance_after_consecutive_passes": 2,
+      "max_difficulty": 3,
+      "max_school_difficulty": 2,
+      "quota_groups": [
+        {"name": "school_two_digit", "examples": 160000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_rational", "examples": 160000, "filters": {"sources": ["cftn_generated"], "families": ["variables_both_sides", "signed_fractions", "nested_parentheses"]}},
+        {"name": "numeric_replay", "examples": 60000, "filters": {"sources": ["deepmind_mathematics"], "families": ["arithmetic__add_or_sub", "arithmetic__div", "arithmetic__mul", "arithmetic__mixed", "arithmetic__simplify_surd", "numbers__div_remainder", "numbers__gcd", "numbers__lcm"]}},
+        {"name": "language_replay", "examples": 20000, "filters": {"sources": ["gsm8k"]}}
+      ],
+      "primary_generation_panel": "school",
+      "minimum_generation_accuracy": 0.99,
+      "minimum_valid_rate": 1.0,
+      "minimum_generation_accuracy_by_family": {"addition": 0.99, "subtraction": 0.99, "multiplication": 0.99, "division": 0.99, "linear_equation": 0.99},
+      "minimum_trace_exact_by_family": {"addition": 0.95, "subtraction": 0.95, "multiplication": 0.95, "division": 0.95, "linear_equation": 0.95},
+      "minimum_generation_accuracy_by_panel": {"wording": 0.90, "generated_foundations": 0.90, "generated_rational": 0.75},
+      "minimum_valid_rate_by_panel": {"wording": 0.99, "generated_foundations": 0.99, "generated_rational": 0.99}
+    },
+    {
+      "name": "verified_systems_and_language",
+      "through_epoch": 30,
+      "minimum_epochs": 3,
+      "maximum_epochs": 12,
+      "advance_after_consecutive_passes": 2,
+      "max_difficulty": 3,
+      "max_school_difficulty": 3,
+      "quota_groups": [
+        {"name": "school_full_range", "examples": 120000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_all", "examples": 200000, "filters": {"sources": ["cftn_generated"]}},
+        {"name": "numeric_replay", "examples": 60000, "filters": {"sources": ["deepmind_mathematics"], "families": ["arithmetic__add_or_sub", "arithmetic__div", "arithmetic__mul", "comparison__pair", "numbers__gcd", "numbers__is_prime"]}},
+        {"name": "language_replay", "examples": 20000, "filters": {"sources": ["gsm8k"]}}
+      ],
+      "primary_generation_panel": "generated_language",
+      "minimum_generation_accuracy": 0.70,
+      "minimum_valid_rate": 0.99,
+      "minimum_generation_accuracy_by_panel": {"school": 0.99, "wording": 0.90, "generated_foundations": 0.90, "generated_rational": 0.75},
+      "minimum_valid_rate_by_panel": {"school": 1.0, "wording": 0.99, "generated_foundations": 0.99, "generated_rational": 0.99}
+    },
+    {
+      "name": "broad_numeric_algorithms",
+      "through_epoch": 48,
+      "minimum_epochs": 4,
+      "maximum_epochs": 18,
+      "advance_after_consecutive_passes": 2,
+      "max_difficulty": 3,
+      "max_school_difficulty": 3,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 80000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_replay", "examples": 140000, "filters": {"sources": ["cftn_generated"]}},
+        {"name": "deepmind_numeric", "examples": 160000, "filters": {"sources": ["deepmind_mathematics"], "families": ["arithmetic__add_or_sub", "arithmetic__add_or_sub_in_base", "arithmetic__add_sub_multiple", "arithmetic__div", "arithmetic__mixed", "arithmetic__mul", "arithmetic__mul_div_multiple", "arithmetic__nearest_integer_root", "arithmetic__simplify_surd", "comparison__closest", "comparison__kth_biggest", "comparison__pair", "comparison__pair_composed", "comparison__sort", "measurement__conversion", "measurement__time", "numbers__base_conversion", "numbers__div_remainder", "numbers__div_remainder_composed", "numbers__gcd", "numbers__gcd_composed", "numbers__is_factor", "numbers__is_prime", "numbers__lcm", "numbers__lcm_composed", "numbers__list_prime_factors", "numbers__place_value", "numbers__round_number"]}},
+        {"name": "language_replay", "examples": 20000, "filters": {"sources": ["gsm8k"]}}
+      ],
+      "primary_generation_panel": "deepmind_numeric",
+      "minimum_generation_accuracy": 0.40,
+      "minimum_valid_rate": 0.95,
+      "minimum_generation_accuracy_by_panel": {"school": 0.99, "wording": 0.90, "generated_language": 0.70},
+      "minimum_valid_rate_by_panel": {"school": 1.0, "wording": 0.99, "generated_language": 0.99}
+    },
+    {
+      "name": "broad_symbolic_algorithms",
+      "through_epoch": 70,
+      "minimum_epochs": 4,
+      "maximum_epochs": 22,
+      "advance_after_consecutive_passes": 2,
+      "max_difficulty": 3,
+      "max_school_difficulty": 3,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 80000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_replay", "examples": 120000, "filters": {"sources": ["cftn_generated"]}},
+        {"name": "deepmind_numeric", "examples": 80000, "filters": {"sources": ["deepmind_mathematics"], "families": ["arithmetic__add_or_sub", "arithmetic__add_or_sub_in_base", "arithmetic__add_sub_multiple", "arithmetic__div", "arithmetic__mixed", "arithmetic__mul", "arithmetic__mul_div_multiple", "arithmetic__nearest_integer_root", "arithmetic__simplify_surd", "comparison__closest", "comparison__kth_biggest", "comparison__pair", "comparison__pair_composed", "comparison__sort", "measurement__conversion", "measurement__time", "numbers__base_conversion", "numbers__div_remainder", "numbers__div_remainder_composed", "numbers__gcd", "numbers__gcd_composed", "numbers__is_factor", "numbers__is_prime", "numbers__lcm", "numbers__lcm_composed", "numbers__list_prime_factors", "numbers__place_value", "numbers__round_number"]}},
+        {"name": "deepmind_symbolic", "examples": 100000, "filters": {"sources": ["deepmind_mathematics"], "families": ["algebra__linear_1d", "algebra__linear_1d_composed", "algebra__linear_2d", "algebra__linear_2d_composed", "algebra__polynomial_roots", "algebra__polynomial_roots_composed", "algebra__sequence_next_term", "algebra__sequence_nth_term", "calculus__differentiate", "calculus__differentiate_composed", "polynomials__add", "polynomials__coefficient_named", "polynomials__collect", "polynomials__compose", "polynomials__evaluate", "polynomials__evaluate_composed", "polynomials__expand", "polynomials__simplify_power", "probability__swr_p_level_set", "probability__swr_p_sequence"]}},
+        {"name": "language_replay", "examples": 20000, "filters": {"sources": ["gsm8k"]}}
+      ],
+      "primary_generation_panel": "deepmind_symbolic",
+      "minimum_generation_accuracy": 0.25,
+      "minimum_valid_rate": 0.95,
+      "minimum_generation_accuracy_by_panel": {"school": 0.99, "wording": 0.90, "generated_language": 0.70, "deepmind_numeric": 0.35},
+      "minimum_valid_rate_by_panel": {"school": 1.0, "wording": 0.99, "generated_language": 0.99, "deepmind_numeric": 0.95}
+    },
+    {
+      "name": "broad_math_consolidation",
+      "through_epoch": 100,
+      "minimum_epochs": 10,
+      "maximum_epochs": 30,
+      "advance_after_consecutive_passes": 2,
+      "stop_on_pass": true,
+      "max_difficulty": 3,
+      "max_school_difficulty": 3,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 80000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_replay", "examples": 120000, "filters": {"sources": ["cftn_generated"]}},
+        {"name": "deepmind_numeric", "examples": 90000, "filters": {"sources": ["deepmind_mathematics"], "families": ["arithmetic__add_or_sub", "arithmetic__add_or_sub_in_base", "arithmetic__add_sub_multiple", "arithmetic__div", "arithmetic__mixed", "arithmetic__mul", "arithmetic__mul_div_multiple", "arithmetic__nearest_integer_root", "arithmetic__simplify_surd", "comparison__closest", "comparison__kth_biggest", "comparison__pair", "comparison__pair_composed", "comparison__sort", "measurement__conversion", "measurement__time", "numbers__base_conversion", "numbers__div_remainder", "numbers__div_remainder_composed", "numbers__gcd", "numbers__gcd_composed", "numbers__is_factor", "numbers__is_prime", "numbers__lcm", "numbers__lcm_composed", "numbers__list_prime_factors", "numbers__place_value", "numbers__round_number"]}},
+        {"name": "deepmind_symbolic", "examples": 90000, "filters": {"sources": ["deepmind_mathematics"], "families": ["algebra__linear_1d", "algebra__linear_1d_composed", "algebra__linear_2d", "algebra__linear_2d_composed", "algebra__polynomial_roots", "algebra__polynomial_roots_composed", "algebra__sequence_next_term", "algebra__sequence_nth_term", "calculus__differentiate", "calculus__differentiate_composed", "polynomials__add", "polynomials__coefficient_named", "polynomials__collect", "polynomials__compose", "polynomials__evaluate", "polynomials__evaluate_composed", "polynomials__expand", "polynomials__simplify_power", "probability__swr_p_level_set", "probability__swr_p_sequence"]}},
+        {"name": "language_replay", "examples": 20000, "filters": {"sources": ["gsm8k"]}}
+      ],
+      "primary_generation_panel": "broad",
+      "minimum_generation_accuracy": 0.70,
+      "minimum_valid_rate": 0.95,
+      "minimum_generation_accuracy_by_source": {"cftn_generated": 0.70, "deepmind_mathematics": 0.60},
+      "minimum_generation_accuracy_by_difficulty": {"1": 0.75, "2": 0.60, "3": 0.50},
+      "minimum_generation_accuracy_by_family": {"variables_both_sides": 0.90, "signed_fractions": 0.70, "nested_parentheses": 0.70, "two_variable_systems": 0.65, "multi_step_word_problem": 0.60, "distractor_word_problem": 0.55},
+      "minimum_generation_accuracy_by_panel": {"school": 0.99, "wording": 0.90, "deepmind_numeric": 0.50, "deepmind_symbolic": 0.35},
+      "minimum_valid_rate_by_panel": {"school": 1.0, "wording": 0.99, "deepmind_numeric": 0.95, "deepmind_symbolic": 0.95}
+    }
+  ]
+}

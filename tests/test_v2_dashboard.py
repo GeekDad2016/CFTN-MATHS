@@ -34,9 +34,13 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "refreshes every 30 seconds" in PAGE
     assert "setInterval(load,30000)" in PAGE
     assert "Full repaired math curriculum" in PAGE
-    assert "Broad replay samples/epoch" in PAGE
+    assert "Other skill buckets/epoch" in PAGE
+    assert "competency_gated_v1" in PAGE
+    assert "DeepMind numeric" in PAGE
     assert '"math_full_supervision*"' in REMOTE_PROBE
+    assert '"math_competency_curriculum*"' in REMOTE_PROBE
     assert '"train_v2_full_supervision"' in REMOTE_PROBE
+    assert '"run_v2_math_curriculum"' in REMOTE_PROBE
 
 
 def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
@@ -58,7 +62,7 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert 'data/manifests/v2_broad_math_400k_r4' in REMOTE_PROBE
     assert '"recover_v2_math"' in REMOTE_PROBE
     assert 'recovery_root / "recovery_contract.json"' in REMOTE_PROBE
-    assert 'artifact_root / f"{stage}.stdout.log"' in REMOTE_PROBE
+    assert 'artifact_root.glob(f"{stage}*.stdout.log")' in REMOTE_PROBE
 
 
 def test_remote_probe_returns_structured_ssh_failure(monkeypatch):

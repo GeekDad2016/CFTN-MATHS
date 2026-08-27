@@ -365,6 +365,88 @@ def math_epoch_dataset(
             "examples_per_epoch", len(dataset)
         )
     )
+    quota_groups = (
+        phase.get("quota_groups")
+        if data_format == "cftn_text_broad_math_v2" and phase is not None
+        else None
+    )
+    if quota_groups is not None:
+        if not isinstance(quota_groups, list) or not quota_groups:
+            raise ValueError("curriculum quota_groups must be a non-empty list")
+        names = [str(group.get("name", "")).strip() for group in quota_groups]
+        if any(not name for name in names) or len(set(names)) != len(names):
+            raise ValueError("curriculum quota group names must be unique and non-empty")
+        requested_total = sum(int(group.get("examples", 0)) for group in quota_groups)
+        if requested_total != target:
+            raise ValueError("curriculum quota groups must sum to examples_per_epoch")
+
+        rng = random.Random(int(seed) + int(epoch) * 1_000_003)
+        epoch_records: list[dict[str, Any]] = []
+        group_sampling: dict[str, dict[str, Any]] = {}
+        eligible_record_ids: set[str] = set()
+        for group, name in zip(quota_groups, names):
+            requested = int(group["examples"])
+            if requested <= 0:
+                raise ValueError("curriculum quota group examples must be positive")
+            filters = dict(group.get("filters", {}))
+            filters.setdefault("name", name)
+            pool = _filter_v2_records_for_phase(selected, filters)
+            if not pool:
+                raise RuntimeError(f"curriculum quota group {name} selected no records")
+            pool_ids = {str(row.get("record_id", "")) for row in pool}
+            if "" in pool_ids:
+                raise ValueError("curriculum quota group rows require record_id")
+            overlap = eligible_record_ids & pool_ids
+            if overlap:
+                raise ValueError(
+                    f"curriculum quota groups overlap on {len(overlap)} records; "
+                    "skill buckets must be disjoint"
+                )
+            eligible_record_ids.update(pool_ids)
+
+            sampled: list[dict[str, Any]] = []
+            replacement_examples = 0
+            if bool(group.get("balance_families", True)):
+                families: dict[str, list[dict[str, Any]]] = {}
+                for record in pool:
+                    families.setdefault(str(record.get("family", "unknown")), []).append(record)
+                for index, family in enumerate(sorted(families)):
+                    family_pool = families[family]
+                    count = requested // len(families) + int(index < requested % len(families))
+                    sampled.extend(rng.sample(family_pool, min(count, len(family_pool))))
+                    extra = max(0, count - len(family_pool))
+                    sampled.extend(rng.choice(family_pool) for _ in range(extra))
+                    replacement_examples += extra
+            elif requested <= len(pool):
+                sampled = rng.sample(pool, requested)
+            else:
+                sampled = rng.sample(pool, len(pool))
+                replacement_examples = requested - len(pool)
+                sampled.extend(rng.choice(pool) for _ in range(replacement_examples))
+            epoch_records.extend(sampled)
+            group_sampling[name] = {
+                "filters": filters,
+                "available_examples": len(pool),
+                "requested_examples": requested,
+                "unique_examples": len({str(row["record_id"]) for row in sampled}),
+                "replacement_examples": replacement_examples,
+                "sampling_with_replacement": replacement_examples > 0,
+                "family_counts": dict(sorted(Counter(str(row.get("family", "unknown")) for row in sampled).items())),
+            }
+        rng.shuffle(epoch_records)
+        metadata = {
+            **metadata,
+            "examples_this_epoch": len(epoch_records),
+            "unique_examples_this_epoch": len({str(record["record_id"]) for record in epoch_records}),
+            "sampling_policy": "quota_groups_v1",
+            "sampling_with_replacement": any(
+                details["sampling_with_replacement"] for details in group_sampling.values()
+            ),
+            "quota_groups": group_sampling,
+            "sampled_source_counts": dict(sorted(Counter(str(row.get("source", "unknown")) for row in epoch_records).items())),
+            "sampled_family_counts": dict(sorted(Counter(str(row.get("family", "unknown")) for row in epoch_records).items())),
+        }
+        return EquationDataset(epoch_records), metadata
     source_quotas = (
         phase.get("source_quotas")
         if data_format == "cftn_text_broad_math_v2" and phase is not None
@@ -480,6 +562,8 @@ def _filter_v2_records_for_phase(
 
     configured_sources = phase.get("sources")
     configured_families = phase.get("families")
+    configured_supervision = phase.get("supervision_kinds")
+    configured_verification = phase.get("verifications")
     sources = (
         {str(value) for value in configured_sources}
         if configured_sources is not None
@@ -490,10 +574,24 @@ def _filter_v2_records_for_phase(
         if configured_families is not None
         else None
     )
+    supervision_kinds = (
+        {str(value) for value in configured_supervision}
+        if configured_supervision is not None
+        else None
+    )
+    verifications = (
+        {str(value) for value in configured_verification}
+        if configured_verification is not None
+        else None
+    )
     if sources is not None and not sources:
         raise ValueError("curriculum phase sources cannot be empty")
     if families is not None and not families:
         raise ValueError("curriculum phase families cannot be empty")
+    if supervision_kinds is not None and not supervision_kinds:
+        raise ValueError("curriculum supervision_kinds cannot be empty")
+    if verifications is not None and not verifications:
+        raise ValueError("curriculum verifications cannot be empty")
     maximum_difficulty = int(phase.get("max_difficulty", 3))
     return [
         record
@@ -503,6 +601,14 @@ def _filter_v2_records_for_phase(
              or int(record["difficulty"]) <= int(phase.get("max_school_difficulty", 3)))
         and (sources is None or str(record.get("source", "unknown")) in sources)
         and (families is None or str(record.get("family", "unknown")) in families)
+        and (
+            supervision_kinds is None
+            or str(record.get("supervision_kind", "unknown")) in supervision_kinds
+        )
+        and (
+            verifications is None
+            or str(record.get("verification", "unknown")) in verifications
+        )
     ]
 
 
@@ -516,6 +622,26 @@ def _v2_curriculum_metadata(
             sorted(Counter(str(record.get(key, "unknown")) for record in selected).items())
         )
 
+    filters = {
+        "sources": (
+            sorted(str(value) for value in phase["sources"])
+            if phase.get("sources") is not None
+            else None
+        ),
+        "families": (
+            sorted(str(value) for value in phase["families"])
+            if phase.get("families") is not None
+            else None
+        ),
+    }
+    if phase.get("supervision_kinds") is not None:
+        filters["supervision_kinds"] = sorted(
+            str(value) for value in phase["supervision_kinds"]
+        )
+    if phase.get("verifications") is not None:
+        filters["verifications"] = sorted(
+            str(value) for value in phase["verifications"]
+        )
     return {
         "enabled": True,
         "phase": str(phase["name"]),
@@ -525,18 +651,7 @@ def _v2_curriculum_metadata(
         "difficulty_counts": counts("difficulty"),
         "source_counts": counts("source"),
         "family_counts": counts("family"),
-        "filters": {
-            "sources": (
-                sorted(str(value) for value in phase["sources"])
-                if phase.get("sources") is not None
-                else None
-            ),
-            "families": (
-                sorted(str(value) for value in phase["families"])
-                if phase.get("families") is not None
-                else None
-            ),
-        },
+        "filters": filters,
     }
 
 
@@ -917,6 +1032,7 @@ def _phase_generation_acceptance(
     generation_panels: dict[str, dict[str, Any]],
     validation: dict[str, Any],
     epoch: int,
+    phase_epoch: int | None = None,
 ) -> dict[str, Any] | None:
     """Build an auditable, fail-closed generation acceptance decision."""
 
@@ -1033,6 +1149,11 @@ def _phase_generation_acceptance(
             "pass": observed_loss <= maximum_loss,
         }
 
+    terminal_epoch = (
+        int(phase_epoch) >= int(phase["maximum_epochs"])
+        if phase_epoch is not None and "maximum_epochs" in phase
+        else epoch == int(phase["through_epoch"])
+    )
     return {
         "phase": str(phase["name"]),
         "primary_panel": primary_name,
@@ -1040,10 +1161,89 @@ def _phase_generation_acceptance(
         "minimum_valid_rate": minimum_valid_rate,
         "generation_accuracy": float(primary.get("accuracy", 0.0)),
         "valid_rate": float(primary.get("valid_rate", 0.0)),
-        "terminal_epoch": epoch == int(phase["through_epoch"]),
+        "phase_epoch": phase_epoch,
+        "terminal_epoch": terminal_epoch,
         "checks": checks,
         "pass": bool(checks) and all(bool(check["pass"]) for check in checks.values()),
     }
+
+
+def _checked_competency_curriculum(
+    contract: dict[str, Any], phases: list[dict[str, Any]]
+) -> bool:
+    enabled = (
+        contract.get("curriculum", {}).get("transition_policy")
+        == "competency_gated_v1"
+    )
+    if not enabled:
+        return False
+    if not phases:
+        raise ValueError("competency curriculum requires phases")
+    total_maximum = 0
+    for phase in phases:
+        minimum = int(phase.get("minimum_epochs", 0))
+        maximum = int(phase.get("maximum_epochs", 0))
+        consecutive = int(phase.get("advance_after_consecutive_passes", 0))
+        if minimum < 1 or maximum < minimum or consecutive < 1:
+            raise ValueError("invalid competency curriculum phase bounds")
+        total_maximum += maximum
+    if total_maximum > int(contract["math_training"]["max_epochs"]):
+        raise ValueError("competency phase maxima exceed global max_epochs")
+    return True
+
+
+def _initial_competency_curriculum_state() -> dict[str, Any]:
+    return {"phase_index": 0, "phase_epoch": 0, "consecutive_passes": 0}
+
+
+def _update_competency_curriculum_state(
+    *,
+    phases: list[dict[str, Any]],
+    state: dict[str, Any],
+    accepted: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Advance only after repeated generation passes; fail closed at a phase cap."""
+
+    index = int(state["phase_index"])
+    if not 0 <= index < len(phases):
+        raise ValueError("competency curriculum phase index is invalid")
+    phase = phases[index]
+    phase_epoch = int(state["phase_epoch"]) + 1
+    minimum = int(phase["minimum_epochs"])
+    maximum = int(phase["maximum_epochs"])
+    required = int(phase["advance_after_consecutive_passes"])
+    if phase_epoch > maximum:
+        raise RuntimeError("competency curriculum advanced beyond its phase cap")
+    consecutive = (
+        int(state["consecutive_passes"]) + 1
+        if accepted and phase_epoch >= minimum
+        else 0
+    )
+    passed = consecutive >= required
+    final_phase = index == len(phases) - 1
+    advance = passed and not final_phase
+    complete = passed and final_phase and bool(phase.get("stop_on_pass", False))
+    failed = phase_epoch >= maximum and not (advance or complete)
+    next_state = {
+        "phase_index": index + 1 if advance else index,
+        "phase_epoch": 0 if advance else phase_epoch,
+        "consecutive_passes": 0 if advance else consecutive,
+    }
+    transition = {
+        "policy": "competency_gated_v1",
+        "phase": str(phase["name"]),
+        "phase_index": index,
+        "phase_epoch": phase_epoch,
+        "minimum_epochs": minimum,
+        "maximum_epochs": maximum,
+        "consecutive_passes": consecutive,
+        "required_consecutive_passes": required,
+        "advance": advance,
+        "complete": complete,
+        "failed": failed,
+        "next_phase": str(phases[index + 1]["name"]) if advance else None,
+    }
+    return next_state, transition
 
 
 def train_math_tower(
@@ -1109,6 +1309,10 @@ def train_math_tower(
     curriculum_config = copy.deepcopy(config)
     curriculum_config["data"]["curriculum"].update(contract.get("curriculum", {}))
     phases = list(contract.get("phases", []))
+    competency_curriculum_enabled = _checked_competency_curriculum(
+        contract, phases
+    )
+    competency_curriculum_state = _initial_competency_curriculum_state()
     tokenizer = ByteMathTokenizer()
     collator_class = MathCollator
     if settings.get("objective") == "computation_roles_v1":
@@ -1246,6 +1450,21 @@ def train_math_tower(
         best_metric = float(checkpoint["best_metric"])
         best_checkpoint_metric = best_metric
         patience = int(checkpoint["patience"])
+        if competency_curriculum_enabled:
+            saved_curriculum_state = checkpoint.get("extra", {}).get(
+                "competency_curriculum_state"
+            )
+            if not isinstance(saved_curriculum_state, dict):
+                raise ValueError(
+                    "competency resume checkpoint lacks curriculum state"
+                )
+            competency_curriculum_state = {
+                "phase_index": int(saved_curriculum_state["phase_index"]),
+                "phase_epoch": int(saved_curriculum_state["phase_epoch"]),
+                "consecutive_passes": int(
+                    saved_curriculum_state["consecutive_passes"]
+                ),
+            }
     write_status(
         _status_payload(
             stage="math",
@@ -1303,14 +1522,19 @@ def train_math_tower(
                     atomic_copy_file(work_dir / "retention_baseline_rows.jsonl", artifact_dir / "retention_baseline_rows.jsonl")
         for epoch in range(start_epoch, int(settings["max_epochs"]) + 1):
             model.train()
-            phase = next(
-                (
-                    item
-                    for item in phases
-                    if epoch <= int(item["through_epoch"])
-                ),
-                phases[-1] if phases else None,
-            )
+            if competency_curriculum_enabled:
+                phase = phases[int(competency_curriculum_state["phase_index"])]
+                phase_epoch = int(competency_curriculum_state["phase_epoch"]) + 1
+            else:
+                phase = next(
+                    (
+                        item
+                        for item in phases
+                        if epoch <= int(item["through_epoch"])
+                    ),
+                    phases[-1] if phases else None,
+                )
+                phase_epoch = None
             phase_name = str(phase["name"]) if phase is not None else None
             if phase_name != active_phase_name:
                 best_metric = float("-inf")
@@ -1453,6 +1677,16 @@ def train_math_tower(
                         panel_records = _filter_v2_records_for_phase(
                             panel_records, phase
                         )
+                    panel_filters = panel_spec.get("filters")
+                    if panel_filters is not None:
+                        if not isinstance(panel_filters, dict):
+                            raise ValueError(
+                                f"generation validation panel {panel_name} filters must be an object"
+                            )
+                        panel_records = _filter_v2_records_for_phase(
+                            panel_records,
+                            {"name": panel_name, **panel_filters},
+                        )
                     if not panel_records:
                         raise RuntimeError(
                             f"generation validation panel {panel_name} selected no records"
@@ -1551,6 +1785,7 @@ def train_math_tower(
                 generation_panels=generation_panels,
                 validation=validation,
                 epoch=epoch,
+                phase_epoch=phase_epoch,
             )
             if retention_baseline is not None:
                 observed = generation_panels["broad"]
@@ -1586,6 +1821,27 @@ def train_math_tower(
                 and bool(phase_acceptance["terminal_epoch"])
                 else None
             )
+            checkpoint_curriculum_state = competency_curriculum_state
+            curriculum_transition = None
+            if competency_curriculum_enabled:
+                checkpoint_curriculum_state, curriculum_transition = (
+                    _update_competency_curriculum_state(
+                        phases=phases,
+                        state=competency_curriculum_state,
+                        accepted=bool(
+                            phase_acceptance is not None
+                            and phase_acceptance["pass"]
+                        ),
+                    )
+                )
+                phase_gate = (
+                    phase_acceptance
+                    if any(
+                        bool(curriculum_transition[key])
+                        for key in ("advance", "complete", "failed")
+                    )
+                    else None
+                )
             if contract.get("promote_final_phase_only"):
                 # Compare accepted candidates, not scores from failed epochs.
                 promote_best = checkpoint_eligible and (
@@ -1616,6 +1872,12 @@ def train_math_tower(
                 "checkpoint_promoted": promote_best,
                 "curriculum_acceptance": phase_acceptance,
                 "curriculum_gate": phase_gate,
+                "curriculum_transition": curriculum_transition,
+                "competency_curriculum_state": (
+                    checkpoint_curriculum_state
+                    if competency_curriculum_enabled
+                    else None
+                ),
                 "trainable_parameters": sum(
                     parameter.numel() for parameter in model.parameters()
                 ),
@@ -1662,6 +1924,11 @@ def train_math_tower(
                 extra={
                     "metrics": final_metrics,
                     "effective_math_tower": effective_config["math_tower"],
+                    "competency_curriculum_state": (
+                        checkpoint_curriculum_state
+                        if competency_curriculum_enabled
+                        else None
+                    ),
                 },
             )
             checkpoint_path = work_dir / f"checkpoint_epoch_{epoch:04d}.pth"
@@ -1698,7 +1965,17 @@ def train_math_tower(
                     started_at=started_at,
                 ),
                 )
-            if (
+            if competency_curriculum_enabled:
+                competency_curriculum_state = checkpoint_curriculum_state
+                if bool(curriculum_transition["complete"]):
+                    stop_reason = f"curriculum_gate_passed_{phase['name']}"
+                    state = "completed"
+                    break
+                if bool(curriculum_transition["failed"]):
+                    stop_reason = f"curriculum_gate_failed_{phase['name']}"
+                    state = "failed_acceptance"
+                    break
+            elif (
                 phase_acceptance is not None
                 and bool(phase_acceptance["pass"])
                 and bool(phase.get("stop_on_pass", False))
