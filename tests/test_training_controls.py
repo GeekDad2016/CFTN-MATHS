@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 from cftn_text.dataset import EquationDataset
 from cftn_text.training import (
@@ -14,6 +15,8 @@ from cftn_text.training import (
     _initial_competency_curriculum_state,
     _update_competency_curriculum_state,
     _should_stop_early,
+    _teacher_preservation_kl,
+    _zero_update_phase_skip_state,
     math_epoch_dataset,
 )
 from tools import train_math_tower as train_math_cli
@@ -342,6 +345,60 @@ def test_competency_curriculum_fails_closed_at_phase_cap():
     state, _ = _update_competency_curriculum_state(phases=phases, state=state, accepted=False)
     _, transition = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
     assert transition["failed"] and not transition["complete"]
+
+
+def test_competency_v2_policy_is_recorded_without_changing_gate_semantics():
+    phases = [{"name": "first", "minimum_epochs": 2, "maximum_epochs": 2,
+               "advance_after_consecutive_passes": 2}]
+    state = _initial_competency_curriculum_state()
+    state, _ = _update_competency_curriculum_state(
+        phases=phases, state=state, accepted=False, policy="competency_gated_v2"
+    )
+    _, transition = _update_competency_curriculum_state(
+        phases=phases, state=state, accepted=True, policy="competency_gated_v2"
+    )
+    assert transition["policy"] == "competency_gated_v2"
+    assert transition["failed"] and not transition["advance"]
+
+
+def test_zero_update_entrance_skips_only_accepted_nonfinal_phase():
+    phases = [{"name": "foundations"}, {"name": "consolidation"}]
+    state = {"phase_index": 0, "phase_epoch": 0, "consecutive_passes": 0}
+    advanced, skipped = _zero_update_phase_skip_state(
+        phases=phases, state=state, accepted=True
+    )
+    assert skipped is True
+    assert advanced == {
+        "phase_index": 1,
+        "phase_epoch": 0,
+        "consecutive_passes": 0,
+    }
+    final, skipped = _zero_update_phase_skip_state(
+        phases=phases, state=advanced, accepted=True
+    )
+    assert skipped is False
+    assert final == advanced
+    unchanged, skipped = _zero_update_phase_skip_state(
+        phases=phases, state=state, accepted=False
+    )
+    assert skipped is False
+    assert unchanged == state
+
+
+def test_teacher_preservation_uses_only_selected_source_correct_rows():
+    labels = torch.tensor([[-100, 1, 2], [-100, 1, 2]])
+    teacher = torch.zeros(2, 3, 4)
+    teacher[0, 0, 1] = 8
+    teacher[0, 1, 2] = 8
+    teacher[1, 0, 3] = 8
+    teacher[1, 1, 3] = 8
+    current = torch.zeros_like(teacher, requires_grad=True)
+    loss, rows = _teacher_preservation_kl(
+        current, teacher, labels, torch.tensor([True, True])
+    )
+    loss.backward()
+    assert rows == 1
+    assert torch.isfinite(loss) and torch.isfinite(current.grad).all()
 
 
 def test_broad_generation_acceptance_requires_every_panel_and_breakdown():

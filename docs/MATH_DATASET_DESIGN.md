@@ -221,6 +221,15 @@ They do not certify the full V2 task distribution or a future large tower.
 
 ## Durable structure for larger math towers
 
+The first full competency curriculum supplied an additional negative result:
+after eight foundation-phase epochs, all 16 local generation/trace gates passed
+but broad generated-answer retention fell from 29.30% to 11.33% (26.30% floor).
+The run stopped fail-closed. The evidence rules out treating more repetition of
+an already-mastered basic phase as harmless. The implemented successor uses
+zero-update phase entrance checks, cumulative replay, a five-times lower peak
+learning rate and baseline-correct-only frozen-source preservation. See
+[the v3 curriculum contract](../MATH_COMPETENCY_CURRICULUM_V3.md).
+
 The current implementation milestone is the [single V1-style three-epoch math
 repair trial](MATH_V1_STYLE_REPAIR_TRIAL.md), replacing further primitive-arm
 comparisons with one graded worked-solution training path.

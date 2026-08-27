@@ -120,6 +120,37 @@ def test_competency_settings_stage_verified_signal_and_fail_closed(tmp_path):
         checked_competency_settings(bad)
 
 
+def test_competency_v3_uses_entrance_replay_and_lower_learning_rate():
+    path = Path(__file__).parents[1] / "config/v2_full_supervision_v3.json"
+    value = checked_competency_settings(path)
+    assert value["format"] == "cftn_full_math_training_v3"
+    assert value["curriculum"] == {
+        "enabled": True,
+        "examples_per_epoch": 100000,
+        "sampling": "auto",
+        "transition_policy": "competency_gated_v2",
+    }
+    assert value["math_training"]["max_epochs"] == 42
+    assert value["math_training"]["learning_rate"] == 2e-5
+    assert value["zero_update_entrance"] == {
+        "enabled": True,
+        "maximum_skipped_phases": 5,
+    }
+    assert value["preservation_distillation"]["baseline_correct_only"]
+    assert [phase["maximum_epochs"] for phase in value["phases"]] == [
+        3,
+        4,
+        5,
+        8,
+        10,
+        12,
+    ]
+    assert all(
+        sum(group["examples"] for group in phase["quota_groups"]) == 100000
+        for phase in value["phases"]
+    )
+
+
 def test_exact_trace_gate_cannot_be_satisfied_by_correct_answer_only():
     phase = {"name": "foundation", "through_epoch": 20, "minimum_generation_accuracy": .99,
              "minimum_valid_rate": 1.0, "minimum_trace_exact_by_family": {"addition": .95}}

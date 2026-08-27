@@ -40,7 +40,9 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "setInterval(load,30000)" in PAGE
     assert "Full repaired math curriculum" in PAGE
     assert "Other skill buckets/epoch" in PAGE
-    assert "competency_gated_v1" in PAGE
+    assert "competency_gated_v" in PAGE
+    assert "Zero-update phase entrance" in PAGE
+    assert "Preservation KL" in PAGE
     assert "DeepMind numeric" in PAGE
     assert 'class="summary-grid"' in PAGE
     assert ".summary-grid{grid-template-columns:1fr" in PAGE
@@ -74,6 +76,9 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert 'read_json(stage_root / "retention_baseline.json")' in REMOTE_PROBE
     assert '"retention_baseline": retention_baseline' in REMOTE_PROBE
     assert '"retention_baseline": recovery_contract.get("retention_baseline")' in REMOTE_PROBE
+    assert 'read_json(stage_root / "entrance_evaluations.json")' in REMOTE_PROBE
+    assert '"entrance_evaluations": entrance_evaluations' in REMOTE_PROBE
+    assert '"preservation_distillation": recovery_contract.get("preservation_distillation")' in REMOTE_PROBE
 
 
 def test_remote_probe_returns_structured_ssh_failure(monkeypatch):
@@ -232,15 +237,23 @@ def test_competency_dashboard_separates_phase_retention_future_and_global_metric
                                      "consecutive_passes": 0, "required_consecutive_passes": 2}}
     fixture = {
         "updated_unix": 2000,
-        "pipeline": {"state": "running", "current_stage": "math_competency_curriculum_v2", "stages": {}},
+        "pipeline": {"state": "running", "current_stage": "math_competency_curriculum_v3", "stages": {}},
         "processes": [{"pid": 1, "command": "python trainer"}], "logs": {}, "gpu": {"gpus": []},
         "training_contract": {"competency_curriculum": True, "full_supervision": True,
                               "validation_examples": 12000,
-                              "curriculum": {"transition_policy": "competency_gated_v1",
-                                             "examples_per_epoch": 400000, "phases": [phase]},
+                              "curriculum": {"transition_policy": "competency_gated_v2",
+                                             "examples_per_epoch": 100000, "phases": [phase]},
+                              "preservation_distillation": {"enabled": True, "weight": 0.1,
+                                                              "sources": ["deepmind_mathematics", "gsm8k"]},
                               "math_training": {}},
         "current_stage_artifact": {"status": {"state": "training", "epoch": 4, "metrics": {}},
                                    "metrics": [row],
+                                   "entrance_evaluations": {
+                                       "evaluations": [{"phase": phase["name"],
+                                                        "zero_optimizer_updates": True,
+                                                        "skipped": False,
+                                                        "acceptance": {"pass": False}}],
+                                       "resulting_curriculum_state": {"phase_index": 0}},
                                    "retention_baseline": {"accuracy": 0.293,
                                                           "by_source": {"cftn_generated": {"examples": 60, "accuracy": 0.9},
                                                                         "deepmind_mathematics": {"examples": 452, "accuracy": 0.21}},
@@ -267,6 +280,9 @@ assert.ok(elements.futureValidation.innerHTML.includes('generated rational'));
 assert.ok(elements.futureValidation.innerHTML.includes('Diagnostic only'));
 assert.ok(elements.breakdowns.innerHTML.includes('12,000'));
 assert.ok(elements.breakdowns.innerHTML.includes('Exact full trace'));
+assert.ok(elements.curriculum.innerHTML.includes('Zero-update phase entrance'));
+assert.ok(elements.curriculum.innerHTML.includes('Frozen-source preservation'));
+assert.ok(elements.curriculum.innerHTML.includes('First unmet phase'));
 assert.ok(!elements.generation.innerHTML.includes('<img'));
 assert.ok(elements.generation.innerHTML.includes('&lt;img'));
 console.log('competency dashboard render checks passed');

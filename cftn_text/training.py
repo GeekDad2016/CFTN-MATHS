@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -1171,10 +1172,10 @@ def _phase_generation_acceptance(
 def _checked_competency_curriculum(
     contract: dict[str, Any], phases: list[dict[str, Any]]
 ) -> bool:
-    enabled = (
-        contract.get("curriculum", {}).get("transition_policy")
-        == "competency_gated_v1"
-    )
+    enabled = contract.get("curriculum", {}).get("transition_policy") in {
+        "competency_gated_v1",
+        "competency_gated_v2",
+    }
     if not enabled:
         return False
     if not phases:
@@ -1196,11 +1197,33 @@ def _initial_competency_curriculum_state() -> dict[str, Any]:
     return {"phase_index": 0, "phase_epoch": 0, "consecutive_passes": 0}
 
 
+def _zero_update_phase_skip_state(
+    *,
+    phases: list[dict[str, Any]],
+    state: dict[str, Any],
+    accepted: bool,
+) -> tuple[dict[str, Any], bool]:
+    """Skip an already-mastered non-final phase without consuming an update."""
+
+    index = int(state["phase_index"])
+    if not 0 <= index < len(phases):
+        raise ValueError("competency curriculum phase index is invalid")
+    skipped = bool(accepted) and index < len(phases) - 1
+    if not skipped:
+        return dict(state), False
+    return {
+        "phase_index": index + 1,
+        "phase_epoch": 0,
+        "consecutive_passes": 0,
+    }, True
+
+
 def _update_competency_curriculum_state(
     *,
     phases: list[dict[str, Any]],
     state: dict[str, Any],
     accepted: bool,
+    policy: str = "competency_gated_v1",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Advance only after repeated generation passes; fail closed at a phase cap."""
 
@@ -1230,7 +1253,7 @@ def _update_competency_curriculum_state(
         "consecutive_passes": 0 if advance else consecutive,
     }
     transition = {
-        "policy": "competency_gated_v1",
+        "policy": str(policy),
         "phase": str(phase["name"]),
         "phase_index": index,
         "phase_epoch": phase_epoch,
@@ -1244,6 +1267,39 @@ def _update_competency_curriculum_state(
         "next_phase": str(phases[index + 1]["name"]) if advance else None,
     }
     return next_state, transition
+
+
+def _teacher_preservation_kl(
+    current_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    labels: torch.Tensor,
+    selected_rows: torch.Tensor,
+) -> tuple[torch.Tensor, int]:
+    """Preserve only rows whose complete target the frozen source already knew.
+
+    This prevents distillation from canonising an incorrect source answer.  The
+    teacher is only a behavioural retention constraint on exact source-correct
+    sequences; ordinary supervised loss remains responsible for improvement.
+    """
+
+    targets = labels[:, 1:]
+    valid = targets.ne(-100)
+    teacher_predictions = teacher_logits[:, :-1].argmax(dim=-1)
+    teacher_correct = (teacher_predictions.eq(targets) | ~valid).all(dim=1)
+    rows = selected_rows.bool() & teacher_correct & valid.any(dim=1)
+    token_mask = valid & rows.unsqueeze(1)
+    if not bool(token_mask.any()):
+        return current_logits.sum() * 0.0, 0
+    current = current_logits[:, :-1][token_mask].float()
+    teacher = teacher_logits[:, :-1][token_mask].detach().float()
+    return (
+        F.kl_div(
+            F.log_softmax(current, dim=-1),
+            F.softmax(teacher, dim=-1),
+            reduction="batchmean",
+        ),
+        int(rows.sum()),
+    )
 
 
 def train_math_tower(
@@ -1465,6 +1521,27 @@ def train_math_tower(
                     saved_curriculum_state["consecutive_passes"]
                 ),
             }
+    preservation_settings = dict(contract.get("preservation_distillation") or {})
+    preservation_teacher: MathTower | None = None
+    preservation_sources = {
+        str(source) for source in preservation_settings.get("sources", [])
+    }
+    preservation_weight = float(preservation_settings.get("weight", 0.0))
+    if bool(preservation_settings.get("enabled", False)):
+        if not preservation_sources or not 0.0 < preservation_weight <= 1.0:
+            raise ValueError("invalid preservation distillation settings")
+        teacher_path = Path(contract["source_checkpoint"]).expanduser().resolve()
+        teacher_checkpoint, _ = _load_math_initialization_checkpoint(
+            teacher_path,
+            expected_sha256=contract.get("source_checkpoint_sha256"),
+            map_location=device,
+        )
+        preservation_teacher = build_math_tower(effective_config).to(device)
+        preservation_teacher.load_state_dict(
+            teacher_checkpoint["model_state"], strict=True
+        )
+        preservation_teacher.requires_grad_(False)
+        preservation_teacher.eval()
     write_status(
         _status_payload(
             stage="math",
@@ -1499,6 +1576,103 @@ def train_math_tower(
             "manifest_sha256": manifest["manifest_sha256"],
         },
     )
+    generation_settings = generation_validation_settings
+
+    def evaluate_generation_panels_for_phase(
+        phase: dict[str, Any] | None,
+        *,
+        suffix: str,
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+        generation_panels: dict[str, dict[str, Any]] = {}
+        if not (
+            manifest.get("format") == "cftn_text_broad_math_v2"
+            and bool(generation_settings.get("enabled", False))
+        ):
+            return generation_panels, None
+        panel_specs = configured_generation_panels or [
+            {
+                "name": "validation",
+                "split": "validation",
+                "phase_filtered": True,
+            }
+        ]
+        for panel_spec in panel_specs:
+            panel_name = str(panel_spec["name"])
+            panel_dataset = generation_panel_datasets.get(
+                panel_name, validation_dataset
+            )
+            panel_records = panel_dataset.records
+            if bool(panel_spec.get("phase_filtered", False)) and phase is not None:
+                panel_records = _filter_v2_records_for_phase(panel_records, phase)
+            panel_filters = panel_spec.get("filters")
+            if panel_filters is not None:
+                if not isinstance(panel_filters, dict):
+                    raise ValueError(
+                        f"generation validation panel {panel_name} filters must be an object"
+                    )
+                panel_records = _filter_v2_records_for_phase(
+                    panel_records,
+                    {"name": panel_name, **panel_filters},
+                )
+            if not panel_records:
+                raise RuntimeError(
+                    f"generation validation panel {panel_name} selected no records"
+                )
+            generation_rows_name = (
+                f"generation_validation_{panel_name}_{suffix}.jsonl"
+                if configured_generation_panels
+                else f"generation_validation_{suffix}.jsonl"
+            )
+            generation_rows_path = work_dir / generation_rows_name
+            generation_panels[panel_name] = evaluate_generation_panel(
+                model,
+                tokenizer,
+                panel_records,
+                maximum_examples=int(
+                    panel_spec.get(
+                        "examples", generation_settings.get("examples", 96)
+                    )
+                ),
+                batch_size=int(
+                    panel_spec.get(
+                        "batch_size", generation_settings.get("batch_size", 16)
+                    )
+                ),
+                max_new_tokens=int(
+                    panel_spec.get(
+                        "max_new_tokens",
+                        generation_settings.get("max_new_tokens", 512),
+                    )
+                ),
+                failure_examples=int(
+                    panel_spec.get(
+                        "failure_examples",
+                        generation_settings.get("failure_examples", 8),
+                    )
+                ),
+                rows_path=generation_rows_path,
+                input_view=collator.input_view,
+                require_eos=bool(generation_settings.get("require_eos", False)),
+            )
+            generation_panels[panel_name]["split"] = str(
+                panel_spec.get("split", "validation")
+            )
+            if work_dir != artifact_dir:
+                atomic_copy_file(
+                    generation_rows_path,
+                    artifact_dir / generation_rows_path.name,
+                )
+        primary_panel_name = str(
+            (phase or {}).get("primary_generation_panel", panel_specs[0]["name"])
+        )
+        primary = generation_panels.get(primary_panel_name)
+        if primary is None:
+            raise RuntimeError(
+                "primary generation validation panel is unavailable: "
+                + primary_panel_name
+            )
+        return generation_panels, primary
+
     try:
         retention_baseline = None
         if contract.get("retention_baseline"):
@@ -1520,6 +1694,131 @@ def train_math_tower(
                 atomic_json_dump(retention_baseline, baseline_path)
                 if work_dir != artifact_dir:
                     atomic_copy_file(work_dir / "retention_baseline_rows.jsonl", artifact_dir / "retention_baseline_rows.jsonl")
+        entrance_evaluations: list[dict[str, Any]] = []
+        entrance_settings = dict(contract.get("zero_update_entrance") or {})
+        if (
+            competency_curriculum_enabled
+            and not resume
+            and bool(entrance_settings.get("enabled", False))
+        ):
+            model.eval()
+            validation_loader = make_loader(
+                validation_dataset,
+                validation_collator,
+                batch_size=int(settings["eval_batch_size"]),
+                shuffle=False,
+                seed=seed,
+                epoch=0,
+                num_workers=int(settings["num_workers"]),
+            )
+            entrance_teacher_forced = evaluate_math_tower(
+                model,
+                validation_loader,
+                device,
+                dtype,
+                float(settings["answer_head_weight"]),
+                max_batches=max_batches,
+            )
+            maximum_skips = min(
+                int(entrance_settings.get("maximum_skipped_phases", 0)),
+                max(0, len(phases) - 1),
+            )
+            while (
+                len(entrance_evaluations) < maximum_skips
+                and int(competency_curriculum_state["phase_index"])
+                < len(phases) - 1
+            ):
+                phase_index = int(competency_curriculum_state["phase_index"])
+                phase = phases[phase_index]
+                phase_name = str(phase["name"])
+                write_status(
+                    _status_payload(
+                        stage="math",
+                        state="evaluating_entrance",
+                        epoch=0,
+                        global_step=global_step,
+                        metrics={"phase": phase_name, "phase_index": phase_index},
+                        started_at=started_at,
+                    )
+                )
+                entrance_panels, entrance_primary = (
+                    evaluate_generation_panels_for_phase(
+                        phase,
+                        suffix=f"entrance_{phase_index:02d}_{phase_name}",
+                    )
+                )
+                entrance_validation = copy.deepcopy(entrance_teacher_forced)
+                if entrance_primary is not None:
+                    entrance_validation["generation"] = entrance_primary
+                    entrance_validation["generation_panels"] = entrance_panels
+                entrance_acceptance = _phase_generation_acceptance(
+                    phase=phase,
+                    generation_panels=entrance_panels,
+                    validation=entrance_validation,
+                    epoch=0,
+                    phase_epoch=0,
+                )
+                if retention_baseline is not None:
+                    observed = entrance_panels["broad"]
+                    minimum = max(
+                        0.0,
+                        float(retention_baseline["accuracy"])
+                        - float(contract["retention_baseline"]["maximum_drop"]),
+                    )
+                    entrance_acceptance["checks"]["broad_retention"] = {
+                        "observed": observed["accuracy"],
+                        "minimum": minimum,
+                        "pass": observed["accuracy"] >= minimum,
+                    }
+                    entrance_acceptance["pass"] = all(
+                        bool(check["pass"])
+                        for check in entrance_acceptance["checks"].values()
+                    )
+                next_entrance_state, skipped = _zero_update_phase_skip_state(
+                    phases=phases,
+                    state=competency_curriculum_state,
+                    accepted=bool(entrance_acceptance["pass"]),
+                )
+                entrance_report = {
+                    "phase": phase_name,
+                    "phase_index": phase_index,
+                    "zero_optimizer_updates": True,
+                    "skipped": skipped,
+                    "acceptance": entrance_acceptance,
+                    "validation": entrance_validation,
+                }
+                entrance_evaluations.append(entrance_report)
+                wandb_tracker.log(
+                    {
+                        "entrance": {
+                            "phase": phase_name,
+                            "phase_index": phase_index,
+                            "pass": entrance_acceptance["pass"],
+                            "skipped": skipped,
+                            "generation_accuracy": entrance_acceptance[
+                                "generation_accuracy"
+                            ],
+                            "valid_rate": entrance_acceptance["valid_rate"],
+                        }
+                    },
+                    global_step=global_step,
+                    epoch=0,
+                    event="zero_update_entrance",
+                )
+                if not skipped:
+                    break
+                competency_curriculum_state = next_entrance_state
+            entrance_path = work_dir / "entrance_evaluations.json"
+            atomic_json_dump(
+                {
+                    "format": "cftn_math_zero_update_entrance_v1",
+                    "evaluations": entrance_evaluations,
+                    "resulting_curriculum_state": competency_curriculum_state,
+                },
+                entrance_path,
+            )
+            if entrance_path != artifact_dir / entrance_path.name:
+                atomic_copy_file(entrance_path, artifact_dir / entrance_path.name)
         for epoch in range(start_epoch, int(settings["max_epochs"]) + 1):
             model.train()
             if competency_curriculum_enabled:
@@ -1557,6 +1856,9 @@ def train_math_tower(
                 num_workers=int(settings["num_workers"]),
             )
             train_loss = 0.0
+            train_task_loss = 0.0
+            train_preservation_loss = 0.0
+            preserved_rows = 0
             trained_examples = 0
             epoch_started_at = time.time()
             epoch_start_step = global_step
@@ -1584,7 +1886,33 @@ def train_math_tower(
                             answer_weight=float(settings.get("answer_token_weight", 1.0)))
                     classes = model.answer_classes(batch["answer_values"])
                     answer_loss = optional_answer_loss(output.answer_logits, classes)
-                    loss = lm_loss + float(settings["answer_head_weight"]) * answer_loss
+                    task_loss = lm_loss + float(settings["answer_head_weight"]) * answer_loss
+                    preservation_loss = output.logits.sum() * 0.0
+                    batch_preserved_rows = 0
+                    if preservation_teacher is not None:
+                        with torch.no_grad():
+                            teacher_output = preservation_teacher(
+                                batch["math_input_ids"],
+                                batch["math_attention_mask"],
+                                batch["math_prefix_lengths"],
+                            )
+                        source_mask = torch.tensor(
+                            [
+                                str(record.get("source")) in preservation_sources
+                                for record in batch["records"]
+                            ],
+                            dtype=torch.bool,
+                            device=device,
+                        )
+                        preservation_loss, batch_preserved_rows = (
+                            _teacher_preservation_kl(
+                                output.logits,
+                                teacher_output.logits,
+                                batch["math_labels"],
+                                source_mask,
+                            )
+                        )
+                    loss = task_loss + preservation_weight * preservation_loss
                 if not bool(torch.isfinite(loss)):
                     raise FloatingPointError("non-finite math training loss")
                 scaler.scale(loss).backward()
@@ -1597,6 +1925,11 @@ def train_math_tower(
                 scheduler.step()
                 batch_size = batch["math_input_ids"].shape[0]
                 train_loss += float(loss.detach()) * batch_size
+                train_task_loss += float(task_loss.detach()) * batch_size
+                train_preservation_loss += (
+                    float(preservation_loss.detach()) * batch_size
+                )
+                preserved_rows += batch_preserved_rows
                 trained_examples += batch_size
                 global_step += 1
                 batch_completed = batch_index + 1
@@ -1616,6 +1949,14 @@ def train_math_tower(
                         learning_rate=optimizer.param_groups[0]["lr"],
                         interval_started_at=epoch_started_at,
                         interval_start_step=epoch_start_step,
+                    )
+                    progress_metrics.update(
+                        task_loss_so_far=train_task_loss
+                        / max(1, trained_examples),
+                        preservation_loss_so_far=train_preservation_loss
+                        / max(1, trained_examples),
+                        preservation_rows=preserved_rows,
+                        preservation_weight=preservation_weight,
                     )
                     write_status(
                         _status_payload(
@@ -1651,7 +1992,6 @@ def train_math_tower(
                 float(settings["answer_head_weight"]),
                 max_batches=max_batches,
             )
-            generation_settings = generation_validation_settings
             generation_validation: dict[str, Any] | None = None
             generation_panels: dict[str, dict[str, Any]] = {}
             if (
@@ -1660,93 +2000,12 @@ def train_math_tower(
                 and epoch % max(1, int(generation_settings.get("every_epochs", 1)))
                 == 0
             ):
-                panel_specs = configured_generation_panels or [
-                    {
-                        "name": "validation",
-                        "split": "validation",
-                        "phase_filtered": True,
-                    }
-                ]
-                for panel_spec in panel_specs:
-                    panel_name = str(panel_spec["name"])
-                    panel_dataset = generation_panel_datasets.get(
-                        panel_name, validation_dataset
-                    )
-                    panel_records = panel_dataset.records
-                    if bool(panel_spec.get("phase_filtered", False)) and phase is not None:
-                        panel_records = _filter_v2_records_for_phase(
-                            panel_records, phase
-                        )
-                    panel_filters = panel_spec.get("filters")
-                    if panel_filters is not None:
-                        if not isinstance(panel_filters, dict):
-                            raise ValueError(
-                                f"generation validation panel {panel_name} filters must be an object"
-                            )
-                        panel_records = _filter_v2_records_for_phase(
-                            panel_records,
-                            {"name": panel_name, **panel_filters},
-                        )
-                    if not panel_records:
-                        raise RuntimeError(
-                            f"generation validation panel {panel_name} selected no records"
-                        )
-                    generation_rows_name = (
-                        f"generation_validation_{panel_name}_epoch_{epoch:04d}.jsonl"
-                        if configured_generation_panels
-                        else f"generation_validation_epoch_{epoch:04d}.jsonl"
-                    )
-                    generation_rows_path = work_dir / generation_rows_name
-                    generation_panels[panel_name] = evaluate_generation_panel(
-                        model,
-                        tokenizer,
-                        panel_records,
-                        maximum_examples=int(
-                            panel_spec.get(
-                                "examples", generation_settings.get("examples", 96)
-                            )
-                        ),
-                        batch_size=int(
-                            panel_spec.get(
-                                "batch_size",
-                                generation_settings.get("batch_size", 16),
-                            )
-                        ),
-                        max_new_tokens=int(
-                            panel_spec.get(
-                                "max_new_tokens",
-                                generation_settings.get("max_new_tokens", 512),
-                            )
-                        ),
-                        failure_examples=int(
-                            panel_spec.get(
-                                "failure_examples",
-                                generation_settings.get("failure_examples", 8),
-                            )
-                        ),
-                        rows_path=generation_rows_path,
-                        input_view=collator.input_view,
-                        require_eos=bool(generation_settings.get("require_eos", False)),
-                    )
-                    generation_panels[panel_name]["split"] = str(
-                        panel_spec.get("split", "validation")
-                    )
-                    if work_dir != artifact_dir:
-                        atomic_copy_file(
-                            generation_rows_path,
-                            artifact_dir / generation_rows_path.name,
-                        )
-                primary_panel_name = str(
-                    (phase or {}).get(
-                        "primary_generation_panel", panel_specs[0]["name"]
+                generation_panels, generation_validation = (
+                    evaluate_generation_panels_for_phase(
+                        phase,
+                        suffix=f"epoch_{epoch:04d}",
                     )
                 )
-                generation_validation = generation_panels.get(primary_panel_name)
-                if generation_validation is None:
-                    raise RuntimeError(
-                        "primary generation validation panel is unavailable: "
-                        + primary_panel_name
-                    )
                 validation["generation"] = generation_validation
                 validation["generation_panels"] = generation_panels
             if generation_validation is not None:
@@ -1832,6 +2091,11 @@ def train_math_tower(
                             phase_acceptance is not None
                             and phase_acceptance["pass"]
                         ),
+                        policy=str(
+                            contract.get("curriculum", {}).get(
+                                "transition_policy", "competency_gated_v1"
+                            )
+                        ),
                     )
                 )
                 phase_gate = (
@@ -1850,6 +2114,12 @@ def train_math_tower(
                 "epoch": epoch,
                 "global_step": global_step,
                 "train_loss": train_loss / max(1, trained_examples),
+                "train_task_loss": train_task_loss / max(1, trained_examples),
+                "train_preservation_loss": train_preservation_loss
+                / max(1, trained_examples),
+                "preservation_rows": preserved_rows,
+                "preservation_weight": preservation_weight,
+                "preservation_sources": sorted(preservation_sources),
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "validation": validation,
                 "selection_metric": selection_metric,
@@ -1878,6 +2148,15 @@ def train_math_tower(
                     if competency_curriculum_enabled
                     else None
                 ),
+                "zero_update_entrance": [
+                    {
+                        "phase": item["phase"],
+                        "phase_index": item["phase_index"],
+                        "skipped": item["skipped"],
+                        "pass": item["acceptance"]["pass"],
+                    }
+                    for item in entrance_evaluations
+                ],
                 "trainable_parameters": sum(
                     parameter.numel() for parameter in model.parameters()
                 ),

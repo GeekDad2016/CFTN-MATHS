@@ -27,36 +27,67 @@ from tools.pilot_verified_math import assert_idle
 DEFAULT_ARTIFACT_ROOT = Path("/workspace/cftn-text/artifacts/v2_broad_math_400k_r4")
 DEFAULT_DATA = Path("/workspace/cftn-text/data/full_supervision_v1_20260826")
 DEFAULT_PROJECT = Path("/workspace/CFTN-MATHS")
-DEFAULT_OUTPUT = DEFAULT_ARTIFACT_ROOT / "math_competency_curriculum_v2"
+DEFAULT_OUTPUT = DEFAULT_ARTIFACT_ROOT / "math_competency_curriculum_v3"
 DEFAULT_PREVIOUS = DEFAULT_ARTIFACT_ROOT / "math_full_supervision_v1"
 DEFAULT_PROTECTED = DEFAULT_ARTIFACT_ROOT / "math/math.best.pth"
-DEFAULT_WORK = Path("/tmp/cftn-math-competency-v2")
+DEFAULT_WORK = Path("/tmp/cftn-math-competency-v3")
+DEFAULT_SETTINGS = "config/v2_full_supervision_v3.json"
 
 
 def checked_settings(path: str | Path) -> dict:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     training = value["math_training"]
+    format_name = value.get("format")
+    transition_policy = value.get("curriculum", {}).get("transition_policy")
+    if format_name == "cftn_full_math_training_v2":
+        expected_policy = "competency_gated_v1"
+        expected_max_epochs = 100
+        maximum_learning_rate = 1e-4
+        expected_examples = 400_000
+    elif format_name == "cftn_full_math_training_v3":
+        expected_policy = "competency_gated_v2"
+        expected_max_epochs = 42
+        maximum_learning_rate = 2e-5
+        expected_examples = 100_000
+    else:
+        raise ValueError("invalid competency math safety contract format")
     if (
-        value.get("format") != "cftn_full_math_training_v2"
-        or not value.get("require_acceptance_for_best")
+        not value.get("require_acceptance_for_best")
         or not value.get("promote_final_phase_only")
         or value.get("production_acceptance")
         or value.get("remaining_pipeline_enabled")
-        or value.get("curriculum", {}).get("transition_policy")
-        != "competency_gated_v1"
-        or training.get("max_epochs") != 100
+        or transition_policy != expected_policy
+        or training.get("max_epochs") != expected_max_epochs
         or training.get("objective") != "computation_roles_v1"
         or training.get("role_weights") != [0.25, 0.5, 0.25]
         or training.get("input_view") != "shared_problem_v1"
         or training.get("target_mode") != "full_trace_v1"
-        or not 0 < float(training.get("learning_rate", 0)) <= 1e-4
+        or not 0 < float(training.get("learning_rate", 0)) <= maximum_learning_rate
+        or int(value.get("curriculum", {}).get("examples_per_epoch", 0))
+        != expected_examples
         or float(value["retention_baseline"]["maximum_drop"]) > 0.03
     ):
         raise ValueError("invalid competency math safety contract")
     phases = value.get("phases", [])
-    if not phases or sum(int(phase["maximum_epochs"]) for phase in phases) != 100:
-        raise ValueError("competency phase maxima must cover exactly 100 epochs")
-    expected_examples = int(value["curriculum"]["examples_per_epoch"])
+    if (
+        not phases
+        or sum(int(phase["maximum_epochs"]) for phase in phases)
+        != expected_max_epochs
+    ):
+        raise ValueError("competency phase maxima must match max_epochs")
+    if format_name == "cftn_full_math_training_v3":
+        entrance = value.get("zero_update_entrance", {})
+        preservation = value.get("preservation_distillation", {})
+        if (
+            not entrance.get("enabled")
+            or int(entrance.get("maximum_skipped_phases", 0)) != len(phases) - 1
+            or not preservation.get("enabled")
+            or set(preservation.get("sources", []))
+            != {"deepmind_mathematics", "gsm8k"}
+            or preservation.get("baseline_correct_only") is not True
+            or not 0 < float(preservation.get("weight", 0)) <= 0.1
+        ):
+            raise ValueError("invalid V3 entrance or preservation contract")
     verified_sources = {"verified_school_full", "cftn_generated"}
     for index, phase in enumerate(phases):
         if (
@@ -178,7 +209,11 @@ def run(args: argparse.Namespace) -> None:
         "enabled": args.wandb_mode != "disabled",
         "mode": args.wandb_mode,
         "project": "cftn-text-v2",
-        "group": "competency-curriculum-v2",
+        "group": (
+            "competency-curriculum-v3"
+            if settings["format"] == "cftn_full_math_training_v3"
+            else "competency-curriculum-v2"
+        ),
         "run_name": output.name,
     }
     result = train_math_tower(
@@ -281,7 +316,7 @@ def main() -> None:
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--work", default=str(DEFAULT_WORK))
     parser.add_argument("--config", default="config/v2_broad_math.yaml")
-    parser.add_argument("--settings", default="config/v2_full_supervision_v2.json")
+    parser.add_argument("--settings", default=DEFAULT_SETTINGS)
     parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--launcher-pid", type=int)

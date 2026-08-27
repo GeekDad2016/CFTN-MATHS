@@ -288,3 +288,9 @@ environment and never stores its value. `WANDB_PROJECT`, `WANDB_GROUP`, and
 `WANDB_ENTITY` are optional. RunPod setup, persistent-volume paths, dataset
 boundaries, stages, and logs are documented in
 [RUNPOD_V2.md](RUNPOD_V2.md).
+
+The current standalone math continuation is the fail-closed
+[competency curriculum v3](MATH_COMPETENCY_CURRICULUM_V3.md). It evaluates
+already-mastered phases before any update, trains the first unmet competency
+with cumulative replay and source-behaviour preservation, and remains separate
+from downstream release.

@@ -1,5 +1,10 @@
 # V2 competency-gated math curriculum
 
+> Archived result: this curriculum terminated `failed_acceptance` after its
+> first phase because broad generated-answer retention fell below the protected
+> floor. The successor and current default command are documented in
+> [MATH_COMPETENCY_CURRICULUM_V3.md](MATH_COMPETENCY_CURRICULUM_V3.md).
+
 This is the versioned successor to `math_full_supervision_v1`. It does not
 rewrite that run, its data, or its checkpoints. The previous run remains valid
 evidence for its original fixed curriculum.
@@ -53,11 +58,15 @@ proof that every intermediate algorithm was learned.
 
 ## One-command start or resume
 
-Run this from the persistent RunPod checkout after no CFTN trainer is active:
+To target this archived v2 artifact explicitly (normally for forensic resume
+only), use:
 
 ```bash
 cd /workspace/CFTN-MATHS
-/opt/cftn-data-pilot-venv/bin/python -m tools.run_v2_math_curriculum
+/opt/cftn-data-pilot-venv/bin/python -m tools.run_v2_math_curriculum \
+  --output /workspace/cftn-text/artifacts/v2_broad_math_400k_r4/math_competency_curriculum_v2 \
+  --work /tmp/cftn-math-competency-v2 \
+  --settings config/v2_full_supervision_v2.json
 ```
 
 The same command has exactly two safe behaviours:
