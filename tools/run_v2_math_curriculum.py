@@ -252,13 +252,15 @@ def run(args: argparse.Namespace) -> None:
     settings = checked_settings(args.settings)
     scratch = settings["format"] == "cftn_full_math_training_v4"
     revision = _clean_revision()
-    expected_parent_manifest_sha256 = (
-        settings["parent_dataset"]["manifest_sha256"] if scratch else None
-    )
-    manifest = audit_full_data(
-        args.data,
-        expected_parent_manifest_sha256=expected_parent_manifest_sha256,
-    )
+    expected_parent_manifest_sha256 = None
+    if scratch:
+        expected_parent_manifest_sha256 = settings["parent_dataset"]["manifest_sha256"]
+        manifest = audit_full_data(
+            args.data,
+            expected_parent_manifest_sha256=expected_parent_manifest_sha256,
+        )
+    else:
+        manifest = audit_full_data(args.data)
     config = load_config(args.config)
     config["data"]["full_supervision_root"] = str(Path(args.data).resolve())
     config["data"]["full_supervision_sha256"] = manifest["manifest_sha256"]

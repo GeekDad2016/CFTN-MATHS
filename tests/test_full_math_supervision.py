@@ -224,6 +224,13 @@ def test_competency_v4_rejects_checkpoint_or_future_foundation_data(tmp_path):
         checked_competency_settings(bad)
 
 
+def test_competency_v4_parent_is_only_required_for_scratch_contracts():
+    path = Path(__file__).parents[1] / "config/v2_full_supervision_v3.json"
+    value = checked_competency_settings(path)
+    assert value["format"] == "cftn_full_math_training_v3"
+    assert "parent_dataset" not in value
+
+
 def test_exact_trace_gate_cannot_be_satisfied_by_correct_answer_only():
     phase = {"name": "foundation", "through_epoch": 20, "minimum_generation_accuracy": .99,
              "minimum_valid_rate": 1.0, "minimum_trace_exact_by_family": {"addition": .95}}
