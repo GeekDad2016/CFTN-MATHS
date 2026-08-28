@@ -1175,6 +1175,7 @@ def _checked_competency_curriculum(
     enabled = contract.get("curriculum", {}).get("transition_policy") in {
         "competency_gated_v1",
         "competency_gated_v2",
+        "competency_gated_v3",
     }
     if not enabled:
         return False

@@ -1,0 +1,106 @@
+{
+  "format": "cftn_full_math_training_v4",
+  "base_settings": "v2_full_supervision_v3.json",
+  "protected_checkpoint_sha256": "fe2c056a1ee1d4a3514537681d82124b0312f45c27f72f8e73d2afc747d53973",
+  "require_acceptance_for_best": true,
+  "promote_final_phase_only": true,
+  "production_acceptance": false,
+  "remaining_pipeline_enabled": false,
+  "initialization": {
+    "mode": "random_scratch_v1",
+    "layers": 24,
+    "source_checkpoint": null
+  },
+  "retention_baseline": null,
+  "zero_update_entrance": {"enabled": false},
+  "preservation_distillation": {"enabled": false},
+  "curriculum": {
+    "enabled": true,
+    "examples_per_epoch": 100000,
+    "sampling": "auto",
+    "transition_policy": "competency_gated_v3"
+  },
+  "math_training": {
+    "max_epochs": 100,
+    "minimum_epochs": 1,
+    "early_stop_patience": 10,
+    "learning_rate": 0.0001,
+    "minimum_learning_rate": 0.000005,
+    "warmup_fraction": 0.03,
+    "keep_latest_checkpoints": 100
+  },
+  "phases": [
+    {
+      "name": "verified_integer_foundations",
+      "through_epoch": 8,
+      "maximum_epochs": 8,
+      "quota_groups": [
+        {"name": "school_foundations", "examples": 70000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_foundations", "examples": 30000, "filters_from_panel": "generated_foundations"}
+      ]
+    },
+    {
+      "name": "verified_rational_and_nested",
+      "through_epoch": 18,
+      "maximum_epochs": 10,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 30000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_foundations_replay", "examples": 20000, "filters_from_panel": "generated_foundations"},
+        {"name": "generated_rational", "examples": 50000, "filters_from_panel": "generated_rational"}
+      ]
+    },
+    {
+      "name": "verified_systems_and_language",
+      "through_epoch": 30,
+      "maximum_epochs": 12,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 15000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_foundations_replay", "examples": 15000, "filters_from_panel": "generated_foundations"},
+        {"name": "generated_rational_replay", "examples": 20000, "filters_from_panel": "generated_rational"},
+        {"name": "generated_language", "examples": 40000, "filters_from_panel": "generated_language"},
+        {"name": "language_math_replay", "examples": 10000, "filters": {"sources": ["gsm8k"]}}
+      ]
+    },
+    {
+      "name": "broad_numeric_algorithms",
+      "through_epoch": 48,
+      "maximum_epochs": 18,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 10000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_foundations_replay", "examples": 15000, "filters_from_panel": "generated_foundations"},
+        {"name": "generated_rational_replay", "examples": 15000, "filters_from_panel": "generated_rational"},
+        {"name": "generated_language_replay", "examples": 20000, "filters_from_panel": "generated_language"},
+        {"name": "deepmind_numeric", "examples": 30000, "filters_from_panel": "deepmind_numeric"},
+        {"name": "language_math_replay", "examples": 10000, "filters": {"sources": ["gsm8k"]}}
+      ]
+    },
+    {
+      "name": "broad_symbolic_algorithms",
+      "through_epoch": 70,
+      "maximum_epochs": 22,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 10000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_foundations_replay", "examples": 10000, "filters_from_panel": "generated_foundations"},
+        {"name": "generated_rational_replay", "examples": 10000, "filters_from_panel": "generated_rational"},
+        {"name": "generated_language_replay", "examples": 20000, "filters_from_panel": "generated_language"},
+        {"name": "deepmind_numeric_replay", "examples": 10000, "filters_from_panel": "deepmind_numeric"},
+        {"name": "deepmind_symbolic", "examples": 30000, "filters_from_panel": "deepmind_symbolic"},
+        {"name": "language_math_replay", "examples": 10000, "filters": {"sources": ["gsm8k"]}}
+      ]
+    },
+    {
+      "name": "broad_math_consolidation",
+      "through_epoch": 100,
+      "maximum_epochs": 30,
+      "quota_groups": [
+        {"name": "school_replay", "examples": 10000, "filters": {"sources": ["verified_school_full"]}},
+        {"name": "generated_foundations_replay", "examples": 10000, "filters_from_panel": "generated_foundations"},
+        {"name": "generated_rational_replay", "examples": 10000, "filters_from_panel": "generated_rational"},
+        {"name": "generated_language_replay", "examples": 20000, "filters_from_panel": "generated_language"},
+        {"name": "deepmind_numeric", "examples": 20000, "filters_from_panel": "deepmind_numeric"},
+        {"name": "deepmind_symbolic", "examples": 20000, "filters_from_panel": "deepmind_symbolic"},
+        {"name": "language_math_replay", "examples": 10000, "filters": {"sources": ["gsm8k"]}}
+      ]
+    }
+  ]
+}

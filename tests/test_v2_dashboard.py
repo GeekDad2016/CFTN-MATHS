@@ -39,6 +39,8 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "refreshes every 30 seconds" in PAGE
     assert "setInterval(load,30000)" in PAGE
     assert "Full repaired math curriculum" in PAGE
+    assert "Random scratch initialization" in PAGE
+    assert "Cumulative replay contract" in PAGE
     assert "Other skill buckets/epoch" in PAGE
     assert "competency_gated_v" in PAGE
     assert "Zero-update phase entrance" in PAGE
@@ -49,6 +51,7 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "repeat(2,minmax(0,1fr))" not in PAGE
     assert '"math_full_supervision*"' in REMOTE_PROBE
     assert '"math_competency_curriculum*"' in REMOTE_PROBE
+    assert '"math_scratch_curriculum*"' in REMOTE_PROBE
     assert '"train_v2_full_supervision"' in REMOTE_PROBE
     assert '"run_v2_math_curriculum"' in REMOTE_PROBE
 
@@ -79,6 +82,7 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert 'read_json(stage_root / "entrance_evaluations.json")' in REMOTE_PROBE
     assert '"entrance_evaluations": entrance_evaluations' in REMOTE_PROBE
     assert '"preservation_distillation": recovery_contract.get("preservation_distillation")' in REMOTE_PROBE
+    assert '"initialization": recovery_contract.get("initialization")' in REMOTE_PROBE
 
 
 def test_remote_probe_returns_structured_ssh_failure(monkeypatch):

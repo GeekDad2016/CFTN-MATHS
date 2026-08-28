@@ -151,6 +151,66 @@ def test_competency_v3_uses_entrance_replay_and_lower_learning_rate():
     )
 
 
+def test_competency_v4_is_random_scratch_and_stages_future_sources():
+    path = Path(__file__).parents[1] / "config/v2_math_scratch_v4.json"
+    value = checked_competency_settings(path)
+    assert value["format"] == "cftn_full_math_training_v4"
+    assert value["initialization"] == {
+        "mode": "random_scratch_v1",
+        "layers": 24,
+        "source_checkpoint": None,
+    }
+    assert value["retention_baseline"] is None
+    assert not value["zero_update_entrance"]["enabled"]
+    assert not value["preservation_distillation"]["enabled"]
+    assert value["curriculum"]["transition_policy"] == "competency_gated_v3"
+    assert value["math_training"]["learning_rate"] == 1e-4
+    assert [phase["maximum_epochs"] for phase in value["phases"]] == [
+        8,
+        10,
+        12,
+        18,
+        22,
+        30,
+    ]
+    assert all(
+        sum(group["examples"] for group in phase["quota_groups"]) == 100000
+        for phase in value["phases"]
+    )
+    verified = {"verified_school_full", "cftn_generated"}
+    assert all(
+        set(group["filters"]["sources"]) <= verified
+        for phase in value["phases"][:2]
+        for group in phase["quota_groups"]
+    )
+    assert any(
+        group["filters"].get("sources") == ["deepmind_mathematics"]
+        for phase in value["phases"][3:]
+        for group in phase["quota_groups"]
+    )
+
+
+def test_competency_v4_rejects_checkpoint_or_future_foundation_data(tmp_path):
+    path = Path(__file__).parents[1] / "config/v2_math_scratch_v4.json"
+    overlay = json.loads(path.read_text())
+    overlay["base_settings"] = str(path.parent / "v2_full_supervision_v3.json")
+    overlay["initialization"]["source_checkpoint"] = "old.pth"
+    bad = tmp_path / "bad_source.json"
+    bad.write_text(json.dumps(overlay))
+    with pytest.raises(ValueError, match="random-scratch"):
+        checked_competency_settings(bad)
+
+    overlay = json.loads(path.read_text())
+    overlay["base_settings"] = str(path.parent / "v2_full_supervision_v3.json")
+    overlay["phases"][0]["quota_groups"][0]["filters"] = {
+        "sources": ["deepmind_mathematics"]
+    }
+    bad = tmp_path / "bad_foundation.json"
+    bad.write_text(json.dumps(overlay))
+    with pytest.raises(ValueError, match="verified procedural"):
+        checked_competency_settings(bad)
+
+
 def test_exact_trace_gate_cannot_be_satisfied_by_correct_answer_only():
     phase = {"name": "foundation", "through_epoch": 20, "minimum_generation_accuracy": .99,
              "minimum_valid_rate": 1.0, "minimum_trace_exact_by_family": {"addition": .95}}

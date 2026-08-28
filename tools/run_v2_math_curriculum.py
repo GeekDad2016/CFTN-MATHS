@@ -1,13 +1,15 @@
 """Start or exactly resume the competency-gated V2 math curriculum on RunPod.
 
 The default ``auto`` command is intentionally the only operator entry point:
-it resumes an existing compatible artifact, otherwise it starts a new artifact
-from the newest preserved checkpoint of the previous full-supervision run.
+it resumes an existing compatible artifact.  The current V4 default starts a
+new 24-layer tower from random initialization; older contracts can still use a
+preserved checkpoint explicitly.
 """
 from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,17 +27,74 @@ from tools.pilot_verified_math import assert_idle
 
 
 DEFAULT_ARTIFACT_ROOT = Path("/workspace/cftn-text/artifacts/v2_broad_math_400k_r4")
-DEFAULT_DATA = Path("/workspace/cftn-text/data/full_supervision_v1_20260826")
+DEFAULT_DATA = Path("/workspace/cftn-text/data/full_supervision_v2_scratch_20260828")
 DEFAULT_PROJECT = Path("/workspace/CFTN-MATHS")
-DEFAULT_OUTPUT = DEFAULT_ARTIFACT_ROOT / "math_competency_curriculum_v3"
+DEFAULT_OUTPUT = DEFAULT_ARTIFACT_ROOT / "math_scratch_curriculum_v4"
 DEFAULT_PREVIOUS = DEFAULT_ARTIFACT_ROOT / "math_full_supervision_v1"
 DEFAULT_PROTECTED = DEFAULT_ARTIFACT_ROOT / "math/math.best.pth"
-DEFAULT_WORK = Path("/tmp/cftn-math-competency-v3")
-DEFAULT_SETTINGS = "config/v2_full_supervision_v3.json"
+DEFAULT_WORK = Path("/tmp/cftn-math-scratch-v4")
+DEFAULT_SETTINGS = "config/v2_math_scratch_v4.json"
+
+
+def _canonical_sha256(value: dict) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _resolved_settings(path: str | Path) -> dict:
+    """Resolve the compact V4 overlay into the complete immutable contract."""
+
+    settings_path = Path(path).resolve()
+    overlay = json.loads(settings_path.read_text(encoding="utf-8"))
+    if overlay.get("format") != "cftn_full_math_training_v4":
+        return overlay
+    base_path = (settings_path.parent / overlay["base_settings"]).resolve()
+    base = json.loads(base_path.read_text(encoding="utf-8"))
+    if base.get("format") != "cftn_full_math_training_v3":
+        raise ValueError("V4 scratch base contract must be the sealed V3 format")
+    value = copy.deepcopy(base)
+    for key, item in overlay.items():
+        if key not in {"base_settings", "phases"}:
+            if key in {"math_training", "curriculum"}:
+                value[key].update(copy.deepcopy(item))
+            else:
+                value[key] = copy.deepcopy(item)
+    base_phases = {phase["name"]: phase for phase in base["phases"]}
+    panels = {
+        panel["name"]: panel
+        for panel in value["math_training"]["generation_validation"]["panels"]
+    }
+    phases = []
+    for phase_overlay in overlay["phases"]:
+        name = phase_overlay["name"]
+        if name not in base_phases:
+            raise ValueError(f"V4 scratch phase has no sealed base: {name}")
+        phase = copy.deepcopy(base_phases[name])
+        phase.update(copy.deepcopy(phase_overlay))
+        groups = []
+        for raw_group in phase["quota_groups"]:
+            group = copy.deepcopy(raw_group)
+            panel_name = group.pop("filters_from_panel", None)
+            if panel_name is not None:
+                panel = panels.get(panel_name)
+                if panel is None or not isinstance(panel.get("filters"), dict):
+                    raise ValueError(f"quota filter panel is unavailable: {panel_name}")
+                if "filters" in group:
+                    raise ValueError("quota group cannot combine filters and filters_from_panel")
+                group["filters"] = copy.deepcopy(panel["filters"])
+            groups.append(group)
+        phase["quota_groups"] = groups
+        phases.append(phase)
+    value["phases"] = phases
+    value["settings_provenance"] = {
+        "overlay_sha256": file_sha256(settings_path),
+        "base_sha256": file_sha256(base_path),
+    }
+    return value
 
 
 def checked_settings(path: str | Path) -> dict:
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    value = _resolved_settings(path)
     training = value["math_training"]
     format_name = value.get("format")
     transition_policy = value.get("curriculum", {}).get("transition_policy")
@@ -48,6 +107,11 @@ def checked_settings(path: str | Path) -> dict:
         expected_policy = "competency_gated_v2"
         expected_max_epochs = 42
         maximum_learning_rate = 2e-5
+        expected_examples = 100_000
+    elif format_name == "cftn_full_math_training_v4":
+        expected_policy = "competency_gated_v3"
+        expected_max_epochs = 100
+        maximum_learning_rate = 1e-4
         expected_examples = 100_000
     else:
         raise ValueError("invalid competency math safety contract format")
@@ -65,9 +129,11 @@ def checked_settings(path: str | Path) -> dict:
         or not 0 < float(training.get("learning_rate", 0)) <= maximum_learning_rate
         or int(value.get("curriculum", {}).get("examples_per_epoch", 0))
         != expected_examples
-        or float(value["retention_baseline"]["maximum_drop"]) > 0.03
     ):
         raise ValueError("invalid competency math safety contract")
+    if format_name in {"cftn_full_math_training_v2", "cftn_full_math_training_v3"}:
+        if float(value["retention_baseline"]["maximum_drop"]) > 0.03:
+            raise ValueError("invalid competency math retention contract")
     phases = value.get("phases", [])
     if (
         not phases
@@ -88,6 +154,17 @@ def checked_settings(path: str | Path) -> dict:
             or not 0 < float(preservation.get("weight", 0)) <= 0.1
         ):
             raise ValueError("invalid V3 entrance or preservation contract")
+    if format_name == "cftn_full_math_training_v4":
+        initialization = value.get("initialization", {})
+        if (
+            initialization.get("mode") != "random_scratch_v1"
+            or initialization.get("layers") != 24
+            or initialization.get("source_checkpoint") is not None
+            or value.get("retention_baseline") is not None
+            or bool((value.get("zero_update_entrance") or {}).get("enabled"))
+            or bool((value.get("preservation_distillation") or {}).get("enabled"))
+        ):
+            raise ValueError("invalid V4 random-scratch initialization contract")
     verified_sources = {"verified_school_full", "cftn_generated"}
     for index, phase in enumerate(phases):
         if (
@@ -120,6 +197,16 @@ def checked_settings(path: str | Path) -> dict:
             or min(phase["minimum_trace_exact_by_family"].values()) < 0.95
         ):
             raise ValueError("foundational gates may not be weakened")
+    if format_name == "cftn_full_math_training_v4":
+        if any(
+            set(group.get("filters", {}).get("sources", []))
+            - verified_sources
+            for phase in phases[:2]
+            for group in phase["quota_groups"]
+        ):
+            raise ValueError("V4 foundations may contain only verified procedural sources")
+        if [int(phase["maximum_epochs"]) for phase in phases] != [8, 10, 12, 18, 22, 30]:
+            raise ValueError("unexpected V4 scratch phase budgets")
     if not phases[-1].get("stop_on_pass"):
         raise ValueError("final curriculum phase must stop only after acceptance")
     return value
@@ -158,7 +245,9 @@ def run(args: argparse.Namespace) -> None:
     config["data"]["full_supervision_sha256"] = manifest["manifest_sha256"]
     config["math_tower"]["layers"] = 24
     output, work = Path(args.output), Path(args.work)
-    settings_sha256 = file_sha256(args.settings)
+    settings_file_sha256 = file_sha256(args.settings)
+    settings_sha256 = _canonical_sha256(settings)
+    scratch = settings["format"] == "cftn_full_math_training_v4"
 
     if file_sha256(args.protected) != settings["protected_checkpoint_sha256"]:
         raise ValueError("protected checkpoint hash mismatch")
@@ -175,26 +264,42 @@ def run(args: argparse.Namespace) -> None:
             raise ValueError("resume requires the exact tested repository revision")
         if contract.get("data_manifest_sha256") != manifest["manifest_sha256"]:
             raise ValueError("resume data manifest changed")
-        source_path = Path(contract["source_checkpoint"])
-        if file_sha256(source_path) != contract["source_checkpoint_sha256"]:
-            raise ValueError("resume source checkpoint changed")
+        if scratch:
+            if contract.get("source_checkpoint") is not None:
+                raise ValueError("scratch resume unexpectedly names a source checkpoint")
+            source_path = None
+        else:
+            source_path = Path(contract["source_checkpoint"])
+            if file_sha256(source_path) != contract["source_checkpoint_sha256"]:
+                raise ValueError("resume source checkpoint changed")
     else:
         if output.exists() or work.exists():
             raise FileExistsError("fresh competency output/work paths required")
-        if not args.source:
-            raise ValueError("fresh competency training requires a source checkpoint")
-        source_path = Path(args.source).resolve()
-        _, source_sha256 = _verify_source(source_path, config)
+        if scratch:
+            if args.source:
+                raise ValueError("V4 scratch training forbids a source checkpoint")
+            source_path = None
+            source_sha256 = None
+        else:
+            if not args.source:
+                raise ValueError("fresh competency training requires a source checkpoint")
+            source_path = Path(args.source).resolve()
+            _, source_sha256 = _verify_source(source_path, config)
         output.mkdir(parents=True, exist_ok=False)
         work.mkdir(parents=True, exist_ok=False)
         contract = copy.deepcopy(settings)
         contract.update(
             repository_revision=revision,
             settings_path=str(Path(args.settings).resolve()),
+            settings_file_sha256=settings_file_sha256,
             settings_sha256=settings_sha256,
-            source_checkpoint=str(source_path),
+            source_checkpoint=str(source_path) if source_path is not None else None,
             source_checkpoint_sha256=source_sha256,
-            source_checkpoint_mode="weights_only_fresh_optimizer_scheduler",
+            source_checkpoint_mode=(
+                "random_scratch_v1"
+                if scratch
+                else "weights_only_fresh_optimizer_scheduler"
+            ),
             data_root=str(Path(args.data).resolve()),
             data_manifest_sha256=manifest["manifest_sha256"],
         )
@@ -209,11 +314,11 @@ def run(args: argparse.Namespace) -> None:
         "enabled": args.wandb_mode != "disabled",
         "mode": args.wandb_mode,
         "project": "cftn-text-v2",
-        "group": (
-            "competency-curriculum-v3"
-            if settings["format"] == "cftn_full_math_training_v3"
-            else "competency-curriculum-v2"
-        ),
+        "group": {
+            "cftn_full_math_training_v2": "competency-curriculum-v2",
+            "cftn_full_math_training_v3": "competency-curriculum-v3",
+            "cftn_full_math_training_v4": "math-scratch-curriculum-v4",
+        }[settings["format"]],
         "run_name": output.name,
     }
     result = train_math_tower(
@@ -229,7 +334,7 @@ def run(args: argparse.Namespace) -> None:
     )
     if file_sha256(args.protected) != settings["protected_checkpoint_sha256"]:
         raise RuntimeError("protected checkpoint changed")
-    if file_sha256(source_path) != contract["source_checkpoint_sha256"]:
+    if source_path is not None and file_sha256(source_path) != contract["source_checkpoint_sha256"]:
         raise RuntimeError("source checkpoint changed")
     atomic_json_dump(
         {
@@ -238,6 +343,7 @@ def run(args: argparse.Namespace) -> None:
             "remaining_pipeline_enabled": False,
             "next_gate": "unchanged full native evaluation before downstream release",
             "protected_sources_preserved": True,
+            "initialization": settings.get("initialization"),
         },
         output / "release_status.json",
     )
@@ -257,10 +363,11 @@ def _next_attempt(output: Path) -> tuple[Path, Path, Path]:
 
 def auto(args: argparse.Namespace) -> None:
     assert_idle()
-    checked_settings(args.settings)
     output = Path(args.output)
     resume = output.is_dir()
     source: Path | None = None
+    settings = checked_settings(args.settings)
+    scratch = settings["format"] == "cftn_full_math_training_v4"
     if resume:
         summary = output / "summary.json"
         if summary.is_file():
@@ -271,9 +378,13 @@ def auto(args: argparse.Namespace) -> None:
         if not (output / "recovery_contract.json").is_file() or latest_checkpoint(output) is None:
             raise ValueError("existing output is not safely resumable")
     else:
-        source = Path(args.source).resolve() if args.source else latest_checkpoint(args.previous_artifact)
-        if source is None or not source.is_file():
-            raise FileNotFoundError("no previous full-supervision checkpoint is available")
+        if scratch:
+            if args.source:
+                raise ValueError("V4 scratch training forbids a source checkpoint")
+        else:
+            source = Path(args.source).resolve() if args.source else latest_checkpoint(args.previous_artifact)
+            if source is None or not source.is_file():
+                raise FileNotFoundError("no previous full-supervision checkpoint is available")
     stdout_path, stderr_path, launcher_path = _next_attempt(output)
     command = [sys.executable, "-u", "-m", "tools.run_v2_math_curriculum", "run"]
     for name in ("data", "protected", "output", "work", "config", "settings", "wandb_mode"):

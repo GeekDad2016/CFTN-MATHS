@@ -347,17 +347,18 @@ def test_competency_curriculum_fails_closed_at_phase_cap():
     assert transition["failed"] and not transition["complete"]
 
 
-def test_competency_v2_policy_is_recorded_without_changing_gate_semantics():
+@pytest.mark.parametrize("policy", ["competency_gated_v2", "competency_gated_v3"])
+def test_competency_policy_is_recorded_without_changing_gate_semantics(policy):
     phases = [{"name": "first", "minimum_epochs": 2, "maximum_epochs": 2,
                "advance_after_consecutive_passes": 2}]
     state = _initial_competency_curriculum_state()
     state, _ = _update_competency_curriculum_state(
-        phases=phases, state=state, accepted=False, policy="competency_gated_v2"
+        phases=phases, state=state, accepted=False, policy=policy
     )
     _, transition = _update_competency_curriculum_state(
-        phases=phases, state=state, accepted=True, policy="competency_gated_v2"
+        phases=phases, state=state, accepted=True, policy=policy
     )
-    assert transition["policy"] == "competency_gated_v2"
+    assert transition["policy"] == policy
     assert transition["failed"] and not transition["advance"]
 
 
