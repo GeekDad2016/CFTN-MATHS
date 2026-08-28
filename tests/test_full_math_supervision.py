@@ -216,6 +216,7 @@ def test_competency_v4_rejects_checkpoint_or_future_foundation_data(tmp_path):
         checked_competency_settings(bad)
 
     overlay = json.loads(path.read_text())
+    overlay["base_settings"] = str(path.parent / "v2_full_supervision_v3.json")
     overlay.pop("parent_dataset")
     bad = tmp_path / "unsealed_parent.json"
     bad.write_text(json.dumps(overlay))
