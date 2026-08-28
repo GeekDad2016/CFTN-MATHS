@@ -128,6 +128,7 @@ def main():
     parser.add_argument("command", choices=("prepare", "audit", "launch", "run"))
     parser.add_argument("--data", required=True)
     parser.add_argument("--parent")
+    parser.add_argument("--expected-parent-manifest-sha256")
     parser.add_argument("--source")
     parser.add_argument("--protected")
     parser.add_argument("--output")
@@ -141,7 +142,14 @@ def main():
     if os.name != "posix":
         raise RuntimeError("full dataset building, tests, and training run on RunPod only")
     if args.command in ("prepare", "audit"):
-        result = prepare_full_data(args.parent, args.data) if args.command == "prepare" else audit_full_data(args.data)
+        kwargs = {}
+        if args.expected_parent_manifest_sha256:
+            kwargs["expected_parent_manifest_sha256"] = args.expected_parent_manifest_sha256
+        result = (
+            prepare_full_data(args.parent, args.data, **kwargs)
+            if args.command == "prepare"
+            else audit_full_data(args.data, **kwargs)
+        )
         print(json.dumps(result), flush=True)
     elif args.command == "run":
         # Serializes all full-supervision launches without preventing monitoring.

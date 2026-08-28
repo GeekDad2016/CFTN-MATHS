@@ -35,6 +35,9 @@ procedural traces. No checkpoint becomes best/accepted before the final phase.
 
 - Training data is rebuilt into a new sealed derivative root and fully audited
   before CUDA allocation.
+- The V4 contract pins the adopted parent manifest, its resolved configuration,
+  and its generator source hash; a changed external corpus is a new dataset,
+  never a silent substitute for the historical recovery corpus.
 - MathQA program rows remain quarantined.
 - The first two phases reject any imported DeepMind or GSM8K row.
 - Every phase samples exactly 100,000 examples from disjoint, family-balanced

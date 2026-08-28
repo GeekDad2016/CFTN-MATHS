@@ -299,10 +299,16 @@ def read_rows(path):
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def prepare_full_data(parent_root, output, *, objects_per_family=12000):
+def prepare_full_data(
+    parent_root,
+    output,
+    *,
+    objects_per_family=12000,
+    expected_parent_manifest_sha256=PARENT_SHA,
+):
     parent_root, output = Path(parent_root), Path(output)
     parent = json.loads((parent_root / "manifest.json").read_text())
-    if parent["manifest_sha256"] != PARENT_SHA:
+    if parent["manifest_sha256"] != expected_parent_manifest_sha256:
         raise ValueError("unexpected full-data parent")
     audit = audit_v2_manifest(parent, parent_root)
     output.mkdir(parents=True, exist_ok=False)
@@ -346,7 +352,7 @@ def prepare_full_data(parent_root, output, *, objects_per_family=12000):
     quarantine = write_rows(output / "quarantine_mathqa.jsonl", rejected)
     decisions = write_rows(output / "quarantine_decisions.jsonl", ledger)
     manifest = {"format": "cftn_text_broad_math_v2", "derivative_format": FORMAT,
-                "parent_root": str(parent_root.resolve()), "parent_manifest_sha256": PARENT_SHA,
+                "parent_root": str(parent_root.resolve()), "parent_manifest_sha256": parent["manifest_sha256"],
                 "parent_manifest_file_sha256": file_sha256(parent_root / "manifest.json"),
                 "parent_audit": audit, "splits": splits, "train_records": len(repaired),
                 "generator_sha256": file_sha256(__file__),
@@ -367,7 +373,7 @@ def prepare_full_data(parent_root, output, *, objects_per_family=12000):
     return audit_full_data(output)
 
 
-def audit_full_data(root):
+def audit_full_data(root, *, expected_parent_manifest_sha256=PARENT_SHA):
     root = Path(root)
     manifest = json.loads((root / "manifest.json").read_text())
     if manifest.get("derivative_format") != FORMAT or fingerprint({k: v for k, v in manifest.items() if k != "manifest_sha256"}) != manifest["manifest_sha256"]:
@@ -379,7 +385,12 @@ def audit_full_data(root):
             raise ValueError("full-data generator dependency changed")
     parent_root = Path(manifest["parent_root"])
     parent = json.loads((parent_root / "manifest.json").read_text())
-    if parent["manifest_sha256"] != PARENT_SHA or file_sha256(parent_root / "manifest.json") != manifest["parent_manifest_file_sha256"]:
+    recorded_parent_sha256 = manifest.get("parent_manifest_sha256")
+    if (
+        recorded_parent_sha256 != expected_parent_manifest_sha256
+        or parent["manifest_sha256"] != recorded_parent_sha256
+        or file_sha256(parent_root / "manifest.json") != manifest["parent_manifest_file_sha256"]
+    ):
         raise ValueError("sealed parent changed")
     audit_v2_manifest(parent, parent_root)
     train_keys, val_keys, train_questions, eval_questions = set(), set(), set(), set()

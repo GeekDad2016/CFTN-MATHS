@@ -131,6 +131,18 @@ def checked_settings(path: str | Path) -> dict:
         != expected_examples
     ):
         raise ValueError("invalid competency math safety contract")
+    if format_name == "cftn_full_math_training_v4":
+        parent_dataset = value.get("parent_dataset")
+        if (
+            not isinstance(parent_dataset, dict)
+            or not isinstance(parent_dataset.get("manifest_sha256"), str)
+            or len(parent_dataset["manifest_sha256"]) != 64
+            or not isinstance(parent_dataset.get("config_sha256"), str)
+            or len(parent_dataset["config_sha256"]) != 64
+            or not isinstance(parent_dataset.get("generator_sha256"), str)
+            or len(parent_dataset["generator_sha256"]) != 64
+        ):
+            raise ValueError("V4 scratch requires an explicitly sealed parent dataset")
     if format_name in {"cftn_full_math_training_v2", "cftn_full_math_training_v3"}:
         if float(value["retention_baseline"]["maximum_drop"]) > 0.03:
             raise ValueError("invalid competency math retention contract")
@@ -238,16 +250,26 @@ def run(args: argparse.Namespace) -> None:
             ignored.add(args.launcher_pid)
     assert_idle(ignore_pids=ignored)
     settings = checked_settings(args.settings)
+    scratch = settings["format"] == "cftn_full_math_training_v4"
     revision = _clean_revision()
-    manifest = audit_full_data(args.data)
+    expected_parent_manifest_sha256 = (
+        settings["parent_dataset"]["manifest_sha256"] if scratch else None
+    )
+    manifest = audit_full_data(
+        args.data,
+        expected_parent_manifest_sha256=expected_parent_manifest_sha256,
+    )
     config = load_config(args.config)
     config["data"]["full_supervision_root"] = str(Path(args.data).resolve())
     config["data"]["full_supervision_sha256"] = manifest["manifest_sha256"]
+    if expected_parent_manifest_sha256 is not None:
+        config["data"]["full_supervision_parent_manifest_sha256"] = (
+            expected_parent_manifest_sha256
+        )
     config["math_tower"]["layers"] = 24
     output, work = Path(args.output), Path(args.work)
     settings_file_sha256 = file_sha256(args.settings)
     settings_sha256 = _canonical_sha256(settings)
-    scratch = settings["format"] == "cftn_full_math_training_v4"
 
     if file_sha256(args.protected) != settings["protected_checkpoint_sha256"]:
         raise ValueError("protected checkpoint hash mismatch")

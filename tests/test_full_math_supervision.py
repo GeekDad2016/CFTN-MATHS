@@ -161,6 +161,11 @@ def test_competency_v4_is_random_scratch_and_stages_future_sources():
         "source_checkpoint": None,
     }
     assert value["retention_baseline"] is None
+    assert value["parent_dataset"] == {
+        "manifest_sha256": "2a4efc0b96c6d404327e219da9c078c69718367368ae156e134d4776535daef3",
+        "config_sha256": "e247a6f8275297264552b41aec1ec3481ebfd05dd20785041d295bf06ee869c6",
+        "generator_sha256": "5d7048ccbee653599e6037c222591be10eff6d7c25a2eaaf90bc4d1379094e40",
+    }
     assert not value["zero_update_entrance"]["enabled"]
     assert not value["preservation_distillation"]["enabled"]
     assert value["curriculum"]["transition_policy"] == "competency_gated_v3"
@@ -208,6 +213,13 @@ def test_competency_v4_rejects_checkpoint_or_future_foundation_data(tmp_path):
     bad = tmp_path / "bad_foundation.json"
     bad.write_text(json.dumps(overlay))
     with pytest.raises(ValueError, match="verified procedural"):
+        checked_competency_settings(bad)
+
+    overlay = json.loads(path.read_text())
+    overlay.pop("parent_dataset")
+    bad = tmp_path / "unsealed_parent.json"
+    bad.write_text(json.dumps(overlay))
+    with pytest.raises(ValueError, match="sealed parent"):
         checked_competency_settings(bad)
 
 

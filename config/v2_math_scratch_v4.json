@@ -11,6 +11,11 @@
     "layers": 24,
     "source_checkpoint": null
   },
+  "parent_dataset": {
+    "manifest_sha256": "2a4efc0b96c6d404327e219da9c078c69718367368ae156e134d4776535daef3",
+    "config_sha256": "e247a6f8275297264552b41aec1ec3481ebfd05dd20785041d295bf06ee869c6",
+    "generator_sha256": "5d7048ccbee653599e6037c222591be10eff6d7c25a2eaaf90bc4d1379094e40"
+  },
   "retention_baseline": null,
   "zero_update_entrance": {"enabled": false},
   "preservation_distillation": {"enabled": false},

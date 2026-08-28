@@ -254,9 +254,14 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 
 def load_data_contract(config: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     if config.get("data", {}).get("full_supervision_root"):
-        from .full_math_data import audit_full_data
+        from .full_math_data import PARENT_SHA, audit_full_data
         root = Path(config["data"]["full_supervision_root"]).resolve()
-        manifest = audit_full_data(root)
+        manifest = audit_full_data(
+            root,
+            expected_parent_manifest_sha256=config["data"].get(
+                "full_supervision_parent_manifest_sha256", PARENT_SHA
+            ),
+        )
         if manifest["manifest_sha256"] != config["data"].get("full_supervision_sha256"):
             raise ValueError("full-supervision data identity differs from run config")
         return root, manifest
