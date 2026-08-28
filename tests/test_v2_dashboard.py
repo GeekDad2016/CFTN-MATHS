@@ -46,6 +46,8 @@ def test_dashboard_exposes_live_and_completed_validation_information():
     assert "Zero-update phase entrance" in PAGE
     assert "Preservation KL" in PAGE
     assert "DeepMind numeric" in PAGE
+    assert "Validation in progress" in PAGE
+    assert "live_generation_validation" in PAGE
     assert 'class="summary-grid"' in PAGE
     assert ".summary-grid{grid-template-columns:1fr" in PAGE
     assert "repeat(2,minmax(0,1fr))" not in PAGE
@@ -80,6 +82,8 @@ def test_remote_probe_collects_stage_metrics_and_redacts_sensitive_fields():
     assert '"retention_baseline": retention_baseline' in REMOTE_PROBE
     assert '"retention_baseline": recovery_contract.get("retention_baseline")' in REMOTE_PROBE
     assert 'read_json(stage_root / "entrance_evaluations.json")' in REMOTE_PROBE
+    assert '"live_generation_validation": live_generation_validation' in REMOTE_PROBE
+    assert 'generation_validation_{name}_epoch_{current_epoch:04d}.jsonl' in REMOTE_PROBE
     assert '"entrance_evaluations": entrance_evaluations' in REMOTE_PROBE
     assert '"preservation_distillation": recovery_contract.get("preservation_distillation")' in REMOTE_PROBE
     assert '"initialization": recovery_contract.get("initialization")' in REMOTE_PROBE

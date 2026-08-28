@@ -326,6 +326,51 @@ if school_trial:
     stage_artifacts[stage] = {"directory": school_trial["directory"], "status": school_trial["status"],
                               "metrics": school_trial["epochs"], "summary": school_trial["summary"],
                               "contract": school_trial["contract"]}
+live_generation_validation = {}
+current_directory = stage_directories.get(stage)
+current_root = artifact_root if current_directory == "." else (
+    artifact_root / current_directory if current_directory else None
+)
+if current_root is not None:
+    current_status = read_json(current_root / "status.json")
+    current_contract = read_json(current_root / "recovery_contract.json")
+    current_epoch = int(current_status.get("epoch") or 0)
+    current_metrics = read_jsonl(current_root / "metrics.jsonl")
+    current_metric_epochs = {int(row.get("epoch") or 0) for row in current_metrics}
+    live_metrics = current_status.get("metrics") or {}
+    generation = (current_contract.get("math_training") or {}).get("generation_validation") or {}
+    configured_panels = generation.get("panels") or []
+    batches_complete = (
+        int(live_metrics.get("epoch_batch_completed") or 0)
+        >= int(live_metrics.get("epoch_batches_total") or 1)
+    )
+    if current_epoch and configured_panels and batches_complete and current_epoch not in current_metric_epochs:
+        panels = []
+        for panel in configured_panels:
+            name = str(panel.get("name") or "")
+            expected_examples = int(panel.get("examples") or 0)
+            path = current_root / f"generation_validation_{name}_epoch_{current_epoch:04d}.jsonl"
+            completed_examples = 0
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    completed_examples = sum(1 for line in handle if line.strip())
+            except OSError:
+                pass
+            panels.append({
+                "name": name,
+                "expected_examples": expected_examples,
+                "completed_examples": completed_examples,
+                "complete": expected_examples > 0 and completed_examples >= expected_examples,
+            })
+        live_generation_validation = {
+            "active": True,
+            "epoch": current_epoch,
+            "completed_panels": sum(1 for panel in panels if panel["complete"]),
+            "total_panels": len(panels),
+            "completed_examples": sum(panel["completed_examples"] for panel in panels),
+            "total_examples": sum(panel["expected_examples"] for panel in panels),
+            "panels": panels,
+        }
 processes = []
 for line in command(["ps", "-eo", "pid=,ppid=,etime=,stat=,%cpu=,%mem=,args="]).splitlines():
     if any(marker in line for marker in markers):
@@ -358,7 +403,7 @@ else:
     stdout = tail(artifact_root / "pipeline_logs" / f"{stage}.stdout.log") if stage else {}
     stderr = tail(artifact_root / "pipeline_logs" / f"{stage}.stderr.log") if stage else {}
 disk = command(["df", "-h", "/workspace"]).splitlines()[-1:] 
-print(json.dumps({"format": "cftn_text_remote_dashboard_v2", "updated_unix": time.time(), "artifact_root": str(artifact_root), "data_root": str(data_root), "pipeline": pipeline, "training_contract": training_contract, "school_trial": school_trial, "data_preparation": redact(read_json(data_root / "prepare_status.json")), "data_manifest": redact(read_json(data_root / "manifest.json")), "stage_artifacts": stage_artifacts, "current_stage_artifact": stage_artifacts.get(stage, {}), "gpu": {"gpus": gpus}, "processes": processes, "checkpoints": checkpoints, "wandb": {"preflight": redact(read_json(artifact_root / "startup_preflight.json")).get("wandb", {}), "runs": wandb_runs}, "logs": {"stdout": stdout, "stderr": stderr}, "disk": disk}, separators=(",", ":")))
+print(json.dumps({"format": "cftn_text_remote_dashboard_v2", "updated_unix": time.time(), "artifact_root": str(artifact_root), "data_root": str(data_root), "pipeline": pipeline, "training_contract": training_contract, "school_trial": school_trial, "data_preparation": redact(read_json(data_root / "prepare_status.json")), "data_manifest": redact(read_json(data_root / "manifest.json")), "stage_artifacts": stage_artifacts, "current_stage_artifact": stage_artifacts.get(stage, {}), "live_generation_validation": live_generation_validation, "gpu": {"gpus": gpus}, "processes": processes, "checkpoints": checkpoints, "wandb": {"preflight": redact(read_json(artifact_root / "startup_preflight.json")).get("wandb", {}), "runs": wandb_runs}, "logs": {"stdout": stdout, "stderr": stderr}, "disk": disk}, separators=(",", ":")))
 PY
 '''
 
@@ -511,6 +556,8 @@ $('stamp').textContent='Updated '+new Date(d.updated_unix*1000).toLocaleString()
 $('summary').innerHTML=`<div class=card><b>Pipeline</b><div class="metric ${p.state==='error'?'bad':'ok'}">${esc(p.state||'missing')}</div><code>${esc(p.current_stage||'not running')}</code></div><div class=card><b>Epoch progress</b><div class=metric>${n(status.epoch??live.epoch)} · ${(100*Number(ep||0)).toFixed(1)}%</div><div>${n(batch)} / ${n(totalBatch)} batches</div><div class=bar><i style="width:${Math.max(0,Math.min(100,100*Number(ep||0)))}%"></i></div></div><div class=card><b>Rolling train loss</b><div class=metric>${n(live.train_loss_so_far)}</div><div class=submetric>task ${n(live.task_loss_so_far)} · preserve ${n(live.preservation_loss_so_far)} on ${n(live.preservation_rows)} rows<br>${n(live.steps_per_second)} steps/s · LR ${lr(live.learning_rate)}</div></div><div class=card><b>GPU</b><div class="metric ${Number(gpu0.utilization_percent)>10?'ok':'warn'}">${numeric(gpu0.utilization_percent)?n(gpu0.utilization_percent)+'%':'—'}</div><div class=submetric>${n(gpu0.memory_used_mib)} / ${n(gpu0.memory_total_mib)} MiB · ${numeric(gpu0.temperature_c)?n(gpu0.temperature_c)+'°C':'—'}</div></div><div class=card><b>Latest phase answers</b><div class="metric ${Number(primaryGeneration.accuracy)>=Number(curr.active.minimum_generation_accuracy||0)?'ok':'warn'}">${pct(primaryGeneration.accuracy)}</div><div class=submetric>${esc(primaryPanel.replaceAll('_',' '))} · valid ${pct(primaryGeneration.valid_rate)} · epoch ${n(last.epoch)}</div></div><div class=card><b>Global exact full trace</b><div class="metric">${pct(get(last,'validation.teacher_forced_sequence_accuracy'))}</div><div class=submetric>all fixed holdout rows · token ${pct(get(last,'validation.teacher_forced_token_accuracy'))}</div></div><div class=card><b>Acceptance gates</b><div class="metric ${gate.pass?'ok':'warn'}">${gateEntries.length?gatePassed+' / '+gateEntries.length:'—'}</div><div class=submetric>${last.checkpoint_eligible?'checkpoint eligible':'checkpoint not eligible'} · selection ${n(last.selection_metric)}</div></div><div class=card><b>System health</b><div class="metric health ${issues.length?'bad':'ok'}">${issues.length?'Attention':'Healthy'}</div><div class=submetric>${esc(issues.join(' · ')||assessment.label)}</div></div>`;
 $('current').innerHTML=tbl([[status.state||'',status.epoch??live.epoch??'',status.global_step??'',n(live.train_loss_so_far),n(live.task_loss_so_far),n(live.preservation_loss_so_far),n(live.preservation_rows),lr(live.learning_rate),n(live.examples_per_second),n(live.steps_per_second),dur(status.elapsed_seconds),dur(live.eta_seconds_to_max_epochs_excluding_validation)]],['State','Epoch','Global step','Total loss','Task loss','Preservation KL','Preserved rows','LR','Examples/s','Steps/s','Elapsed','ETA'])+`<details><summary>All current status metrics</summary><pre>${esc(JSON.stringify(status,null,2))}</pre></details>`;
 $('acceptance').innerHTML=acceptancePanel(last,curr);
+let liveGeneration=d.live_generation_validation||{};
+if(liveGeneration.active){let completed=Number(liveGeneration.completed_panels||0),total=Number(liveGeneration.total_panels||0),examplesDone=Number(liveGeneration.completed_examples||0),examplesTotal=Number(liveGeneration.total_examples||0),ratio=examplesTotal?Math.max(0,Math.min(1,examplesDone/examplesTotal)):0,names=(liveGeneration.panels||[]).filter(x=>x.complete).map(x=>String(x.name||'').replaceAll('_',' '));$('summary').innerHTML+=`<div class=card><b>Validation in progress</b><div class="metric ok">${n(completed)} / ${n(total)} panels</div><div class=submetric>${n(examplesDone)} / ${n(examplesTotal)} generated answers · epoch ${n(liveGeneration.epoch)}<br>${esc(names.join(', ')||'Teacher-forced validation running')}</div><div class=bar><i style="width:${100*ratio}%"></i></div></div>`}
 let difficulty=d.data_manifest?.splits?.train?.difficulty_counts||{},examples=Number(curr.config.examples_per_epoch||0),descriptions={foundations:'Variables on both sides, one-operation MathQA, and low-complexity examples across the configured DeepMind modules.',rational_and_nested:'Adds signed fractions, nested parentheses, shorter multi-step language problems, and medium-complexity examples.',systems_and_language:'Adds two-variable systems, longer and distractor word problems, the hardest complexity tier, and the full training set.'},phaseRows=[],cumulative=0,previous=0;for(const [index,phase] of curr.phases.entries()){cumulative+=Number(difficulty[String(phase.max_difficulty)]||0);let start=previous+1,end=Number(phase.through_epoch),state=index<curr.activeIndex?'Completed':index===curr.activeIndex?'Active':'Scheduled',sampling=cumulative<examples?(examples/Math.max(1,cumulative)).toFixed(2)+'× average reuse':'One shuffled pass';phaseRows.push([String(phase.name||'').replaceAll('_',' '),start+'–'+end,'≤ '+phase.max_difficulty,n(cumulative),sampling,state,descriptions[phase.name]||'']);previous=end}let mt=d.training_contract?.math_training||{},validationN=d.training_contract?.validation_examples??d.data_manifest?.splits?.validation?.count??0;
 $('curriculum').innerHTML=`<div class=callout><span class="pill ok">Active: ${esc(String(curr.active.name||'unknown').replaceAll('_',' '))}</span><p>Phase progress: <b>${(100*curr.phaseProgress).toFixed(1)}%</b> · phase cap at cumulative epoch ${n(curr.active.through_epoch)} · estimated maximum in <b>${dur(curr.transitionEta)}</b>.</p><div class=bar><i style="width:${100*curr.phaseProgress}%"></i></div></div>`+tbl(phaseRows,['Phase','Epochs','Difficulty','Eligible unique rows',n(examples)+' sampled/epoch','State','What is added'])+`<p><b>Validation is deliberately harder than the active curriculum:</b> all ${n(validationN)} mixed holdout examples are evaluated after every epoch (difficulty 1: ${n(d.data_manifest?.splits?.validation?.difficulty_counts?.['1'])}, difficulty 2: ${n(d.data_manifest?.splits?.validation?.difficulty_counts?.['2'])}, difficulty 3: ${n(d.data_manifest?.splits?.validation?.difficulty_counts?.['3'])}). It is not filtered to the active phase.</p><p class=muted>Training contract: minimum ${n(mt.minimum_epochs)} epochs, maximum ${n(mt.max_epochs)}, early-stop patience ${n(mt.early_stop_patience)} after the minimum, batch size ${n(mt.batch_size)}. Configuration: ${esc(d.training_contract?.config_path||'unavailable')}.</p>`;
 if(d.training_contract?.full_supervision){const m=d.data_manifest||{},bands=['foundations','two digit','three digit'];let previous=0;const phases=curr.phases.map((p,i)=>{const start=previous+1;previous=p.through_epoch;let school=p.quota_groups?Number((p.quota_groups||[]).filter(g=>(g.filters?.sources||[]).includes('verified_school_full')).reduce((a,g)=>a+Number(g.examples||0),0)):Number(p.source_quotas?.verified_school_full||0),epochRange=curr.dynamic?`${p.minimum_epochs}–${p.maximum_epochs} phase epochs`:`${start}–${p.through_epoch}`,state=i<curr.activeIndex?'Passed':i===curr.activeIndex?'Active':'Scheduled';return [p.name.replaceAll('_',' '),epochRange,bands[p.max_school_difficulty-1],n(school),n(examples-school),state]});let policy=curr.dynamic?`Phases advance after ${n(curr.active.advance_after_consecutive_passes)} consecutive passing validations, never merely because a wall-clock epoch was reached. The active phase may run ${n(curr.active.minimum_epochs)}–${n(curr.active.maximum_epochs)} epochs; the ETA shown is the fail-closed maximum, not a promise.`:'Gates at 20/40/60 stop the run if mastery is not reached.';let preservation=d.training_contract?.preservation_distillation||{};$('curriculum').innerHTML=`<p><b>Full repaired math curriculum:</b> ${n(m.train_records)} stored training rows; ${n(m.school_unique_objects)} new school math objects; ${n(m.quarantine?.count)} MathQA program rows quarantined. Original evaluation files are unchanged.</p>`+tbl(phases,['Phase','Epoch budget','School range','Verified school/epoch','Other skill buckets/epoch','State'])+`<p>${n(examples)} sampled examples per epoch in disjoint, family-balanced skill buckets. ${policy} Loss weights: 50% results, 25% copies, 25% syntax.</p><p>Frozen-source preservation: ${preservation.enabled?'enabled at weight '+n(preservation.weight)+' for '+esc((preservation.sources||[]).join(', ')):'disabled'}. It applies only where the source teacher produced the entire target correctly.</p><p>Generation panels separately track school, unseen wording, verified generated procedures, DeepMind numeric, DeepMind symbolic, and unchanged broad validation. Full production acceptance is still required after training.</p>`+entrancePanel(a)}
