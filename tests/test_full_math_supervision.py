@@ -8,8 +8,9 @@ import torch
 
 from cftn_text.computation_supervision import computation_loss
 from cftn_text.dataset import EquationDataset
-from cftn_text.full_math_data import (FORMAT, FullMathCollator, check_row, full_parse,
-    full_question, full_school_record, generated_procedure, repair_parent, school_rows)
+from cftn_text.full_math_data import (FORMAT, FullMathCollator, audit_full_data,
+    check_row, full_parse, full_question, full_school_record, generated_procedure,
+    repair_parent, school_rows)
 from cftn_text.tokenizer import ByteMathTokenizer
 from cftn_text.training import _filter_v2_records_for_phase, _phase_generation_acceptance, math_epoch_dataset
 from cftn_text.v2_data import iter_local_records, make_v2_record
@@ -229,6 +230,31 @@ def test_competency_v4_parent_is_only_required_for_scratch_contracts():
     value = checked_competency_settings(path)
     assert value["format"] == "cftn_full_math_training_v3"
     assert "parent_dataset" not in value
+
+
+def test_full_data_audit_forwards_an_explicit_parent_pin(monkeypatch, tmp_path):
+    import cftn_text.full_math_data as full_math_data
+
+    observed = {}
+    monkeypatch.setattr(full_math_data, "audit_full_data", lambda root, **kwargs: observed.update(kwargs) or {"pass": True})
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    (parent / "manifest.json").write_text(json.dumps({
+        "manifest_sha256": "x" * 64,
+        "splits": {"train": {"path": "train.jsonl"}},
+    }))
+    monkeypatch.setattr(full_math_data, "audit_v2_manifest", lambda *args: {"pass": True})
+    monkeypatch.setattr(full_math_data, "load_v2_records", lambda *args: [])
+    monkeypatch.setattr(full_math_data, "school_rows", lambda *args: ([], [], []))
+    monkeypatch.setattr(full_math_data, "write_rows", lambda path, rows: {"path": Path(path).name, "sha256": "a", "count": 0})
+    monkeypatch.setattr(full_math_data, "file_sha256", lambda *args: "a")
+    result = full_math_data.prepare_full_data(
+        parent,
+        tmp_path / "full",
+        expected_parent_manifest_sha256="x" * 64,
+    )
+    assert result == {"pass": True}
+    assert observed == {"expected_parent_manifest_sha256": "x" * 64}
 
 
 def test_exact_trace_gate_cannot_be_satisfied_by_correct_answer_only():

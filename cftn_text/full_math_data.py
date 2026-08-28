@@ -370,7 +370,10 @@ def prepare_full_data(
                 "original_evaluation_unchanged": True, "all_imported_answers_verified": False}
     manifest["manifest_sha256"] = fingerprint(manifest)
     atomic_json_dump(manifest, output / "manifest.json")
-    return audit_full_data(output)
+    return audit_full_data(
+        output,
+        expected_parent_manifest_sha256=expected_parent_manifest_sha256,
+    )
 
 
 def audit_full_data(root, *, expected_parent_manifest_sha256=PARENT_SHA):
