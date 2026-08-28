@@ -1032,6 +1032,46 @@ def evaluate_math_tower(
     }
 
 
+def generation_panel_specs_for_phase(
+    panel_specs: list[dict[str, Any]],
+    phase: dict[str, Any] | None,
+    *,
+    scope: str,
+) -> list[dict[str, Any]]:
+    """Return the configured generation panels required by this phase.
+
+    ``phase_required_v1`` is deliberately an execution-time optimization, not
+    an acceptance change: it runs the primary panel and every explicitly
+    thresholded panel for the active phase.  Future diagnostic panels remain
+    compulsory once their own phase becomes active and in final evaluation.
+    """
+
+    if scope == "all_configured_v1":
+        return list(panel_specs)
+    if scope != "phase_required_v1":
+        raise ValueError(f"unknown generation panel scope: {scope}")
+    if phase is None:
+        raise ValueError("phase-required generation scope needs an active phase")
+
+    required = {str(phase.get("primary_generation_panel", "validation"))}
+    for key in (
+        "minimum_generation_accuracy_by_panel",
+        "minimum_valid_rate_by_panel",
+    ):
+        thresholds = phase.get(key, {})
+        if not isinstance(thresholds, dict):
+            raise ValueError(f"{key} must be an object")
+        required.update(str(name) for name in thresholds)
+
+    available = {str(spec.get("name")) for spec in panel_specs}
+    missing = sorted(required - available)
+    if missing:
+        raise RuntimeError(
+            "phase-required generation panels are unavailable: " + ", ".join(missing)
+        )
+    return [spec for spec in panel_specs if str(spec.get("name")) in required]
+
+
 def _phase_generation_acceptance(
     *,
     phase: dict[str, Any] | None,
@@ -1602,6 +1642,11 @@ def train_math_tower(
                 "phase_filtered": True,
             }
         ]
+        panel_specs = generation_panel_specs_for_phase(
+            panel_specs,
+            phase,
+            scope=str(generation_settings.get("panel_scope", "all_configured_v1")),
+        )
         for panel_spec in panel_specs:
             panel_name = str(panel_spec["name"])
             panel_dataset = generation_panel_datasets.get(
@@ -2014,6 +2059,9 @@ def train_math_tower(
                 )
                 validation["generation"] = generation_validation
                 validation["generation_panels"] = generation_panels
+                validation["generation_panel_scope"] = str(
+                    generation_settings.get("panel_scope", "all_configured_v1")
+                )
             if generation_validation is not None:
                 panel_accuracies = [
                     float(panel["accuracy"]) for panel in generation_panels.values()

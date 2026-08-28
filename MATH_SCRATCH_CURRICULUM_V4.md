@@ -57,5 +57,17 @@ From the persistent checkout on RunPod:
 
 The wrapper invokes the V4 `auto` entry point. A fresh artifact starts from
 random weights; an existing compatible artifact resumes only from its latest
-checkpoint under the identical repository revision, data manifest, and resolved
-settings contract.
+checkpoint under the identical data manifest and resolved settings contract.
+The only code-revision exception is the immutable validation-scope record
+described below; it is limited to its named tested revision.
+
+## Phase-scoped generation validation
+
+Teacher-forced validation always covers the fixed mixed holdout. Autoregressive
+generation is much slower, so a resumed artifact may carry an immutable
+`generation_panel_scope_override.json`. It runs only the active phase's primary
+panel plus every panel named by that phase's acceptance thresholds. This does
+not remove a gate: the omitted panels are not acceptance criteria for that
+phase, return when their own phase becomes active, and remain part of final
+evaluation. The override records its source checkpoint, data manifest, and the
+one compatible code revision; changing any of those values fails closed.

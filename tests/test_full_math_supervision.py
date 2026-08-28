@@ -12,7 +12,9 @@ from cftn_text.full_math_data import (FORMAT, FullMathCollator, audit_full_data,
     check_row, full_parse, full_question, full_school_record, generated_procedure,
     repair_parent, school_rows)
 from cftn_text.tokenizer import ByteMathTokenizer
-from cftn_text.training import _filter_v2_records_for_phase, _phase_generation_acceptance, math_epoch_dataset
+from cftn_text.training import (_filter_v2_records_for_phase,
+    _phase_generation_acceptance, generation_panel_specs_for_phase,
+    math_epoch_dataset)
 from cftn_text.v2_data import iter_local_records, make_v2_record
 from cftn_text.v2_school_data import FAMILIES
 from cftn_text.verified_math_data import fingerprint
@@ -263,6 +265,72 @@ def test_exact_trace_gate_cannot_be_satisfied_by_correct_answer_only():
     panel = {"accuracy": 1.0, "valid_rate": 1.0, "trace_exact_by_family": {"addition": {"rate": .8}}}
     result = _phase_generation_acceptance(phase=phase, generation_panels={"validation": panel}, validation={}, epoch=20)
     assert not result["pass"] and result["terminal_epoch"]
+
+
+def test_phase_scoped_generation_validation_runs_only_active_acceptance_panels():
+    panels = [
+        {"name": "school"},
+        {"name": "wording"},
+        {"name": "generated_foundations"},
+        {"name": "deepmind_numeric"},
+        {"name": "broad"},
+    ]
+    phase = {
+        "primary_generation_panel": "school",
+        "minimum_generation_accuracy_by_panel": {
+            "wording": .9,
+            "generated_foundations": .9,
+        },
+        "minimum_valid_rate_by_panel": {"wording": .99},
+    }
+    selected = generation_panel_specs_for_phase(
+        panels, phase, scope="phase_required_v1"
+    )
+    assert [panel["name"] for panel in selected] == [
+        "school", "wording", "generated_foundations"
+    ]
+    assert generation_panel_specs_for_phase(
+        panels, phase, scope="all_configured_v1"
+    ) == panels
+    with pytest.raises(RuntimeError, match="unavailable"):
+        generation_panel_specs_for_phase(
+            panels, {"primary_generation_panel": "missing"},
+            scope="phase_required_v1",
+        )
+
+
+def test_generation_scope_override_is_immutable_but_allows_later_resume(monkeypatch, tmp_path):
+    import tools.run_v2_math_curriculum as curriculum
+
+    checkpoint_one = tmp_path / "checkpoint_epoch_0001.pth"
+    checkpoint_two = tmp_path / "checkpoint_epoch_0002.pth"
+    checkpoint_one.write_bytes(b"one")
+    checkpoint_two.write_bytes(b"two")
+    monkeypatch.setattr(curriculum, "latest_checkpoint", lambda _output: checkpoint_one)
+    monkeypatch.setattr(curriculum, "load_checkpoint", lambda *args, **kwargs: {"epoch": 1})
+    monkeypatch.setattr(curriculum, "file_sha256", lambda _path: "a" * 64)
+    contract = {
+        "repository_revision": "sealed-revision",
+        "settings_sha256": "s" * 64,
+        "math_training": {"generation_validation": {"enabled": True}},
+    }
+    manifest = {"manifest_sha256": "m" * 64}
+    effective = curriculum._apply_generation_panel_scope_override(
+        output=tmp_path, contract=contract, manifest=manifest,
+        scope="phase_required_v1", resume=True, revision="tested-revision",
+    )
+    assert "panel_scope" not in contract["math_training"]["generation_validation"]
+    assert effective["math_training"]["generation_validation"]["panel_scope"] == "phase_required_v1"
+    recorded = json.loads((tmp_path / "generation_panel_scope_override.json").read_text())
+    assert recorded["effective_from_epoch"] == 2
+    assert recorded["resume_checkpoint"] == str(checkpoint_one.resolve())
+    monkeypatch.setattr(curriculum, "latest_checkpoint", lambda _output: checkpoint_two)
+    monkeypatch.setattr(curriculum, "load_checkpoint", lambda *args, **kwargs: {"epoch": 2})
+    curriculum._apply_generation_panel_scope_override(
+        output=tmp_path, contract=contract, manifest=manifest,
+        scope="phase_required_v1", resume=True, revision="tested-revision",
+    )
+    assert json.loads((tmp_path / "generation_panel_scope_override.json").read_text()) == recorded
 
 
 def test_strict_validation_rejects_capped_answer(monkeypatch, tmp_path):

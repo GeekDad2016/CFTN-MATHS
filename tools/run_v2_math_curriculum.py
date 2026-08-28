@@ -34,6 +34,7 @@ DEFAULT_PREVIOUS = DEFAULT_ARTIFACT_ROOT / "math_full_supervision_v1"
 DEFAULT_PROTECTED = DEFAULT_ARTIFACT_ROOT / "math/math.best.pth"
 DEFAULT_WORK = Path("/tmp/cftn-math-scratch-v4")
 DEFAULT_SETTINGS = "config/v2_math_scratch_v4.json"
+GENERATION_PANEL_SCOPES = ("all_configured_v1", "phase_required_v1")
 
 
 def _canonical_sha256(value: dict) -> str:
@@ -239,6 +240,77 @@ def _verify_source(path: Path, config: dict) -> tuple[dict, str]:
     return checkpoint, digest
 
 
+def _apply_generation_panel_scope_override(
+    *,
+    output: Path,
+    contract: dict,
+    manifest: dict,
+    scope: str,
+    resume: bool,
+    revision: str,
+) -> dict:
+    """Apply an immutable, validation-only resume override.
+
+    The original recovery contract stays sealed.  This is intentionally only
+    available for an existing artifact with a durable checkpoint, so a
+    historical run records both the code migration and the exact checkpoint
+    from which the cheaper validation schedule became effective.
+    """
+
+    if scope not in GENERATION_PANEL_SCOPES:
+        raise ValueError(f"unknown generation panel scope: {scope}")
+    if scope == "all_configured_v1":
+        return contract
+    if not resume:
+        raise ValueError(
+            "phase-required generation scope is a recorded resume override; "
+            "fresh runs use the sealed contract scope"
+        )
+
+    checkpoint = latest_checkpoint(output)
+    if checkpoint is None:
+        raise FileNotFoundError("generation-scope override requires a checkpoint")
+    checkpoint_payload = load_checkpoint(
+        checkpoint, expected_stage="math", map_location="cpu"
+    )
+    original_revision = str(contract.get("repository_revision") or "")
+    if not original_revision:
+        raise ValueError("resume contract has no repository revision")
+    override = {
+        "format": "cftn_generation_panel_scope_override_v1",
+        "scope": scope,
+        "effective_from_epoch": int(checkpoint_payload["epoch"]) + 1,
+        "resume_checkpoint": str(checkpoint.resolve()),
+        "resume_checkpoint_sha256": file_sha256(checkpoint),
+        "data_manifest_sha256": str(manifest["manifest_sha256"]),
+        "original_settings_sha256": str(contract["settings_sha256"]),
+        "original_repository_revision": original_revision,
+        "effective_repository_revision": revision,
+    }
+    override_path = output / "generation_panel_scope_override.json"
+    if override_path.exists():
+        existing = json.loads(override_path.read_text(encoding="utf-8"))
+        immutable_fields = (
+            "format",
+            "scope",
+            "data_manifest_sha256",
+            "original_settings_sha256",
+            "original_repository_revision",
+            "effective_repository_revision",
+        )
+        if any(existing.get(field) != override[field] for field in immutable_fields):
+            raise ValueError("generation panel scope override does not match resume")
+    else:
+        atomic_json_dump(override, override_path)
+
+    effective_contract = copy.deepcopy(contract)
+    generation = effective_contract["math_training"].setdefault(
+        "generation_validation", {}
+    )
+    generation["panel_scope"] = scope
+    return effective_contract
+
+
 def run(args: argparse.Namespace) -> None:
     ignored: set[int] = set()
     if args.launcher_pid:
@@ -284,7 +356,9 @@ def run(args: argparse.Namespace) -> None:
             raise ValueError("resume artifact uses a different curriculum format")
         if contract.get("settings_sha256") != settings_sha256:
             raise ValueError("resume settings changed")
-        if contract.get("repository_revision") != revision:
+        if contract.get("repository_revision") != revision and (
+            args.generation_panel_scope != "phase_required_v1"
+        ):
             raise ValueError("resume requires the exact tested repository revision")
         if contract.get("data_manifest_sha256") != manifest["manifest_sha256"]:
             raise ValueError("resume data manifest changed")
@@ -331,6 +405,15 @@ def run(args: argparse.Namespace) -> None:
         atomic_json_dump(config, output / "effective_config.json")
         atomic_json_dump(manifest, output / "data_manifest.json")
         initial_checkpoint = source_path
+
+    contract = _apply_generation_panel_scope_override(
+        output=output,
+        contract=contract,
+        manifest=manifest,
+        scope=args.generation_panel_scope,
+        resume=args.resume,
+        revision=revision,
+    )
 
     torch.set_num_threads(4)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -411,7 +494,16 @@ def auto(args: argparse.Namespace) -> None:
                 raise FileNotFoundError("no previous full-supervision checkpoint is available")
     stdout_path, stderr_path, launcher_path = _next_attempt(output)
     command = [sys.executable, "-u", "-m", "tools.run_v2_math_curriculum", "run"]
-    for name in ("data", "protected", "output", "work", "config", "settings", "wandb_mode"):
+    for name in (
+        "data",
+        "protected",
+        "output",
+        "work",
+        "config",
+        "settings",
+        "wandb_mode",
+        "generation_panel_scope",
+    ):
         command += ["--" + name.replace("_", "-"), str(getattr(args, name))]
     if source is not None:
         command += ["--source", str(source)]
@@ -453,6 +545,11 @@ def main() -> None:
     parser.add_argument("--config", default="config/v2_broad_math.yaml")
     parser.add_argument("--settings", default=DEFAULT_SETTINGS)
     parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
+    parser.add_argument(
+        "--generation-panel-scope",
+        choices=GENERATION_PANEL_SCOPES,
+        default="all_configured_v1",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--launcher-pid", type=int)
     args = parser.parse_args()
