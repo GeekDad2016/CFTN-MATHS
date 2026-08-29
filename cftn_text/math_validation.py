@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from .dataset import SHARED_MATH_INPUT_VIEW, math_problem_for_view
+from .math_curriculum_data import trace_semantically_matches
 from .tokenizer import ByteMathTokenizer, SequenceTooLongError
 from .v2_metrics import extract_v2_answer, score_v2_generations
 
@@ -180,17 +181,29 @@ def evaluate_generation_panel(
               for d in terminations] if require_eos else [True] * len(generations))
     metrics, correctness = score_v2_generations([g if ok else "" for g, ok in zip(generations, clean)], eligible)
     trace_groups = defaultdict(lambda: {"examples": 0, "correct": 0})
+    semantic_trace_groups = defaultdict(lambda: {"examples": 0, "correct": 0})
     operation_groups = defaultdict(lambda: {"examples": 0, "correct": 0})
     for record, generation, ok in zip(eligible, generations, clean):
         group = trace_groups[str(record.get("family", "unknown"))]
         group["examples"] += 1
         group["correct"] += int(ok and generation.strip() == str(record.get("target_trace", "")))
+        semantic_group = semantic_trace_groups[
+            str(record.get("family", "unknown"))
+        ]
+        semantic_group["examples"] += 1
+        semantic_group["correct"] += int(
+            ok and trace_semantically_matches(generation, record)
+        )
     for record, correct in zip(eligible, correctness):
         group = operation_groups[str(record.get("operation", "unknown"))]
         group["examples"] += 1
         group["correct"] += int(correct)
     trace_exact = {name: {**group, "rate": group["correct"] / max(1, group["examples"])}
                    for name, group in trace_groups.items()}
+    trace_semantic = {
+        name: {**group, "rate": group["correct"] / max(1, group["examples"])}
+        for name, group in semantic_trace_groups.items()
+    }
     by_operation = {
         name: {
             **group,
@@ -199,7 +212,9 @@ def evaluate_generation_panel(
         for name, group in operation_groups.items()
     }
     rows = []
-    for record, generation, correct in zip(eligible, generations, correctness):
+    for record, generation, correct, ok in zip(
+        eligible, generations, correctness, clean
+    ):
         rows.append(
             {
                 "record_id": record.get("record_id", record.get("content_id")),
@@ -212,6 +227,12 @@ def evaluate_generation_panel(
                 "generation": generation,
                 "parsed_answer": extract_v2_answer(generation),
                 "correct": bool(correct),
+                "trace_exact": bool(
+                    ok and generation.strip() == str(record.get("target_trace", ""))
+                ),
+                "trace_semantic": bool(
+                    ok and trace_semantically_matches(generation, record)
+                ),
             }
         )
     if rows_path is not None:
@@ -221,11 +242,15 @@ def evaluate_generation_panel(
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     failures = [row for row in rows if not row["correct"]][: max(0, int(failure_examples))]
+    trace_failures = [
+        row for row in rows if not row["trace_semantic"]
+    ][: max(0, int(failure_examples))]
     elapsed = time.time() - started_at
     return {
         **metrics,
         "by_operation": by_operation,
         "trace_exact_by_family": trace_exact,
+        "trace_semantic_by_family": trace_semantic,
         "require_eos": require_eos,
         "unclean_terminations": len(clean) - sum(clean),
         "budget_hits": sum(d["budget_hit"] for d in terminations),
@@ -239,5 +264,6 @@ def evaluate_generation_panel(
         "elapsed_seconds": elapsed,
         "examples_per_second": len(eligible) / max(1e-9, elapsed),
         "failure_examples": failures,
+        "trace_failure_examples": trace_failures,
         "rows_path": str(Path(rows_path).resolve()) if rows_path is not None else None,
     }

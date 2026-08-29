@@ -86,3 +86,34 @@ def computation_loss(logits: torch.Tensor, labels: torch.Tensor, roles: torch.Te
         total += weight * (losses * mask).sum(dim=1) / count.clamp_min(1)
         present_weights += weight * count.gt(0)
     return (total / present_weights).mean()
+
+
+def hybrid_computation_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    roles: torch.Tensor,
+    *,
+    weights: tuple[float, float, float] = (0.15, 0.65, 0.20),
+    role_fraction: float = 0.5,
+) -> torch.Tensor:
+    """Blend full-target fidelity with explicit emphasis on computed values."""
+
+    if not math.isfinite(role_fraction) or not 0.0 < role_fraction < 1.0:
+        raise ValueError("role fraction must be strictly between zero and one")
+    if logits.shape[:2] != labels.shape:
+        raise ValueError("incompatible hybrid-loss shapes")
+    targets = labels[:, 1:]
+    valid = targets.ne(-100)
+    if not bool(valid.any(dim=1).all()):
+        raise ValueError("every example needs a supervised target")
+    token_losses = F.cross_entropy(
+        logits[:, :-1].float().transpose(1, 2),
+        targets,
+        ignore_index=-100,
+        reduction="none",
+    )
+    full_sequence = (
+        (token_losses * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+    ).mean()
+    role_balanced = computation_loss(logits, labels, roles, weights=weights)
+    return role_fraction * role_balanced + (1.0 - role_fraction) * full_sequence

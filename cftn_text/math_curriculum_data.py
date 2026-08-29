@@ -21,6 +21,9 @@ from .v2_data import make_v2_record, validate_v2_record
 FORMAT = "cftn_canonical_math_curriculum_v1"
 SCHEMA = "cftn_canonical_math_record_v1"
 SPLITS = ("train", "validation", "test")
+EXPANDED_PROCEDURE_SCHEMA = "expanded_count_on_v1"
+COMPACT_PROCEDURE_SCHEMA = "compact_executable_v2"
+PROCEDURE_SCHEMAS = {EXPANDED_PROCEDURE_SCHEMA, COMPACT_PROCEDURE_SCHEMA}
 
 
 PHASES: tuple[dict[str, Any], ...] = (
@@ -341,7 +344,13 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
         raise ValueError(f"unknown criterion: {criterion}")
 
 
-def solve_math_ir(math_ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+def solve_math_ir(
+    math_ir: dict[str, Any],
+    *,
+    procedure_schema: str = EXPANDED_PROCEDURE_SCHEMA,
+) -> tuple[str, list[dict[str, Any]]]:
+    if procedure_schema not in PROCEDURE_SCHEMAS:
+        raise ValueError(f"unsupported procedure schema: {procedure_schema}")
     op = math_ir["op"]
     if op == "successor":
         result = int(math_ir["value"]) + 1
@@ -379,14 +388,21 @@ def solve_math_ir(math_ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
             running = operands[0]
             steps: list[dict[str, Any]] = []
             for operand in operands[1:]:
-                sequence = list(range(running + 1, running + operand + 1))
+                start = running
                 running += operand
-                steps.append({"add": operand, "result": running, "sequence": sequence})
+                if procedure_schema == COMPACT_PROCEDURE_SCHEMA:
+                    steps.append({"add": operand, "end": running})
+                else:
+                    sequence = list(range(start + 1, running + 1))
+                    steps.append(
+                        {"add": operand, "result": running, "sequence": sequence}
+                    )
             result = running
-            derivation = [
-                {"op": "count_on", "start": operands[0], "steps": steps},
-                {"op": "add", "operands": operands, "result": str(result)},
-            ]
+            derivation = [{"op": "count_on", "start": operands[0], "steps": steps}]
+            if procedure_schema == EXPANDED_PROCEDURE_SCHEMA:
+                derivation.append(
+                    {"op": "add", "operands": operands, "result": str(result)}
+                )
         else:
             result = int(math_ir["left"]) + int(math_ir["right"])
     elif op == "subtract":
@@ -608,17 +624,148 @@ def _language_prompts(
     raise ValueError(f"no language templates for operation: {op}")
 
 
-def _trace(answer: str, derivation: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    work = canonical_json(derivation)
+def _canonical_json_with_spans(
+    value: Any,
+    roles: dict[tuple[Any, ...], str],
+    path: tuple[Any, ...] = (),
+) -> tuple[str, list[dict[str, Any]]]:
+    """Serialize canonical JSON while retaining exact semantic-role offsets."""
+
+    if isinstance(value, dict):
+        text = "{"
+        spans: list[dict[str, Any]] = []
+        for index, key in enumerate(sorted(value)):
+            if index:
+                text += ","
+            text += canonical_json(str(key)) + ":"
+            child, child_spans = _canonical_json_with_spans(
+                value[key], roles, path + (key,)
+            )
+            offset = len(text)
+            text += child
+            spans.extend(
+                {**span, "start": span["start"] + offset, "end": span["end"] + offset}
+                for span in child_spans
+            )
+        return text + "}", spans
+    if isinstance(value, list):
+        text = "["
+        spans = []
+        for index, child_value in enumerate(value):
+            if index:
+                text += ","
+            child, child_spans = _canonical_json_with_spans(
+                child_value, roles, path + (index,)
+            )
+            offset = len(text)
+            text += child
+            spans.extend(
+                {**span, "start": span["start"] + offset, "end": span["end"] + offset}
+                for span in child_spans
+            )
+        return text + "]", spans
+    text = canonical_json(value)
+    role = roles.get(path)
+    spans = [] if role is None else [{"kind": role, "start": 0, "end": len(text)}]
+    return text, spans
+
+
+def _trace_roles(
+    math_ir: dict[str, Any], derivation: list[dict[str, Any]]
+) -> dict[tuple[Any, ...], str]:
+    """Identify values produced by computation instead of copied from the IR."""
+
+    op = str(math_ir["op"])
+    computed: set[tuple[Any, ...]] = set()
+    if op in {"successor", "predecessor"}:
+        computed.update({(0, "to"), (1, "result")})
+    elif op == "missing_count_sequence":
+        computed.update({(0, "result"), (1, "result")})
+    elif op == "compare":
+        computed.update(
+            {
+                (0, "ones"),
+                (0, "tens"),
+                (1, "ones"),
+                (1, "tens"),
+                (2, "result"),
+            }
+        )
+    elif op == "add" and "operands" in math_ir:
+        for index, step in enumerate(derivation[0]["steps"]):
+            if "end" in step:
+                computed.add((0, "steps", index, "end"))
+            if "result" in step:
+                computed.add((0, "steps", index, "result"))
+            for sequence_index, _ in enumerate(step.get("sequence", [])):
+                computed.add((0, "steps", index, "sequence", sequence_index))
+        if len(derivation) > 1:
+            computed.add((1, "result"))
+    else:
+        computed.add((0, "result"))
+    return {path: "compute" for path in computed}
+
+
+def _trace(
+    answer: str,
+    derivation: list[dict[str, Any]],
+    math_ir: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    work, work_spans = _canonical_json_with_spans(
+        derivation, _trace_roles(math_ir, derivation)
+    )
     trace = f"<work>{work}</work><answer>{answer}</answer>"
-    work_result = json.dumps(answer, ensure_ascii=False)
-    work_start = trace.index(work_result)
     answer_start = trace.index(answer, trace.index("<answer>"))
+    work_offset = len("<work>")
     spans = [
-        {"kind": "compute", "start": work_start, "end": work_start + len(work_result)},
-        {"kind": "copy", "start": answer_start, "end": answer_start + len(answer)},
+        {
+            **span,
+            "start": int(span["start"]) + work_offset,
+            "end": int(span["end"]) + work_offset,
+        }
+        for span in work_spans
     ]
+    spans.append(
+        {"kind": "copy", "start": answer_start, "end": answer_start + len(answer)}
+    )
+    spans.sort(key=lambda span: int(span["start"]))
     return trace, spans
+
+
+def trace_semantically_matches(generation: str, record: dict[str, Any]) -> bool:
+    """Parse a generated trace and verify it against the executable math IR."""
+
+    if not isinstance(generation, str):
+        return False
+    text = generation.strip()
+    work_open, work_close = "<work>", "</work>"
+    answer_open, answer_close = "<answer>", "</answer>"
+    if not text.startswith(work_open) or not text.endswith(answer_close):
+        return False
+    work_end = text.find(work_close, len(work_open))
+    if work_end < 0 or text[work_end + len(work_close) :].count(answer_open) != 1:
+        return False
+    answer_start = work_end + len(work_close)
+    if not text.startswith(answer_open, answer_start):
+        return False
+    answer_value_start = answer_start + len(answer_open)
+    answer_end = text.find(answer_close, answer_value_start)
+    if answer_end < 0 or answer_end + len(answer_close) != len(text):
+        return False
+    try:
+        work = json.loads(text[len(work_open) : work_end])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    procedure_schema = str(
+        record.get("procedure_schema", EXPANDED_PROCEDURE_SCHEMA)
+    )
+    expected_answer, expected_work = solve_math_ir(
+        record["math_ir"], procedure_schema=procedure_schema
+    )
+    return (
+        text[answer_value_start:answer_end] == expected_answer
+        and work == expected_work
+    )
 
 
 def _records_for_object(
@@ -629,10 +776,11 @@ def _records_for_object(
     phase_index: int,
     phases: tuple[dict[str, Any], ...] = PHASES,
     language_variants_per_object: int = 2,
+    procedure_schema: str = EXPANDED_PROCEDURE_SCHEMA,
 ) -> Iterator[dict[str, Any]]:
-    answer, derivation = solve_math_ir(math_ir)
+    answer, derivation = solve_math_ir(math_ir, procedure_schema=procedure_schema)
     math_ir_text = canonical_json(math_ir)
-    trace, spans = _trace(answer, derivation)
+    trace, spans = _trace(answer, derivation, math_ir)
     object_id = _sha(math_ir)
     phase = phases[phase_index]
     prompts = _language_prompts(math_ir, criterion=criterion)
@@ -664,6 +812,7 @@ def _records_for_object(
             "evaluation_mode": "held_out_objects_within_taught_domain",
             "math_object_id": object_id,
             "language_variant": variant,
+            "procedure_schema": procedure_schema,
             "computation_spans": spans,
         }
         yield make_v2_record(
@@ -907,6 +1056,11 @@ def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]
     phases = phases_for_config(config)
     counts_by_criterion = _criterion_split_counts(config)
     variants = int(config.get("language_variants_per_object", 2))
+    procedure_schema = str(
+        config.get("procedure_schema", EXPANDED_PROCEDURE_SCHEMA)
+    )
+    if procedure_schema not in PROCEDURE_SCHEMAS:
+        raise ValueError(f"unsupported procedure schema: {procedure_schema}")
     for phase_index, phase in enumerate(phases):
         for criterion in phase["criteria"]:
             split_object_counts = counts_by_criterion[criterion]
@@ -924,6 +1078,7 @@ def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]
                     phase_index=phase_index,
                     phases=phases,
                     language_variants_per_object=variants,
+                    procedure_schema=procedure_schema,
                 )
 
 
@@ -1076,6 +1231,12 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
     manifest = {
         "format": FORMAT,
         "schema": SCHEMA,
+        "procedure_schema": str(
+            config.get("procedure_schema", EXPANDED_PROCEDURE_SCHEMA)
+        ),
+        "trace_acceptance_metric": str(
+            config.get("trace_acceptance_metric", "exact_v1")
+        ),
         "config": config,
         "config_sha256": _sha(config),
         "generator_sha256": file_sha256(Path(__file__)),
@@ -1128,6 +1289,26 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
     manifest = json.loads((output_root / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("format") != FORMAT:
         raise ValueError("not a canonical math curriculum manifest")
+    procedure_schema = str(
+        manifest.get("procedure_schema", EXPANDED_PROCEDURE_SCHEMA)
+    )
+    if procedure_schema not in PROCEDURE_SCHEMAS:
+        raise ValueError("unsupported procedure schema in manifest")
+    if procedure_schema != str(
+        manifest.get("config", {}).get(
+            "procedure_schema", EXPANDED_PROCEDURE_SCHEMA
+        )
+    ):
+        raise ValueError("manifest procedure schema disagrees with config")
+    trace_acceptance_metric = str(
+        manifest.get("trace_acceptance_metric", "exact_v1")
+    )
+    if trace_acceptance_metric not in {"exact_v1", "semantic_v1"}:
+        raise ValueError("unsupported trace acceptance metric in manifest")
+    if trace_acceptance_metric != str(
+        manifest.get("config", {}).get("trace_acceptance_metric", "exact_v1")
+    ):
+        raise ValueError("manifest trace acceptance metric disagrees with config")
     if _sha(manifest.get("config")) != manifest.get("config_sha256"):
         raise ValueError("manifest config hash mismatch")
     if file_sha256(Path(__file__)) != manifest.get("generator_sha256"):
@@ -1176,7 +1357,17 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
                         raise ValueError("criterion appears in the wrong phase")
                     if record["prerequisite_ids"] != _phase_prerequisites(phase_index, phases):
                         raise ValueError("prerequisite list is not cumulative and exact")
-                    expected_answer, expected_derivation = solve_math_ir(record["math_ir"])
+                    expected_procedure_schema = str(
+                        manifest.get(
+                            "procedure_schema", EXPANDED_PROCEDURE_SCHEMA
+                        )
+                    )
+                    if record.get("procedure_schema") != expected_procedure_schema:
+                        raise ValueError("record procedure schema disagrees with manifest")
+                    expected_answer, expected_derivation = solve_math_ir(
+                        record["math_ir"],
+                        procedure_schema=expected_procedure_schema,
+                    )
                     if record["answer"] != expected_answer:
                         raise ValueError("answer does not match executable math IR")
                     if record["derivation"] != expected_derivation:

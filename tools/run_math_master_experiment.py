@@ -40,6 +40,11 @@ def build_contract(
     result_balanced_criteria = {
         str(value) for value in manifest.get("result_balanced_criteria", [])
     }
+    trace_acceptance_metric = str(
+        manifest.get("trace_acceptance_metric", "exact_v1")
+    )
+    if trace_acceptance_metric not in {"exact_v1", "semantic_v1"}:
+        raise ValueError("unsupported trace acceptance metric")
     panels: list[dict] = []
     contract_phases: list[dict] = []
     prior: list[str] = []
@@ -121,9 +126,16 @@ def build_contract(
                     for criterion in active
                     for operation in criterion_operations.get(criterion, [])
                 },
-                "minimum_trace_exact_by_family": {
-                    criterion: 0.70 for criterion in active
-                },
+                "minimum_trace_exact_by_family": (
+                    {criterion: 0.70 for criterion in active}
+                    if trace_acceptance_metric == "exact_v1"
+                    else {}
+                ),
+                "minimum_trace_semantic_by_family": (
+                    {criterion: 0.70 for criterion in active}
+                    if trace_acceptance_metric == "semantic_v1"
+                    else {}
+                ),
                 "minimum_generation_accuracy_by_panel": minimum_by_panel,
                 "minimum_valid_rate_by_panel": minimum_valid_by_panel,
                 "minimum_generation_accuracy_by_panel_family": panel_family,
@@ -173,6 +185,7 @@ def build_smoke_contract(contract: dict) -> dict:
             "minimum_generation_accuracy_by_family": {},
             "minimum_generation_accuracy_by_operation": {},
             "minimum_trace_exact_by_family": {},
+            "minimum_trace_semantic_by_family": {},
             "minimum_generation_accuracy_by_panel": {},
             "minimum_valid_rate_by_panel": {},
             "minimum_generation_accuracy_by_panel_family": {},
@@ -197,11 +210,11 @@ def main() -> None:
     parser.add_argument(
         "command", choices=("auto", "build", "audit", "smoke"), default="auto", nargs="?"
     )
-    parser.add_argument("--config", default="config/math_master_experiment_local_v4.yaml")
-    parser.add_argument("--dataset-config", default="config/math_master_experiment_v4.json")
-    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v4")
+    parser.add_argument("--config", default="config/math_master_experiment_local_v5.yaml")
+    parser.add_argument("--dataset-config", default="config/math_master_experiment_v5.json")
+    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v5")
     parser.add_argument(
-        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v4/run"
+        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v5/run"
     )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()

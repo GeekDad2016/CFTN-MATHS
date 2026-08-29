@@ -7,7 +7,11 @@ import json
 import pytest
 import torch
 
-from cftn_text.computation_supervision import ComputationCollator, computation_loss
+from cftn_text.computation_supervision import (
+    ComputationCollator,
+    computation_loss,
+    hybrid_computation_loss,
+)
 from cftn_text.dataset import MathCollator
 from cftn_text.tokenizer import ByteMathTokenizer, SequenceTooLongError
 from cftn_text.verified_math_data import (
@@ -231,6 +235,25 @@ def test_role_mean_prevents_long_computation_spans_from_dominating():
     long_roles = torch.tensor([[-100, 0] + [1] * 6 + [2]])
     assert torch.allclose(computation_loss(short_logits, short_labels, short_roles),
                           computation_loss(long_logits, long_labels, long_roles))
+
+
+def test_hybrid_computation_loss_preserves_full_sequence_and_role_gradients():
+    torch.manual_seed(17)
+    labels = torch.tensor([[-100, 1, 2, 3, 1, -100]])
+    roles = torch.tensor([[-100, 0, 1, 1, 2, -100]])
+    logits = torch.randn(1, 6, 4, requires_grad=True)
+    loss = hybrid_computation_loss(
+        logits,
+        labels,
+        roles,
+        weights=(0.15, 0.65, 0.20),
+        role_fraction=0.5,
+    )
+    loss.backward()
+    assert torch.isfinite(loss) and torch.isfinite(logits.grad).all()
+    assert logits.grad[0, 4:].eq(0).all()
+    with pytest.raises(ValueError, match="role fraction"):
+        hybrid_computation_loss(logits, labels, roles, role_fraction=1.0)
 
 
 def test_bundle_provenance_and_curriculum_are_checked_not_just_digests():

@@ -267,6 +267,28 @@ def test_exact_trace_gate_cannot_be_satisfied_by_correct_answer_only():
     assert not result["pass"] and result["terminal_epoch"]
 
 
+def test_semantic_trace_gate_cannot_be_satisfied_by_correct_answer_only():
+    phase = {
+        "name": "foundation",
+        "through_epoch": 20,
+        "minimum_generation_accuracy": 0.99,
+        "minimum_valid_rate": 1.0,
+        "minimum_trace_semantic_by_family": {"addition": 0.95},
+    }
+    panel = {
+        "accuracy": 1.0,
+        "valid_rate": 1.0,
+        "trace_semantic_by_family": {"addition": {"rate": 0.8}},
+    }
+    result = _phase_generation_acceptance(
+        phase=phase,
+        generation_panels={"validation": panel},
+        validation={},
+        epoch=20,
+    )
+    assert not result["pass"] and result["terminal_epoch"]
+
+
 def test_phase_scoped_generation_validation_runs_only_active_acceptance_panels():
     panels = [
         {"name": "school"},

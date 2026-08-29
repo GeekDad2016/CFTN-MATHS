@@ -1245,6 +1245,14 @@ def _phase_generation_acceptance(
         observed = primary.get("trace_exact_by_family", {}).get(name, {})
         add_check(f"primary_trace:{name}", observed.get("rate", 0.0), minimum)
 
+    for name, minimum in phase.get("minimum_trace_semantic_by_family", {}).items():
+        observed = primary.get("trace_semantic_by_family", {}).get(name, {})
+        add_check(
+            f"primary_trace_semantic:{name}",
+            observed.get("rate", 0.0),
+            minimum,
+        )
+
     panel_accuracy_thresholds = phase.get(
         "minimum_generation_accuracy_by_panel", {}
     )
@@ -1552,7 +1560,10 @@ def train_math_tower(
     competency_curriculum_state = _initial_competency_curriculum_state()
     tokenizer = ByteMathTokenizer()
     collator_class = MathCollator
-    if settings.get("objective") == "computation_roles_v1":
+    if settings.get("objective") in {
+        "computation_roles_v1",
+        "computation_hybrid_v2",
+    }:
         from .full_math_data import FullMathCollator
         collator_class = FullMathCollator
     collator = collator_class(
@@ -2110,10 +2121,31 @@ def train_math_tower(
                         batch["math_attention_mask"],
                         batch["math_prefix_lengths"],
                     )
-                    if settings.get("objective") == "computation_roles_v1":
-                        from .computation_supervision import computation_loss
-                        lm_loss = computation_loss(output.logits, batch["math_labels"], batch["math_roles"],
-                                                   weights=tuple(settings["role_weights"]))
+                    if settings.get("objective") in {
+                        "computation_roles_v1",
+                        "computation_hybrid_v2",
+                    }:
+                        from .computation_supervision import (
+                            computation_loss,
+                            hybrid_computation_loss,
+                        )
+                        if settings.get("objective") == "computation_hybrid_v2":
+                            lm_loss = hybrid_computation_loss(
+                                output.logits,
+                                batch["math_labels"],
+                                batch["math_roles"],
+                                weights=tuple(settings["role_weights"]),
+                                role_fraction=float(
+                                    settings.get("hybrid_role_fraction", 0.5)
+                                ),
+                            )
+                        else:
+                            lm_loss = computation_loss(
+                                output.logits,
+                                batch["math_labels"],
+                                batch["math_roles"],
+                                weights=tuple(settings["role_weights"]),
+                            )
                     else:
                         lm_loss = answer_weighted_causal_language_loss(
                             output.logits, batch["math_labels"], batch["math_answer_labels"],
@@ -2384,6 +2416,7 @@ def train_math_tower(
                 "target_mode": collator.target_mode,
                 "objective": settings.get("objective", "answer_weighted_causal_language_loss"),
                 "role_weights": settings.get("role_weights"),
+                "hybrid_role_fraction": settings.get("hybrid_role_fraction"),
                 "answer_token_weight": float(
                     settings.get("answer_token_weight", 1.0)
                 ),

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from cftn_text.math_curriculum_data import (
+    COMPACT_PROCEDURE_SCHEMA,
     FORMAT,
     MASTER_PHASES,
     PHASES,
@@ -17,6 +18,7 @@ from cftn_text.math_curriculum_data import (
     iter_records,
     prepare_dataset,
     solve_math_ir,
+    trace_semantically_matches,
 )
 from cftn_text.computation_supervision import ComputationCollator
 from cftn_text.tokenizer import ByteMathTokenizer
@@ -263,6 +265,79 @@ def test_v4_phase_one_is_canonical_procedural_and_result_stratified() -> None:
     assert all(row["derivation"][0]["op"] == "count_on" for row in additions)
     assert len({row["answer"] for row in additions if row["operation"] == "add_2"}) >= 9
     assert len({row["answer"] for row in additions if row["operation"] == "add_3"}) >= 9
+
+
+def test_v5_addition_trace_is_compact_annotated_and_semantically_verified() -> None:
+    config = json.loads(
+        (Path(__file__).parents[1] / "config" / "math_master_experiment_v5.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    additions = [
+        row
+        for row in iter_phase_validation_records(config, 0, "active")
+        if row["family"] == "1AS-1"
+    ]
+
+    assert additions
+    for row in additions:
+        assert row["procedure_schema"] == COMPACT_PROCEDURE_SCHEMA
+        assert len(row["derivation"]) == 1
+        assert row["derivation"][0]["op"] == "count_on"
+        assert all("sequence" not in step for step in row["derivation"][0]["steps"])
+        compute_fragments = [
+            row["target_trace"][span["start"] : span["end"]]
+            for span in row["computation_spans"]
+            if span["kind"] == "compute"
+        ]
+        assert compute_fragments == [
+            str(step["end"]) for step in row["derivation"][0]["steps"]
+        ]
+        assert trace_semantically_matches(row["target_trace"], row)
+
+    row = additions[0]
+    noncanonical = (
+        "<work>"
+        + json.dumps(row["derivation"], indent=1)
+        + "</work><answer>"
+        + row["answer"]
+        + "</answer>"
+    )
+    assert noncanonical != row["target_trace"]
+    assert trace_semantically_matches(noncanonical, row)
+    wrong = json.loads(json.dumps(row["derivation"]))
+    wrong[0]["steps"][-1]["end"] += 1
+    assert not trace_semantically_matches(
+        "<work>"
+        + json.dumps(wrong)
+        + "</work><answer>"
+        + row["answer"]
+        + "</answer>",
+        row,
+    )
+
+
+def test_v5_contract_uses_semantic_not_raw_trace_acceptance() -> None:
+    splits = {
+        f"phase_{index:02d}_active": {"records": 8 * len(phase["criteria"])}
+        for index, phase in enumerate(MASTER_PHASES)
+    }
+    for index, phase in enumerate(MASTER_PHASES[1:], 1):
+        splits[f"phase_{index:02d}_retention"] = {
+            "records": sum(len(prior["criteria"]) for prior in MASTER_PHASES[:index])
+        }
+    contract = build_contract(
+        {
+            "phases": list(MASTER_PHASES),
+            "splits": splits,
+            "criterion_operations": {},
+            "trace_acceptance_metric": "semantic_v1",
+        }
+    )
+    assert contract["phases"][0]["minimum_trace_exact_by_family"] == {}
+    assert contract["phases"][0]["minimum_trace_semantic_by_family"] == {
+        criterion: 0.70 for criterion in MASTER_PHASES[0]["criteria"]
+    }
 
 
 def test_100k_experiment_allocates_exact_distinct_training_total() -> None:
