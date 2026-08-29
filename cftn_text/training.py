@@ -424,6 +424,12 @@ def math_epoch_dataset(
 
             sampled: list[dict[str, Any]] = []
             replacement_examples = 0
+            result_balanced_families = {
+                str(value)
+                for value in group.get(
+                    "balance_results_within_operations_for_families", []
+                )
+            }
             if bool(group.get("balance_families", True)):
                 families: dict[str, list[dict[str, Any]]] = {}
                 for record in pool:
@@ -445,17 +451,48 @@ def math_epoch_dataset(
                             operation_count = count // len(operations) + int(
                                 operation_index < count % len(operations)
                             )
-                            sampled.extend(
-                                rng.sample(
-                                    operation_pool,
-                                    min(operation_count, len(operation_pool)),
+                            if family in result_balanced_families:
+                                results: dict[str, list[dict[str, Any]]] = {}
+                                for record in operation_pool:
+                                    answer = str(
+                                        record.get(
+                                            "normalized_answer",
+                                            record.get("answer", ""),
+                                        )
+                                    ).strip()
+                                    if not answer:
+                                        raise ValueError(
+                                            "result-balanced curriculum rows require answers"
+                                        )
+                                    results.setdefault(answer, []).append(record)
+                                for result_index, answer in enumerate(sorted(results)):
+                                    result_pool = results[answer]
+                                    result_count = operation_count // len(results) + int(
+                                        result_index < operation_count % len(results)
+                                    )
+                                    sampled.extend(
+                                        rng.sample(
+                                            result_pool,
+                                            min(result_count, len(result_pool)),
+                                        )
+                                    )
+                                    extra = max(0, result_count - len(result_pool))
+                                    sampled.extend(
+                                        rng.choice(result_pool) for _ in range(extra)
+                                    )
+                                    replacement_examples += extra
+                            else:
+                                sampled.extend(
+                                    rng.sample(
+                                        operation_pool,
+                                        min(operation_count, len(operation_pool)),
+                                    )
                                 )
-                            )
-                            extra = max(0, operation_count - len(operation_pool))
-                            sampled.extend(
-                                rng.choice(operation_pool) for _ in range(extra)
-                            )
-                            replacement_examples += extra
+                                extra = max(0, operation_count - len(operation_pool))
+                                sampled.extend(
+                                    rng.choice(operation_pool) for _ in range(extra)
+                                )
+                                replacement_examples += extra
                     else:
                         sampled.extend(
                             rng.sample(family_pool, min(count, len(family_pool)))
@@ -482,6 +519,18 @@ def math_epoch_dataset(
                     sorted(
                         Counter(
                             str(row.get("operation", "unknown")) for row in sampled
+                        ).items()
+                    )
+                ),
+                "answer_counts": dict(
+                    sorted(
+                        Counter(
+                            str(
+                                row.get(
+                                    "normalized_answer", row.get("answer", "unknown")
+                                )
+                            )
+                            for row in sampled
                         ).items()
                     )
                 ),

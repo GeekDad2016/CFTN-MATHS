@@ -149,14 +149,18 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
     elif criterion == "1AS-1":
         for left in range(11):
             for right in range(11 - left):
-                yield {"type": "math_problem_v1", "op": "compose", "left": left, "right": right}
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "add",
+                    "operands": [left, right],
+                }
         for first in range(11):
             for second in range(11 - first):
                 for third in range(11 - first - second):
                     yield {
                         "type": "math_problem_v1",
-                        "op": "compose_three",
-                        "parts": [first, second, third],
+                        "op": "add",
+                        "operands": [first, second, third],
                     }
     elif criterion == "1NF-1":
         for left in range(11):
@@ -368,14 +372,23 @@ def solve_math_ir(math_ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
             {"left": left, "op": op, "result": result, "right": right},
         ]
     elif op == "add":
-        result = int(math_ir["left"]) + int(math_ir["right"])
-    elif op == "compose":
-        result = int(math_ir["left"]) + int(math_ir["right"])
-        derivation = [{"op": "join_parts", "parts": [int(math_ir["left"]), int(math_ir["right"])], "result": result}, {"op": op, "result": str(result)}]
-    elif op == "compose_three":
-        parts = [int(value) for value in math_ir["parts"]]
-        result = sum(parts)
-        derivation = [{"op": "join_parts", "parts": parts, "result": result}, {"op": op, "result": str(result)}]
+        if "operands" in math_ir:
+            operands = [int(value) for value in math_ir["operands"]]
+            if len(operands) not in (2, 3) or any(value < 0 for value in operands):
+                raise ValueError("canonical addition requires two or three non-negative operands")
+            running = operands[0]
+            steps: list[dict[str, Any]] = []
+            for operand in operands[1:]:
+                sequence = list(range(running + 1, running + operand + 1))
+                running += operand
+                steps.append({"add": operand, "result": running, "sequence": sequence})
+            result = running
+            derivation = [
+                {"op": "count_on", "start": operands[0], "steps": steps},
+                {"op": "add", "operands": operands, "result": str(result)},
+            ]
+        else:
+            result = int(math_ir["left"]) + int(math_ir["right"])
     elif op == "subtract":
         result = int(math_ir["left"]) - int(math_ir["right"])
     elif op == "difference":
@@ -490,7 +503,9 @@ def _fraction_answer(value: Fraction) -> str:
     return str(value.numerator) if value.denominator == 1 else f"{value.numerator}/{value.denominator}"
 
 
-def _language_prompts(math_ir: dict[str, Any]) -> tuple[str, ...]:
+def _language_prompts(
+    math_ir: dict[str, Any], *, criterion: str | None = None
+) -> tuple[str, ...]:
     op = math_ir["op"]
     if op == "successor":
         value = math_ir["value"]
@@ -504,19 +519,22 @@ def _language_prompts(math_ir: dict[str, Any]) -> tuple[str, ...]:
     if op == "compare":
         left, right = math_ir["left"], math_ir["right"]
         return (f"Compare {left} and {right}.", f"Which symbol, <, >, or =, belongs between {left} and {right}?")
-    if op in {"add", "compose", "subtract", "difference", "multiply"}:
+    if op == "add" and "operands" in math_ir:
+        operands = [int(value) for value in math_ir["operands"]]
+        rendered = ", ".join(str(value) for value in operands)
+        return (
+            f"Compose {rendered} into a whole.",
+            f"What whole is made from parts {rendered}?",
+        )
+    if op in {"add", "subtract", "difference", "multiply"}:
         left, right = math_ir["left"], math_ir["right"]
         templates = {
             "add": (f"Calculate {left} + {right}.", f"What is the sum of {left} and {right}?"),
-            "compose": (f"Compose {left} and {right} into a whole.", f"What whole is made from parts {left} and {right}?"),
             "subtract": (f"Calculate {left} - {right}.", f"Subtract {right} from {left}."),
             "difference": (f"Find the difference between {left} and {right}.", f"How far apart are {left} and {right}?"),
             "multiply": (f"Calculate {left} x {right}.", f"What is the product of {left} and {right}?"),
         }
         return templates[op]
-    if op == "compose_three":
-        first, second, third = math_ir["parts"]
-        return (f"Compose {first}, {second}, and {third} into a whole.", f"What whole is made from parts {first}, {second}, and {third}?")
     if op == "missing_addend":
         known, total = math_ir["known"], math_ir["total"]
         return (f"Complete {known} + ? = {total}.", f"What must be added to {known} to make {total}?")
@@ -617,14 +635,14 @@ def _records_for_object(
     trace, spans = _trace(answer, derivation)
     object_id = _sha(math_ir)
     phase = phases[phase_index]
-    prompts = _language_prompts(math_ir)
+    prompts = _language_prompts(math_ir, criterion=criterion)
     if not 1 <= language_variants_per_object <= len(prompts):
         raise ValueError("language_variants_per_object exceeds available prompts")
     for variant, prompt in enumerate(prompts[:language_variants_per_object]):
         dispatcher_target = {
             "route": "math",
             "criterion_id": criterion,
-            "operation": str(math_ir["op"]),
+            "operation": _operation_key(math_ir),
             "math_ir": math_ir,
         }
         extras = {
@@ -636,7 +654,7 @@ def _records_for_object(
             "answer": answer,
             "verifier_spec": {"kind": "exact_math_ir_v1", "math_ir": math_ir},
             "criterion_id": criterion,
-            "operation": str(math_ir["op"]),
+            "operation": _operation_key(math_ir),
             "curriculum_phase": phase["name"],
             "curriculum_phase_index": phase_index,
             "prerequisite_ids": _phase_prerequisites(phase_index, phases),
@@ -671,9 +689,22 @@ def _candidate_capacity(criterion: str) -> int:
     return sum(1 for _ in _candidate_irs(criterion))
 
 
+def _operation_key(math_ir: dict[str, Any]) -> str:
+    operation = str(math_ir["op"])
+    operands = math_ir.get("operands")
+    if operation == "add" and isinstance(operands, list):
+        return f"add_{len(operands)}"
+    return operation
+
+
 @lru_cache(maxsize=None)
 def _criterion_operations(criterion: str) -> tuple[str, ...]:
-    return tuple(sorted({str(item["op"]) for item in _candidate_irs(criterion)}))
+    return tuple(sorted({_operation_key(item) for item in _candidate_irs(criterion)}))
+
+
+def _criterion_split_count(config: dict[str, Any], criterion: str, split: str) -> int:
+    overrides = config.get("split_overrides", {}).get(criterion, {})
+    return int(overrides.get(split, config["objects_per_criterion"][split]))
 
 
 def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]:
@@ -681,18 +712,29 @@ def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]
     criteria = [criterion for phase in phases for criterion in phase["criteria"]]
     total_records = config.get("total_train_records")
     if total_records is None:
-        uniform = {
-            name: int(config["objects_per_criterion"][name]) for name in SPLITS
+        return {
+            criterion: {
+                split: _criterion_split_count(config, criterion, split)
+                for split in SPLITS
+            }
+            for criterion in criteria
         }
-        return {criterion: dict(uniform) for criterion in criteria}
     variants = int(config.get("language_variants_per_object", 1))
     if int(total_records) % variants:
         raise ValueError("total_train_records must be divisible by language variants")
     target = int(total_records) // variants
-    validation = int(config["objects_per_criterion"]["validation"])
-    test = int(config["objects_per_criterion"]["test"])
+    validation = {
+        criterion: _criterion_split_count(config, criterion, "validation")
+        for criterion in criteria
+    }
+    test = {
+        criterion: _criterion_split_count(config, criterion, "test")
+        for criterion in criteria
+    }
     available = {
-        criterion: _candidate_capacity(criterion) - validation - test
+        criterion: _candidate_capacity(criterion)
+        - validation[criterion]
+        - test[criterion]
         for criterion in criteria
     }
     if any(value < 1 for value in available.values()):
@@ -720,9 +762,68 @@ def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]
         if not progressed:
             raise RuntimeError("training allocation made no progress")
     return {
-        criterion: {"train": train[criterion], "validation": validation, "test": test}
+        criterion: {
+            "train": train[criterion],
+            "validation": validation[criterion],
+            "test": test[criterion],
+        }
         for criterion in criteria
     }
+
+
+def _balanced_result_rows(
+    *,
+    criterion: str,
+    operation: str,
+    count: int,
+    split: str,
+    seed: int,
+    held_out_ids: set[str],
+) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for item in _candidate_irs(criterion):
+        if _operation_key(item) != operation or _sha(item) in held_out_ids:
+            continue
+        answer, _ = solve_math_ir(item)
+        buckets.setdefault(answer, []).append(item)
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    round_index = 0
+    while len(selected) < count:
+        progressed = False
+        ordered_answers = sorted(
+            buckets,
+            key=lambda answer: _sha(
+                [seed, criterion, split, operation, round_index, answer]
+            ),
+        )
+        for answer in ordered_answers:
+            remaining = [
+                item
+                for item in buckets[answer]
+                if _sha(item) not in selected_ids
+            ]
+            # Always retain at least one example of every result in training.
+            if len(remaining) <= 1:
+                continue
+            chosen = min(
+                remaining,
+                key=lambda item: _sha(
+                    [seed, criterion, split, operation, answer, item]
+                ),
+            )
+            selected.append(chosen)
+            selected_ids.add(_sha(chosen))
+            progressed = True
+            if len(selected) == count:
+                break
+        if not progressed:
+            raise ValueError(
+                f"criterion {criterion} operation {operation} lacks "
+                f"result-balanced {split} capacity"
+            )
+        round_index += 1
+    return selected
 
 
 @lru_cache(maxsize=None)
@@ -732,6 +833,7 @@ def _split_objects_cached(
     validation_count: int,
     test_count: int,
     seed: int,
+    result_stratified: bool,
 ) -> dict[str, tuple[dict[str, Any], ...]]:
     operations = _criterion_operations(criterion)
     output: dict[str, tuple[dict[str, Any], ...]] = {}
@@ -740,15 +842,26 @@ def _split_objects_cached(
         selected: list[dict[str, Any]] = []
         for index, operation in enumerate(operations):
             count = total // len(operations) + int(index < total % len(operations))
-            operation_rows = nsmallest(
-                count,
-                (
-                    item
-                    for item in _candidate_irs(criterion)
-                    if str(item["op"]) == operation and _sha(item) not in held_out_ids
-                ),
-                key=lambda item: _sha([seed, criterion, split, operation, item]),
-            )
+            if result_stratified:
+                operation_rows = _balanced_result_rows(
+                    criterion=criterion,
+                    operation=operation,
+                    count=count,
+                    split=split,
+                    seed=seed,
+                    held_out_ids=held_out_ids,
+                )
+            else:
+                operation_rows = nsmallest(
+                    count,
+                    (
+                        item
+                        for item in _candidate_irs(criterion)
+                        if _operation_key(item) == operation
+                        and _sha(item) not in held_out_ids
+                    ),
+                    key=lambda item: _sha([seed, criterion, split, operation, item]),
+                )
             if len(operation_rows) < count:
                 raise ValueError(
                     f"criterion {criterion} operation {operation} lacks {split} capacity"
@@ -768,7 +881,11 @@ def _split_objects_cached(
 
 
 def _split_objects(
-    criterion: str, split_object_counts: dict[str, int], seed: int
+    criterion: str,
+    split_object_counts: dict[str, int],
+    seed: int,
+    *,
+    result_stratified: bool = False,
 ) -> dict[str, tuple[dict[str, Any], ...]]:
     return _split_objects_cached(
         criterion,
@@ -776,6 +893,7 @@ def _split_objects(
         int(split_object_counts["validation"]),
         int(split_object_counts["test"]),
         int(seed),
+        bool(result_stratified),
     )
 
 
@@ -783,13 +901,21 @@ def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]
     if split not in SPLITS:
         raise ValueError(f"unsupported split: {split}")
     seed = int(config["seed"])
+    result_stratified = {
+        str(value) for value in config.get("result_balanced_criteria", [])
+    }
     phases = phases_for_config(config)
     counts_by_criterion = _criterion_split_counts(config)
     variants = int(config.get("language_variants_per_object", 2))
     for phase_index, phase in enumerate(phases):
         for criterion in phase["criteria"]:
             split_object_counts = counts_by_criterion[criterion]
-            objects = _split_objects(criterion, split_object_counts, seed)[split]
+            objects = _split_objects(
+                criterion,
+                split_object_counts,
+                seed,
+                result_stratified=criterion in result_stratified,
+            )[split]
             for math_ir in objects:
                 yield from _records_for_object(
                     split=split,
@@ -961,6 +1087,9 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
             for phase in phases
             for criterion in phase["criteria"]
         },
+        "result_balanced_criteria": sorted(
+            str(value) for value in config.get("result_balanced_criteria", [])
+        ),
         "language_variants_per_object": int(
             config.get("language_variants_per_object", 2)
         ),

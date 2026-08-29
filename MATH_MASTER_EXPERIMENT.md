@@ -1,9 +1,14 @@
 # Cumulative 100k master mathematics curriculum experiment
 
+The current `v4` recipe uses canonical `add` math IR for KS1 part-whole
+composition, compact executable count-on traces, result-balanced active/replay
+sampling for criterion `1AS-1`, and result-stratified held-out examples. The
+completed `v3` dataset and artifacts remain immutable comparison evidence.
+
 This experiment exercises the complete curriculum mechanism on a local 12GB
 GPU without pretending to be the final large mathematics corpus. It contains
-exactly 100,000 distinct canonical tower-training objects, plus 516 disjoint
-validation and 516 disjoint test objects, spanning KS1 through graduate
+exactly 100,000 distinct canonical tower-training objects, plus 526 disjoint
+validation and 526 disjoint test objects, spanning KS1 through graduate
 mathematics and formal research preparation. Natural-language paraphrases are
 retained as dispatcher metadata rather than duplicated tower targets.
 

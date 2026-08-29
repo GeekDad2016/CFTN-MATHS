@@ -356,6 +356,49 @@ def test_quota_groups_balance_operations_within_each_family():
     }
 
 
+def test_quota_groups_balance_results_within_selected_operations():
+    records = []
+    for answer, available in (("0", 1), ("1", 3), ("2", 6)):
+        for index in range(available):
+            records.append(
+                {
+                    "record_id": f"part-whole-{answer}-{index}",
+                    "source": "canonical_primary_math",
+                    "family": "1AS-1",
+                    "operation": "add_2",
+                    "normalized_answer": answer,
+                    "difficulty": 1,
+                }
+            )
+    phase = {
+        "name": "result-balanced",
+        "through_epoch": 1,
+        "max_difficulty": 3,
+        "quota_groups": [
+            {
+                "name": "active",
+                "examples": 9,
+                "filters": {"families": ["1AS-1"]},
+                "balance_families": True,
+                "balance_operations_within_families": True,
+                "balance_results_within_operations_for_families": ["1AS-1"],
+            }
+        ],
+    }
+    config = {"data": {"format": "cftn_text_broad_math_v2", "curriculum": {
+        "enabled": True, "examples_per_epoch": 9, "phases": [phase]}}}
+
+    _, metadata = math_epoch_dataset(
+        EquationDataset(records), config, epoch=1, seed=719
+    )
+
+    assert metadata["quota_groups"]["active"]["answer_counts"] == {
+        "0": 3,
+        "1": 3,
+        "2": 3,
+    }
+
+
 def test_skill_quota_groups_reject_overlap():
     records = [{"record_id": "same", "source": "a", "family": "f", "difficulty": 1}]
     phase = {"name": "bad", "through_epoch": 1, "max_difficulty": 3, "quota_groups": [

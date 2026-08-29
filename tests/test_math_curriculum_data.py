@@ -158,13 +158,14 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
     criterion_operations = {
         "1NPV-1": ["missing_count_sequence", "predecessor", "successor"],
         "1NPV-2": ["compare"],
-        "1AS-1": ["compose", "compose_three"],
+        "1AS-1": ["add_2", "add_3"],
     }
     contract = build_contract(
         {
             "phases": list(MASTER_PHASES),
             "splits": splits,
             "criterion_operations": criterion_operations,
+            "result_balanced_criteria": ["1AS-1"],
         }
     )
     assert len(contract["phases"]) == 15
@@ -179,6 +180,9 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
         for group in phase["quota_groups"]
     )
     assert contract["phases"][0]["minimum_generation_accuracy_by_operation"]
+    assert contract["phases"][0]["quota_groups"][0][
+        "balance_results_within_operations_for_families"
+    ] == ["1AS-1"]
     assert contract["curriculum"]["phase_local_optimization"] == {
         "enabled": True,
         "reset_optimizer": True,
@@ -229,12 +233,36 @@ def test_phase_one_validation_is_operation_stratified() -> None:
     rows = list(iter_phase_validation_records(config, 0, "active"))
     assert Counter(row["operation"] for row in rows) == {
         "compare": 12,
-        "compose": 6,
-        "compose_three": 6,
+        "add_2": 6,
+        "add_3": 6,
         "missing_count_sequence": 4,
         "predecessor": 4,
         "successor": 4,
     }
+
+
+def test_v4_phase_one_is_canonical_procedural_and_result_stratified() -> None:
+    config = json.loads(
+        (Path(__file__).parents[1] / "config" / "math_master_experiment_v4.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    counts = _criterion_split_counts(config)
+    rows = list(iter_phase_validation_records(config, 0, "active"))
+    additions = [row for row in rows if row["family"] == "1AS-1"]
+
+    assert counts["1AS-1"]["validation"] == 22
+    assert counts["1AS-1"]["test"] == 22
+    assert sum(value["train"] for value in counts.values()) == 100_000
+    assert Counter(row["operation"] for row in additions) == {
+        "add_2": 11,
+        "add_3": 11,
+    }
+    assert all(row["math_ir"]["op"] == "add" for row in additions)
+    assert all("operands" in row["math_ir"] for row in additions)
+    assert all(row["derivation"][0]["op"] == "count_on" for row in additions)
+    assert len({row["answer"] for row in additions if row["operation"] == "add_2"}) >= 9
+    assert len({row["answer"] for row in additions if row["operation"] == "add_3"}) >= 9
 
 
 def test_100k_experiment_allocates_exact_distinct_training_total() -> None:

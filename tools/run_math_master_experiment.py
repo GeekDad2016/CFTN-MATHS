@@ -37,6 +37,9 @@ def build_contract(
         str(criterion): [str(operation) for operation in operations]
         for criterion, operations in manifest.get("criterion_operations", {}).items()
     }
+    result_balanced_criteria = {
+        str(value) for value in manifest.get("result_balanced_criteria", [])
+    }
     panels: list[dict] = []
     contract_phases: list[dict] = []
     prior: list[str] = []
@@ -61,6 +64,9 @@ def build_contract(
                 "filters": {"families": active},
                 "balance_families": True,
                 "balance_operations_within_families": True,
+                "balance_results_within_operations_for_families": sorted(
+                    set(active) & result_balanced_criteria
+                ),
             }
         ]
         minimum_by_panel = {active_name: 0.85}
@@ -86,6 +92,9 @@ def build_contract(
                     "filters": {"families": list(prior)},
                     "balance_families": True,
                     "balance_operations_within_families": True,
+                    "balance_results_within_operations_for_families": sorted(
+                        set(prior) & result_balanced_criteria
+                    ),
                 }
             )
             minimum_by_panel[retention_name] = 1.0
@@ -188,11 +197,11 @@ def main() -> None:
     parser.add_argument(
         "command", choices=("auto", "build", "audit", "smoke"), default="auto", nargs="?"
     )
-    parser.add_argument("--config", default="config/math_master_experiment_local.yaml")
-    parser.add_argument("--dataset-config", default="config/math_master_experiment_v1.json")
-    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v3")
+    parser.add_argument("--config", default="config/math_master_experiment_local_v4.yaml")
+    parser.add_argument("--dataset-config", default="config/math_master_experiment_v4.json")
+    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v4")
     parser.add_argument(
-        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v3/run"
+        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v4/run"
     )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
