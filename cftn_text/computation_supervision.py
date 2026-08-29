@@ -12,6 +12,11 @@ from .verified_math_data import GROUPS, VERSION, legacy_spans, validate_verified
 
 class ComputationCollator(MathCollator):
     def supervision_spans(self, row: dict) -> list[dict]:
+        if row.get("curriculum_schema") == "cftn_canonical_math_record_v1":
+            from .math_curriculum_data import validate_spans
+
+            validate_spans(row)
+            return row["computation_spans"]
         if row.get("schema_version") == VERSION:
             validate_verified_record(row)
             return row["supervision_spans"]

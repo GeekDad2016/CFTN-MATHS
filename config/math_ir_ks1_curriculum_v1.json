@@ -1,0 +1,13 @@
+{
+  "format": "cftn_canonical_math_curriculum_v1",
+  "seed": 29082026,
+  "objects_per_criterion": {
+    "train": 40,
+    "validation": 12,
+    "test": 12
+  },
+  "replay_policy": {
+    "active_fraction": 0.75,
+    "prior_fraction": 0.25
+  }
+}

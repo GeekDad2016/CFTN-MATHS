@@ -144,6 +144,7 @@ def make_v2_record(
     gpt_problem: str | None = None,
     math_problem: str | None = None,
     metadata: dict[str, Any] | None = None,
+    extra_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     original_problem = str(problem if raw_problem is None else raw_problem).strip()
     problem = normalize_problem(problem)
@@ -194,6 +195,11 @@ def make_v2_record(
         "math_problem": normalize_problem(math_problem) if math_problem else None,
         "metadata": dict(metadata or {}),
     }
+    extras = dict(extra_fields or {})
+    collisions = sorted(set(extras) & set(payload))
+    if collisions:
+        raise ValueError(f"V2 extra fields collide with core fields: {collisions}")
+    payload.update(extras)
     payload["record_id"] = _signature(payload)
     validate_v2_record(payload)
     return payload
