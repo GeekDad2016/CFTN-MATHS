@@ -41,7 +41,10 @@ def _read_metrics(path: Path, limit: int = 120) -> list[dict[str, Any]]:
 
 def _compact_metric(row: dict[str, Any]) -> dict[str, Any]:
     validation = row.get("validation") or {}
-    gate = row.get("curriculum_gate") or {}
+    # curriculum_gate is populated only for an advance, completion, or
+    # fail-closed terminal decision. curriculum_acceptance contains the actual
+    # per-epoch measurements that the trend must display.
+    gate = row.get("curriculum_acceptance") or row.get("curriculum_gate") or {}
     transition = row.get("curriculum_transition") or {}
     return {
         "epoch": row.get("epoch"),

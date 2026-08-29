@@ -91,3 +91,21 @@ def test_dashboard_accepts_live_interim_metrics_with_null_gate(tmp_path: Path) -
     assert compact["epoch"] == 2
     assert compact["generation_accuracy"] is None
     assert compact["phase"] is None
+
+
+def test_dashboard_prefers_per_epoch_acceptance_over_terminal_gate() -> None:
+    from tools.serve_math_master_dashboard import _compact_metric
+
+    compact = _compact_metric(
+        {
+            "curriculum_acceptance": {
+                "generation_accuracy": 0.25,
+                "valid_rate": 1.0,
+                "pass": False,
+            },
+            "curriculum_gate": None,
+        }
+    )
+    assert compact["generation_accuracy"] == 0.25
+    assert compact["valid_rate"] == 1.0
+    assert compact["gate_pass"] is False
