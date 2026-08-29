@@ -1,0 +1,20 @@
+{
+  "format": "cftn_canonical_math_curriculum_v1",
+  "curriculum_profile": "master_experiment_v1",
+  "seed": 29082026,
+  "objects_per_criterion": {
+    "train": 12,
+    "validation": 4,
+    "test": 4
+  },
+  "replay_policy": {
+    "active_fraction": 0.75,
+    "prior_fraction": 0.25
+  },
+  "experiment_scope": {
+    "purpose": "local_12gb_end_to_end_curriculum_probe",
+    "comprehensive_coverage": false,
+    "upper_level_interpretation": "representative_verified_capability_probe",
+    "research_phase_interpretation": "formal_research_preparation_not_open_problem_solving"
+  }
+}

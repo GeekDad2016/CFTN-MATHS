@@ -94,7 +94,10 @@ def atomic_torch_save(
         try:
             ensure_directory(destination.parent, retry_attempts=1)
             torch.save(payload, temporary)
-            with temporary.open("rb") as handle:
+            # Windows rejects fsync on a read-only descriptor. Reopen the fully
+            # written checkpoint read/write so the durability barrier works on
+            # both Windows and POSIX before the atomic replace.
+            with temporary.open("r+b") as handle:
                 os.fsync(handle.fileno())
             os.replace(temporary, destination)
         except BaseException:

@@ -281,6 +281,14 @@ def load_data_contract(config: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             prepare_manifests(config, root)
     with manifest_path.open("r", encoding="utf-8") as handle:
         manifest = json.load(handle)
+    if manifest.get("format") == "cftn_canonical_math_curriculum_v1":
+        from .math_curriculum_data import audit_dataset
+
+        audit_dataset(root)
+        expected = config["data"].get("dataset_manifest_sha256")
+        if expected and manifest.get("manifest_sha256") != expected:
+            raise ValueError("canonical curriculum data identity differs from run config")
+        return root, manifest
     if manifest.get("config_sha256") != config_sha256(config):
         raise ValueError("data manifest was generated from a different configuration")
     if manifest.get("format") == "cftn_text_broad_math_v2":
@@ -337,8 +345,12 @@ def math_epoch_dataset(
     phase_override: dict[str, Any] | None = None,
 ) -> tuple[EquationDataset, dict[str, Any]]:
     data_format = config["data"].get("format")
+    broad_curriculum_format = data_format in {
+        "cftn_text_broad_math_v2",
+        "cftn_canonical_math_curriculum_v1",
+    }
     phase: dict[str, Any] | None = None
-    if data_format == "cftn_text_broad_math_v2":
+    if broad_curriculum_format:
         curriculum = config["data"].get("curriculum", {})
         if not curriculum.get("enabled", False):
             selected = dataset.records
@@ -373,7 +385,7 @@ def math_epoch_dataset(
     )
     quota_groups = (
         phase.get("quota_groups")
-        if data_format == "cftn_text_broad_math_v2" and phase is not None
+        if broad_curriculum_format and phase is not None
         else None
     )
     if quota_groups is not None:
@@ -455,7 +467,7 @@ def math_epoch_dataset(
         return EquationDataset(epoch_records), metadata
     source_quotas = (
         phase.get("source_quotas")
-        if data_format == "cftn_text_broad_math_v2" and phase is not None
+        if broad_curriculum_format and phase is not None
         else None
     )
     if source_quotas is not None:
@@ -1174,6 +1186,37 @@ def _phase_generation_acceptance(
                 float(panel_validity_thresholds[name]),
             )
 
+    panel_family_thresholds = phase.get(
+        "minimum_generation_accuracy_by_panel_family", {}
+    )
+    if not isinstance(panel_family_thresholds, dict):
+        raise ValueError("minimum_generation_accuracy_by_panel_family must be an object")
+    for panel_name, thresholds in panel_family_thresholds.items():
+        if not isinstance(thresholds, dict):
+            raise ValueError("panel-family acceptance thresholds must be objects")
+        panel = generation_panels.get(str(panel_name))
+        if panel is None:
+            checks[f"panel_family:{panel_name}:available"] = {
+                "observed": None,
+                "minimum": 1.0,
+                "pass": False,
+            }
+            continue
+        observed_families = panel.get("by_family", {})
+        for family, minimum in thresholds.items():
+            observed = observed_families.get(str(family))
+            key = f"panel_family:{panel_name}:{family}"
+            if observed is None:
+                checks[key] = {
+                    "observed": None,
+                    "minimum": float(minimum),
+                    "examples": 0,
+                    "pass": False,
+                }
+            else:
+                add_check(key, observed.get("accuracy", 0.0), float(minimum))
+                checks[key]["examples"] = int(observed.get("examples", 0))
+
     if "minimum_teacher_forced_token_accuracy" in phase:
         add_check(
             "teacher_forced_token_accuracy",
@@ -1631,7 +1674,10 @@ def train_math_tower(
     ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
         generation_panels: dict[str, dict[str, Any]] = {}
         if not (
-            manifest.get("format") == "cftn_text_broad_math_v2"
+            manifest.get("format") in {
+                "cftn_text_broad_math_v2",
+                "cftn_canonical_math_curriculum_v1",
+            }
             and bool(generation_settings.get("enabled", False))
         ):
             return generation_panels, None
@@ -2046,7 +2092,10 @@ def train_math_tower(
             generation_validation: dict[str, Any] | None = None
             generation_panels: dict[str, dict[str, Any]] = {}
             if (
-                manifest.get("format") == "cftn_text_broad_math_v2"
+                manifest.get("format") in {
+                    "cftn_text_broad_math_v2",
+                    "cftn_canonical_math_curriculum_v1",
+                }
                 and bool(generation_settings.get("enabled", False))
                 and epoch % max(1, int(generation_settings.get("every_epochs", 1)))
                 == 0
@@ -2081,7 +2130,10 @@ def train_math_tower(
                     else "greedy_generation_accuracy"
                 )
             elif (
-                manifest.get("format") == "cftn_text_broad_math_v2"
+                manifest.get("format") in {
+                    "cftn_text_broad_math_v2",
+                    "cftn_canonical_math_curriculum_v1",
+                }
                 or not model.answer_head_enabled
             ):
                 selection_metric = float(
