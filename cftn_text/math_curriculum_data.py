@@ -132,15 +132,32 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
         for value in range(1, 100):
             yield {"type": "math_problem_v1", "op": "predecessor", "value": value}
             yield {"type": "math_problem_v1", "op": "successor", "value": value}
+        for start in range(97):
+            for missing_index in (1, 2, 3):
+                sequence: list[int | None] = [start + offset for offset in range(5)]
+                sequence[missing_index] = None
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "missing_count_sequence",
+                    "sequence": sequence,
+                    "missing_index": missing_index,
+                }
     elif criterion == "1NPV-2":
-        for left in range(21):
-            for right in range(21):
-                if left != right:
-                    yield {"type": "math_problem_v1", "op": "compare", "left": left, "right": right}
+        for left in range(101):
+            for right in range(101):
+                yield {"type": "math_problem_v1", "op": "compare", "left": left, "right": right}
     elif criterion == "1AS-1":
         for left in range(11):
             for right in range(11 - left):
                 yield {"type": "math_problem_v1", "op": "compose", "left": left, "right": right}
+        for first in range(11):
+            for second in range(11 - first):
+                for third in range(11 - first - second):
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "compose_three",
+                        "parts": [first, second, third],
+                    }
     elif criterion == "1NF-1":
         for left in range(11):
             for right in range(11):
@@ -324,13 +341,41 @@ def solve_math_ir(math_ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     op = math_ir["op"]
     if op == "successor":
         result = int(math_ir["value"]) + 1
+        derivation = [
+            {"direction": "forward", "from": int(math_ir["value"]), "op": "count_one", "to": result},
+            {"op": op, "result": str(result)},
+        ]
     elif op == "predecessor":
         result = int(math_ir["value"]) - 1
+        derivation = [
+            {"direction": "backward", "from": int(math_ir["value"]), "op": "count_one", "to": result},
+            {"op": op, "result": str(result)},
+        ]
+    elif op == "missing_count_sequence":
+        sequence = list(math_ir["sequence"])
+        missing_index = int(math_ir["missing_index"])
+        result = int(sequence[missing_index - 1]) + 1
+        derivation = [
+            {"index": missing_index, "op": "continue_count", "previous": sequence[missing_index - 1], "result": result},
+            {"op": op, "result": str(result)},
+        ]
     elif op == "compare":
         left, right = int(math_ir["left"]), int(math_ir["right"])
         result = "<" if left < right else ">" if left > right else "="
-    elif op in {"add", "compose"}:
+        derivation = [
+            {"ones": left % 10, "op": "decompose", "tens": left // 10, "value": left},
+            {"ones": right % 10, "op": "decompose", "tens": right // 10, "value": right},
+            {"left": left, "op": op, "result": result, "right": right},
+        ]
+    elif op == "add":
         result = int(math_ir["left"]) + int(math_ir["right"])
+    elif op == "compose":
+        result = int(math_ir["left"]) + int(math_ir["right"])
+        derivation = [{"op": "join_parts", "parts": [int(math_ir["left"]), int(math_ir["right"])], "result": result}, {"op": op, "result": str(result)}]
+    elif op == "compose_three":
+        parts = [int(value) for value in math_ir["parts"]]
+        result = sum(parts)
+        derivation = [{"op": "join_parts", "parts": parts, "result": result}, {"op": op, "result": str(result)}]
     elif op == "subtract":
         result = int(math_ir["left"]) - int(math_ir["right"])
     elif op == "difference":
@@ -436,7 +481,9 @@ def solve_math_ir(math_ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     else:
         raise ValueError(f"unsupported operation: {op}")
     answer = _fraction_answer(result) if isinstance(result, Fraction) else str(result)
-    return answer, [{"op": op, "result": answer}]
+    if "derivation" not in locals():
+        derivation = [{"op": op, "result": answer}]
+    return answer, derivation
 
 
 def _fraction_answer(value: Fraction) -> str:
@@ -451,6 +498,9 @@ def _language_prompts(math_ir: dict[str, Any]) -> tuple[str, ...]:
     if op == "predecessor":
         value = math_ir["value"]
         return (f"What number comes before {value}?", f"Give the predecessor of {value}.")
+    if op == "missing_count_sequence":
+        rendered = ", ".join("?" if value is None else str(value) for value in math_ir["sequence"])
+        return (f"Complete the counting sequence: {rendered}.", f"Which number is missing from {rendered}?")
     if op == "compare":
         left, right = math_ir["left"], math_ir["right"]
         return (f"Compare {left} and {right}.", f"Which symbol, <, >, or =, belongs between {left} and {right}?")
@@ -464,6 +514,9 @@ def _language_prompts(math_ir: dict[str, Any]) -> tuple[str, ...]:
             "multiply": (f"Calculate {left} x {right}.", f"What is the product of {left} and {right}?"),
         }
         return templates[op]
+    if op == "compose_three":
+        first, second, third = math_ir["parts"]
+        return (f"Compose {first}, {second}, and {third} into a whole.", f"What whole is made from parts {first}, {second}, and {third}?")
     if op == "missing_addend":
         known, total = math_ir["known"], math_ir["total"]
         return (f"Complete {known} + ? = {total}.", f"What must be added to {known} to make {total}?")

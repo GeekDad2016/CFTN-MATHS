@@ -1,5 +1,5 @@
 param(
-    [string]$OutputRoot = "C:\CFTN\.datasets\math_master_experiment_100k_v1",
+    [string]$OutputRoot = "C:\CFTN\.datasets\math_master_experiment_100k_v2",
     [string]$Python = "python"
 )
 

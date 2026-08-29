@@ -46,7 +46,7 @@ to 3,840 optimizer steps per phase at batch size 8 while retaining early
 promotion when a phase is mastered sooner.
 
 The experiment writes under
-`C:\CFTN\artifacts\math_master_experiment_100k_v1`. Earlier small-corpus and
+`C:\CFTN\artifacts\math_master_experiment_100k_v2`. Earlier small-corpus and
 failed-build artifacts remain preserved as evidence.
 
 The local read-only dashboard is available on the LAN at

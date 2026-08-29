@@ -142,9 +142,9 @@ def main() -> None:
     )
     parser.add_argument("--config", default="config/math_master_experiment_local.yaml")
     parser.add_argument("--dataset-config", default="config/math_master_experiment_v1.json")
-    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v1")
+    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v2")
     parser.add_argument(
-        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v1/run"
+        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v2/run"
     )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()

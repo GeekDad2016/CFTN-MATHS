@@ -176,7 +176,7 @@ def test_100k_experiment_allocates_exact_distinct_training_total() -> None:
     assert sum(value["validation"] for value in counts.values()) == 12 * len(counts)
     assert sum(value["test"] for value in counts.values()) == 12 * len(counts)
     first_phase = MASTER_PHASES[0]["criteria"]
-    assert sum(counts[criterion]["train"] for criterion in first_phase) == 612
+    assert sum(counts[criterion]["train"] for criterion in first_phase) == 3927
 
 
 def test_100k_experiment_has_no_object_or_prompt_collisions() -> None:
