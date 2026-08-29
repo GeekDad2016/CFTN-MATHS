@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from cftn_text.math_curriculum_data import (
     FORMAT,
     MASTER_PHASES,
@@ -144,7 +146,32 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
             }
     contract = build_contract({"phases": list(MASTER_PHASES), "splits": splits})
     assert len(contract["phases"]) == 15
-    assert sum(phase["maximum_epochs"] for phase in contract["phases"]) == 120
+    assert sum(phase["maximum_epochs"] for phase in contract["phases"]) == 900
+    assert all(phase["minimum_epochs"] == 10 for phase in contract["phases"])
+    assert all(phase["maximum_epochs"] == 60 for phase in contract["phases"])
     assert contract["phases"][1]["quota_groups"][0]["examples"] == 72
     assert contract["phases"][1]["quota_groups"][1]["examples"] == 24
     assert contract["phases"][-1]["stop_on_pass"] is True
+
+
+def test_local_runner_phase_budget_is_configurable_and_validated() -> None:
+    splits = {
+        "phase_00_active": {"records": 8 * len(MASTER_PHASES[0]["criteria"])}
+    }
+    manifest = {"phases": [MASTER_PHASES[0]], "splits": splits}
+    contract = build_contract(
+        manifest,
+        minimum_epochs_per_phase=4,
+        maximum_epochs_per_phase=20,
+        consecutive_passes=3,
+    )
+    phase = contract["phases"][0]
+    assert phase["minimum_epochs"] == 4
+    assert phase["maximum_epochs"] == 20
+    assert phase["advance_after_consecutive_passes"] == 3
+    with pytest.raises(ValueError, match="at least the minimum"):
+        build_contract(
+            manifest,
+            minimum_epochs_per_phase=5,
+            maximum_epochs_per_phase=4,
+        )

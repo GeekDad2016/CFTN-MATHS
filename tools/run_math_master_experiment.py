@@ -14,7 +14,19 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build_contract(manifest: dict) -> dict:
+def build_contract(
+    manifest: dict,
+    *,
+    minimum_epochs_per_phase: int = 10,
+    maximum_epochs_per_phase: int = 60,
+    consecutive_passes: int = 2,
+) -> dict:
+    if minimum_epochs_per_phase < 1:
+        raise ValueError("minimum_epochs_per_phase must be positive")
+    if maximum_epochs_per_phase < minimum_epochs_per_phase:
+        raise ValueError("maximum_epochs_per_phase must be at least the minimum")
+    if consecutive_passes < 1:
+        raise ValueError("consecutive_passes must be positive")
     phases = list(manifest["phases"])
     panels: list[dict] = []
     contract_phases: list[dict] = []
@@ -71,9 +83,9 @@ def build_contract(manifest: dict) -> dict:
         contract_phases.append(
             {
                 "name": phase["name"],
-                "minimum_epochs": 2,
-                "maximum_epochs": 8,
-                "advance_after_consecutive_passes": 2,
+                "minimum_epochs": minimum_epochs_per_phase,
+                "maximum_epochs": maximum_epochs_per_phase,
+                "advance_after_consecutive_passes": consecutive_passes,
                 "stop_on_pass": index == len(phases) - 1,
                 "families": [*prior, *active],
                 "max_difficulty": 3,
@@ -126,7 +138,9 @@ def main() -> None:
     parser.add_argument("--config", default="config/math_master_experiment_local.yaml")
     parser.add_argument("--dataset-config", default="config/math_master_experiment_v1.json")
     parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_v1")
-    parser.add_argument("--artifact", default="C:/CFTN/artifacts/math_master_experiment_v1/run")
+    parser.add_argument(
+        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_v1/run_long"
+    )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -158,7 +172,19 @@ def main() -> None:
     config["project"]["data_root"] = str(data_root)
     config["project"]["artifact_root"] = str(Path(args.artifact).resolve().parent)
     config["data"]["dataset_manifest_sha256"] = manifest["manifest_sha256"]
-    contract = build_contract(manifest)
+    curriculum_settings = config.get("data", {}).get("curriculum", {})
+    contract = build_contract(
+        manifest,
+        minimum_epochs_per_phase=int(
+            curriculum_settings.get("minimum_epochs_per_phase", 10)
+        ),
+        maximum_epochs_per_phase=int(
+            curriculum_settings.get("maximum_epochs_per_phase", 60)
+        ),
+        consecutive_passes=int(
+            curriculum_settings.get("advance_after_consecutive_passes", 2)
+        ),
+    )
     max_batches = None
     if args.command == "smoke":
         smoke_phase = copy.deepcopy(contract["phases"][0])
