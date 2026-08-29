@@ -161,7 +161,14 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
     assert all(phase["maximum_epochs"] == 60 for phase in contract["phases"])
     assert contract["phases"][1]["quota_groups"][0]["examples"] == 384
     assert contract["phases"][1]["quota_groups"][1]["examples"] == 128
+    assert contract["math_training"]["generation_validation"]["panels"][0]["max_new_tokens"] == 224
     assert contract["phases"][-1]["stop_on_pass"] is True
+
+
+def test_phase_one_generation_budget_covers_longest_procedural_target() -> None:
+    config = _master_config()
+    rows = list(iter_phase_validation_records(config, 0, "active"))
+    assert max(len(row["target_trace"].encode("utf-8")) for row in rows) < 224
 
 
 def test_100k_experiment_allocates_exact_distinct_training_total() -> None:

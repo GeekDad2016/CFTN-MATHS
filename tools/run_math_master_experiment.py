@@ -46,7 +46,7 @@ def build_contract(
                 "split": active_split,
                 "examples": int(manifest["splits"][active_split]["records"]),
                 "batch_size": 8,
-                "max_new_tokens": 128,
+                "max_new_tokens": 224,
                 "failure_examples": 4,
             }
         )
@@ -70,7 +70,7 @@ def build_contract(
                     "split": retention_split,
                     "examples": int(manifest["splits"][retention_split]["records"]),
                     "batch_size": 8,
-                    "max_new_tokens": 128,
+                    "max_new_tokens": 224,
                     "failure_examples": 4,
                 }
             )

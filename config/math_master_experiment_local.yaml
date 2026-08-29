@@ -106,7 +106,7 @@ gpt_calibration:
   batch_size: 8
   candidate_batch_size: 8
   maximum_examples: 1
-  max_new_tokens: 8
+  max_new_tokens: 224
   few_shot_examples: 0
   precision: bf16
   plausible_candidates: 1
