@@ -74,3 +74,20 @@ gpt_calibration: {batch_size: 1, candidate_batch_size: 1, maximum_examples: 1, m
     assert snapshot["latest"]["phase"] == "one"
     assert snapshot["contract"]["maximum_epochs_per_phase"] == 60
     assert snapshot["phases"][0]["state"] == "active"
+
+
+def test_dashboard_accepts_live_interim_metrics_with_null_gate(tmp_path: Path) -> None:
+    from tools.serve_math_master_dashboard import _compact_metric
+
+    compact = _compact_metric(
+        {
+            "epoch": 2,
+            "global_step": 13,
+            "validation": None,
+            "curriculum_gate": None,
+            "curriculum_transition": None,
+        }
+    )
+    assert compact["epoch"] == 2
+    assert compact["generation_accuracy"] is None
+    assert compact["phase"] is None

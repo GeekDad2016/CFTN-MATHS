@@ -40,9 +40,9 @@ def _read_metrics(path: Path, limit: int = 120) -> list[dict[str, Any]]:
 
 
 def _compact_metric(row: dict[str, Any]) -> dict[str, Any]:
-    validation = row.get("validation", {})
-    gate = row.get("curriculum_gate", {})
-    transition = row.get("curriculum_transition", {})
+    validation = row.get("validation") or {}
+    gate = row.get("curriculum_gate") or {}
+    transition = row.get("curriculum_transition") or {}
     return {
         "epoch": row.get("epoch"),
         "step": row.get("global_step"),
