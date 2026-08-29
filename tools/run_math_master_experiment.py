@@ -150,6 +150,37 @@ def build_contract(
     }
 
 
+def build_smoke_contract(contract: dict) -> dict:
+    smoke_contract = copy.deepcopy(contract)
+    smoke_phase = copy.deepcopy(smoke_contract["phases"][0])
+    smoke_phase.update(
+        {
+            "minimum_epochs": 1,
+            "maximum_epochs": 1,
+            "advance_after_consecutive_passes": 1,
+            "stop_on_pass": True,
+            "minimum_generation_accuracy": 0.0,
+            "minimum_valid_rate": 0.0,
+            "minimum_generation_accuracy_by_family": {},
+            "minimum_generation_accuracy_by_operation": {},
+            "minimum_trace_exact_by_family": {},
+            "minimum_generation_accuracy_by_panel": {},
+            "minimum_valid_rate_by_panel": {},
+            "minimum_generation_accuracy_by_panel_family": {},
+        }
+    )
+    smoke_contract["phases"] = [smoke_phase]
+    smoke_contract["math_training"]["max_epochs"] = 1
+    smoke_contract["math_training"]["generation_validation"]["panels"] = [
+        {
+            **smoke_contract["math_training"]["generation_validation"]["panels"][0],
+            "examples": 2,
+            "max_new_tokens": 16,
+        }
+    ]
+    return smoke_contract
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build, start, or resume the compact local math master experiment"
@@ -210,31 +241,7 @@ def main() -> None:
     )
     max_batches = None
     if args.command == "smoke":
-        smoke_phase = copy.deepcopy(contract["phases"][0])
-        smoke_phase.update(
-            {
-                "minimum_epochs": 1,
-                "maximum_epochs": 1,
-                "advance_after_consecutive_passes": 1,
-                "stop_on_pass": True,
-                "minimum_generation_accuracy": 0.0,
-                "minimum_valid_rate": 0.0,
-                "minimum_generation_accuracy_by_family": {},
-                "minimum_trace_exact_by_family": {},
-                "minimum_generation_accuracy_by_panel": {},
-                "minimum_valid_rate_by_panel": {},
-                "minimum_generation_accuracy_by_panel_family": {},
-            }
-        )
-        contract["phases"] = [smoke_phase]
-        contract["math_training"]["max_epochs"] = 1
-        contract["math_training"]["generation_validation"]["panels"] = [
-            {
-                **contract["math_training"]["generation_validation"]["panels"][0],
-                "examples": 2,
-                "max_new_tokens": 16,
-            }
-        ]
+        contract = build_smoke_contract(contract)
         max_batches = 1
     config["math_training"]["max_epochs"] = contract["math_training"]["max_epochs"]
     artifact = Path(args.artifact + ("_smoke" if args.command == "smoke" else "")).resolve()

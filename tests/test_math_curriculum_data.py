@@ -20,7 +20,7 @@ from cftn_text.math_curriculum_data import (
 )
 from cftn_text.computation_supervision import ComputationCollator
 from cftn_text.tokenizer import ByteMathTokenizer
-from tools.run_math_master_experiment import build_contract
+from tools.run_math_master_experiment import build_contract, build_smoke_contract
 
 
 def _config() -> dict:
@@ -187,6 +187,31 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
     }
     assert contract["math_training"]["generation_validation"]["panels"][0]["max_new_tokens"] == 224
     assert contract["phases"][-1]["stop_on_pass"] is True
+
+
+def test_smoke_contract_disables_all_scientific_acceptance_gates() -> None:
+    splits = {}
+    for index, phase in enumerate(MASTER_PHASES):
+        splits[f"phase_{index:02d}_active"] = {"records": 8 * len(phase["criteria"])}
+        if index:
+            splits[f"phase_{index:02d}_retention"] = {
+                "records": sum(len(prior["criteria"]) for prior in MASTER_PHASES[:index])
+            }
+    contract = build_contract(
+        {
+            "phases": list(MASTER_PHASES),
+            "splits": splits,
+            "criterion_operations": {"1NPV-1": ["successor"]},
+        }
+    )
+
+    smoke = build_smoke_contract(contract)
+
+    assert len(smoke["phases"]) == 1
+    assert smoke["math_training"]["max_epochs"] == 1
+    assert smoke["phases"][0]["minimum_generation_accuracy_by_operation"] == {}
+    assert smoke["phases"][0]["minimum_generation_accuracy_by_family"] == {}
+    assert smoke["phases"][0]["minimum_generation_accuracy"] == 0.0
 
 
 def test_phase_one_generation_budget_covers_longest_procedural_target() -> None:
