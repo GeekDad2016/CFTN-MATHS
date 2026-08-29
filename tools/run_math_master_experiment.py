@@ -20,6 +20,7 @@ def build_contract(
     minimum_epochs_per_phase: int = 10,
     maximum_epochs_per_phase: int = 60,
     consecutive_passes: int = 2,
+    examples_per_epoch: int = 512,
 ) -> dict:
     if minimum_epochs_per_phase < 1:
         raise ValueError("minimum_epochs_per_phase must be positive")
@@ -27,6 +28,10 @@ def build_contract(
         raise ValueError("maximum_epochs_per_phase must be at least the minimum")
     if consecutive_passes < 1:
         raise ValueError("consecutive_passes must be positive")
+    if examples_per_epoch < 4 or examples_per_epoch % 4:
+        raise ValueError("examples_per_epoch must be a positive multiple of four")
+    active_examples = examples_per_epoch * 3 // 4
+    replay_examples = examples_per_epoch - active_examples
     phases = list(manifest["phases"])
     panels: list[dict] = []
     contract_phases: list[dict] = []
@@ -48,7 +53,7 @@ def build_contract(
         quota_groups = [
             {
                 "name": "active",
-                "examples": 96 if not prior else 72,
+                "examples": examples_per_epoch if not prior else active_examples,
                 "filters": {"families": active},
                 "balance_families": True,
             }
@@ -72,7 +77,7 @@ def build_contract(
             quota_groups.append(
                 {
                     "name": "cumulative_replay",
-                    "examples": 24,
+                    "examples": replay_examples,
                     "filters": {"families": list(prior)},
                     "balance_families": True,
                 }
@@ -122,7 +127,7 @@ def build_contract(
         },
         "curriculum": {
             "transition_policy": "competency_gated_v3",
-            "examples_per_epoch": 96,
+            "examples_per_epoch": examples_per_epoch,
         },
         "phases": contract_phases,
     }
@@ -137,9 +142,9 @@ def main() -> None:
     )
     parser.add_argument("--config", default="config/math_master_experiment_local.yaml")
     parser.add_argument("--dataset-config", default="config/math_master_experiment_v1.json")
-    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_v1")
+    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v1")
     parser.add_argument(
-        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_v1/run_long"
+        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v1/run"
     )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -184,6 +189,7 @@ def main() -> None:
         consecutive_passes=int(
             curriculum_settings.get("advance_after_consecutive_passes", 2)
         ),
+        examples_per_epoch=int(curriculum_settings.get("examples_per_epoch", 512)),
     )
     max_batches = None
     if args.command == "smoke":

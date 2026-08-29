@@ -84,6 +84,7 @@ def collect_snapshot(
             minimum_epochs_per_phase=int(curriculum.get("minimum_epochs_per_phase", 10)),
             maximum_epochs_per_phase=int(curriculum.get("maximum_epochs_per_phase", 60)),
             consecutive_passes=int(curriculum.get("advance_after_consecutive_passes", 2)),
+            examples_per_epoch=int(curriculum.get("examples_per_epoch", 512)),
         )
         if manifest.get("phases")
         else {"phases": []}
@@ -190,8 +191,8 @@ def make_handler(artifact: Path, manifest: Path, config: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact", default="C:/CFTN/artifacts/math_master_experiment_v1/run_long")
-    parser.add_argument("--manifest", default="C:/CFTN/.datasets/math_master_experiment_v1/manifest.json")
+    parser.add_argument("--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v1/run")
+    parser.add_argument("--manifest", default="C:/CFTN/.datasets/math_master_experiment_100k_v1/manifest.json")
     parser.add_argument("--config", default="config/math_master_experiment_local.yaml")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8789)

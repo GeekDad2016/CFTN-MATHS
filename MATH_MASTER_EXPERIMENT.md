@@ -1,9 +1,11 @@
-# Compact master mathematics curriculum experiment
+# Cumulative 100k master mathematics curriculum experiment
 
 This experiment exercises the complete curriculum mechanism on a local 12GB
-GPU without pretending to be the final large mathematics corpus. It contains a
-small representative shard at every level from KS1 through graduate mathematics
-and formal research preparation.
+GPU without pretending to be the final large mathematics corpus. It contains
+exactly 100,000 distinct canonical tower-training objects, plus 516 disjoint
+validation and 516 disjoint test objects, spanning KS1 through graduate
+mathematics and formal research preparation. Natural-language paraphrases are
+retained as dispatcher metadata rather than duplicated tower targets.
 
 The experiment has 15 ordered phases. The first five retain the detailed KS1
 progression. Later phases cover KS2, secondary mathematics, GCSE, A-level,
@@ -14,7 +16,7 @@ Every answer and structured derivation is recomputed by the dataset auditor.
 The research-preparation phase tests identities, counterexamples and invariants;
 it does not claim to train or evaluate novel open-problem research.
 
-Each phase-specific training view contains all of its small active shard plus
+Each phase-specific training view contains its active shard plus
 criterion-balanced replay from every earlier phase. Future-phase examples are
 present in separately sealed files but never appear in an active training view.
 Validation and test use unseen mathematical objects within each criterion's
@@ -36,14 +38,16 @@ Start or exactly resume the local CUDA experiment with one command:
 python -m tools.run_math_master_experiment auto
 ```
 
-Each phase now has a competency-gated budget of 10–60 epochs. It may advance
+Each phase has a competency-gated budget of 10–60 epochs. It may advance
 after the minimum only when every active and cumulative-retention gate passes
-twice consecutively. At 96 examples per epoch this provides up to 720 optimizer
-steps per phase on the local batch-size-8 configuration, while retaining early
+twice consecutively. Each epoch samples 512 objects: 100% active in phase 1,
+then 75% active and 25% criterion-balanced cumulative replay. This provides up
+to 3,840 optimizer steps per phase at batch size 8 while retaining early
 promotion when a phase is mastered sooner.
 
-The increased-budget experiment writes to `run_long`; the original eight-epoch
-failed-acceptance run remains preserved in `run` as evidence.
+The experiment writes under
+`C:\CFTN\artifacts\math_master_experiment_100k_v1`. Earlier small-corpus and
+failed-build artifacts remain preserved as evidence.
 
 The local read-only dashboard is available on the LAN at
 `http://192.168.1.128:8789/`. It refreshes every 30 seconds and reports the
@@ -58,6 +62,5 @@ python -m tools.run_math_master_experiment smoke
 
 The runner builds and audits missing data, uses an 8-layer 256-wide tower with
 batch size 8 and BF16, and resumes automatically when its artifact already has
-a compatible checkpoint. Each phase has at most eight epochs and needs two
-consecutive complete acceptance passes. It stops fail-closed at the first phase
-that reaches its cap without passing.
+a compatible checkpoint. It stops fail-closed at the first phase that reaches
+its cap without two consecutive complete acceptance passes.

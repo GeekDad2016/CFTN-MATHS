@@ -9,6 +9,7 @@ from cftn_text.math_curriculum_data import (
     FORMAT,
     MASTER_PHASES,
     PHASES,
+    _criterion_split_counts,
     audit_dataset,
     iter_phase_training_records,
     iter_phase_validation_records,
@@ -89,6 +90,15 @@ def test_phase_views_have_no_future_data_and_use_cumulative_replay() -> None:
             assert 0.70 <= active_fraction <= 0.80
 
 
+def test_small_mastered_domains_replay_deterministically_with_replacement() -> None:
+    config = _config()
+    config["replay_policy"] = {"active_fraction": 0.1, "prior_fraction": 0.9}
+    rows = list(iter_phase_training_records(config, 1))
+    prior = [row for row in rows if row["criterion_id"] in PHASES[0]["criteria"]]
+    assert len(prior) > len({row["record_id"] for row in prior})
+    assert prior == list(iter_phase_training_records(config, 1))[len(rows) - len(prior) :]
+
+
 def test_prepare_and_streaming_sqlite_audit(tmp_path: Path) -> None:
     manifest = prepare_dataset(_config(), tmp_path)
     assert manifest["audit"]["status"] == "passed"
@@ -149,9 +159,47 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
     assert sum(phase["maximum_epochs"] for phase in contract["phases"]) == 900
     assert all(phase["minimum_epochs"] == 10 for phase in contract["phases"])
     assert all(phase["maximum_epochs"] == 60 for phase in contract["phases"])
-    assert contract["phases"][1]["quota_groups"][0]["examples"] == 72
-    assert contract["phases"][1]["quota_groups"][1]["examples"] == 24
+    assert contract["phases"][1]["quota_groups"][0]["examples"] == 384
+    assert contract["phases"][1]["quota_groups"][1]["examples"] == 128
     assert contract["phases"][-1]["stop_on_pass"] is True
+
+
+def test_100k_experiment_allocates_exact_distinct_training_total() -> None:
+    config = json.loads(
+        (Path(__file__).parents[1] / "config" / "math_master_experiment_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    counts = _criterion_split_counts(config)
+    assert config["language_variants_per_object"] == 1
+    assert sum(value["train"] for value in counts.values()) == 100_000
+    assert sum(value["validation"] for value in counts.values()) == 12 * len(counts)
+    assert sum(value["test"] for value in counts.values()) == 12 * len(counts)
+    first_phase = MASTER_PHASES[0]["criteria"]
+    assert sum(counts[criterion]["train"] for criterion in first_phase) == 612
+
+
+def test_100k_experiment_has_no_object_or_prompt_collisions() -> None:
+    config = json.loads(
+        (Path(__file__).parents[1] / "config" / "math_master_experiment_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    objects: dict[str, str] = {}
+    prompts: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    for split in ("train", "validation", "test"):
+        count = 0
+        for record in iter_records(config, split):
+            object_id = record["math_object_id"]
+            prompt = record["natural_language_prompt"]
+            assert object_id not in objects, (object_id, objects[object_id], split)
+            assert prompt not in prompts, (prompt, prompts[prompt], split)
+            objects[object_id] = split
+            prompts[prompt] = split
+            count += 1
+        counts[split] = count
+    assert counts == {"train": 100_000, "validation": 516, "test": 516}
 
 
 def test_local_runner_phase_budget_is_configurable_and_validated() -> None:
@@ -164,11 +212,13 @@ def test_local_runner_phase_budget_is_configurable_and_validated() -> None:
         minimum_epochs_per_phase=4,
         maximum_epochs_per_phase=20,
         consecutive_passes=3,
+        examples_per_epoch=100,
     )
     phase = contract["phases"][0]
     assert phase["minimum_epochs"] == 4
     assert phase["maximum_epochs"] == 20
     assert phase["advance_after_consecutive_passes"] == 3
+    assert phase["quota_groups"][0]["examples"] == 100
     with pytest.raises(ValueError, match="at least the minimum"):
         build_contract(
             manifest,

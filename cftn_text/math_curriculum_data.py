@@ -8,6 +8,8 @@ import sqlite3
 import tempfile
 from collections import Counter
 from fractions import Fraction
+from functools import lru_cache
+from heapq import nsmallest
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -190,122 +192,128 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
             for quotient in range(1, 31):
                 yield {"type": "math_problem_v1", "op": "divide", "dividend": divisor * quotient, "divisor": divisor}
     elif criterion == "KS2-MULTI-DIGIT":
-        for index in range(80):
-            yield {"type": "math_problem_v1", "op": "add", "left": 120 + 7 * index, "right": 205 + 11 * index}
+        for left in range(100, 300):
+            for right in range(100, 200):
+                yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
     elif criterion == "KS2-LONG-MULTIPLY":
-        for left in range(12, 32):
-            for right in range(3, 8):
+        for left in range(100, 500):
+            for right in range(10, 60):
                 yield {"type": "math_problem_v1", "op": "multiply", "left": left, "right": right}
     elif criterion == "KS2-EXACT-DIVIDE":
-        for divisor in (3, 4, 6, 7, 8, 9, 11, 12):
-            for quotient in range(20, 41):
+        for divisor in range(2, 52):
+            for quotient in range(2, 402):
+                # Earlier KS1/KS2 multiplication-table division is replayed,
+                # not relabelled as a new KS2 long-division object.
+                if divisor in {2, 5, 10} and quotient <= 30:
+                    continue
                 yield {"type": "math_problem_v1", "op": "divide", "dividend": divisor * quotient, "divisor": divisor}
     elif criterion == "KS2-FRACTION-ADD":
-        for denominator in range(2, 13):
+        for denominator in range(2, 51):
             for left in range(1, denominator):
                 for right in range(1, denominator):
                     yield {"type": "math_problem_v1", "op": "fraction_add", "left": [left, denominator], "right": [right, denominator]}
     elif criterion == "KS2-PERCENT":
-        for percent in (5, 10, 20, 25, 50, 75):
-            for base in range(20, 201, 20):
+        for percent in range(1, 101):
+            for base in range(10, 1001, 10):
                 yield {"type": "math_problem_v1", "op": "percent_of", "percent": percent, "base": base}
     elif criterion == "KS2-RECTANGLE":
-        for width in range(2, 13):
-            for height in range(2, 13):
+        for width in range(2, 102):
+            for height in range(2, 102):
                 yield {"type": "math_problem_v1", "op": "rectangle_area", "width": width, "height": height}
     elif criterion == "KS3-LINEAR":
-        for coefficient in range(2, 10):
-            for solution in range(-8, 9):
+        for coefficient in range(2, 30):
+            for solution in range(-100, 101):
                 constant = 3 * solution - 5
                 yield {"type": "math_problem_v1", "op": "linear_solve", "a": coefficient, "b": constant - coefficient * solution, "c": constant}
     elif criterion == "KS3-POWERS":
-        for base in range(-5, 6):
-            for exponent in range(2, 6):
+        for base in range(-50, 51):
+            for exponent in range(2, 13):
                 yield {"type": "math_problem_v1", "op": "power", "base": base, "exponent": exponent}
     elif criterion == "KS3-PYTHAGORAS":
-        for scale in range(1, 21):
+        for scale in range(1, 1001):
             for triple in ((3, 4, 5), (5, 12, 13), (8, 15, 17)):
                 yield {"type": "math_problem_v1", "op": "pythagoras", "a": triple[0] * scale, "b": triple[1] * scale}
     elif criterion == "GCSE-QUADRATIC":
-        for root1 in range(-8, 9):
-            for root2 in range(root1, 9):
+        for root1 in range(-50, 51):
+            for root2 in range(root1, 51):
                 yield {"type": "math_problem_v1", "op": "quadratic_roots", "b": -(root1 + root2), "c": root1 * root2}
     elif criterion == "GCSE-SIMULTANEOUS":
-        for x in range(-6, 7):
-            for y in range(-6, 7):
+        for x in range(-50, 51):
+            for y in range(-50, 51):
                 yield {"type": "math_problem_v1", "op": "simultaneous_solve", "equations": [[1, 1, x + y], [2, -1, 2 * x - y]]}
     elif criterion == "GCSE-SEQUENCE":
-        for first in range(-10, 11):
-            for difference in range(1, 8):
-                for index in range(5, 10):
+        for first in range(-50, 50):
+            for difference in range(1, 21):
+                for index in range(5, 15):
                     yield {"type": "math_problem_v1", "op": "arithmetic_sequence", "first": first, "difference": difference, "index": index}
     elif criterion == "AL-DIFFERENTIATE":
-        for coefficient in range(1, 10):
-            for power in range(2, 8):
+        for coefficient in range(1, 301):
+            for power in range(2, 13):
                 yield {"type": "math_problem_v1", "op": "differentiate_monomial", "coefficient": coefficient, "power": power}
     elif criterion == "AL-INTEGRATE":
-        for coefficient in range(1, 10):
-            for power in range(1, 7):
+        for coefficient in range(1, 301):
+            for power in range(1, 12):
                 yield {"type": "math_problem_v1", "op": "integrate_monomial", "coefficient": coefficient * (power + 1), "power": power}
     elif criterion in {"AL-BINOMIAL-COEFFICIENT", "AL-COMBINATION"}:
-        for n in range(5, 21):
-            for k in range(1, min(n, 8)):
+        for n in range(5, 301):
+            for k in range(1, min(n, 20)):
                 yield {"type": "math_problem_v1", "op": "binomial_coefficient" if criterion == "AL-BINOMIAL-COEFFICIENT" else "combination", "n": n, "k": k}
     elif criterion == "AL-BINOMIAL-PROB":
-        for trials in range(3, 11):
+        for trials in range(3, 101):
             for successes in range(trials + 1):
                 yield {"type": "math_problem_v1", "op": "binomial_probability_half", "trials": trials, "successes": successes}
     elif criterion == "AL-SUVAT":
-        for initial in range(-5, 11):
-            for acceleration in range(1, 6):
-                for time in range(1, 8):
+        for initial in range(-50, 50):
+            for acceleration in range(1, 11):
+                for time in range(1, 21):
                     yield {"type": "math_problem_v1", "op": "constant_acceleration", "u": initial, "a": acceleration, "t": time}
     elif criterion == "UG-MATRIX-DET":
-        for a in range(-4, 5):
-            for b in range(-3, 4):
-                for c in range(-2, 3):
+        for a in range(-10, 10):
+            for b in range(-20, 20):
+                for c in range(-12, 13):
                     yield {"type": "math_problem_v1", "op": "matrix_det_2x2", "matrix": [[a, b], [c, a + 1]]}
     elif criterion == "UG-MATRIX-SOLVE":
-        for x in range(-5, 6):
-            for y in range(-5, 6):
+        for x in range(-50, 51):
+            for y in range(-50, 51):
                 yield {"type": "math_problem_v1", "op": "simultaneous_solve", "equations": [[2, 1, 2 * x + y], [1, -1, x - y]]}
     elif criterion == "UG-POLYNOMIAL-LIMIT":
-        for point in range(-5, 6):
-            for slope in range(1, 9):
+        for point in range(-100, 101):
+            for slope in range(1, 51):
                 yield {"type": "math_problem_v1", "op": "cancelled_linear_limit", "point": point, "slope": slope}
     elif criterion == "UG-MOD-INVERSE":
-        for modulus in (7, 11, 13, 17, 19, 23, 29):
+        for modulus in range(3, 301):
             for value in range(2, modulus):
-                yield {"type": "math_problem_v1", "op": "mod_inverse", "value": value, "modulus": modulus}
+                if math.gcd(value, modulus) == 1:
+                    yield {"type": "math_problem_v1", "op": "mod_inverse", "value": value, "modulus": modulus}
     elif criterion == "UG-PERMUTATIONS":
-        for n in range(5, 15):
-            for k in range(2, min(n, 7)):
+        for n in range(5, 301):
+            for k in range(2, min(n, 20)):
                 yield {"type": "math_problem_v1", "op": "permutation", "n": n, "k": k}
     elif criterion == "UG-EXPECTATION":
-        for maximum in range(3, 21):
+        for maximum in range(3, 5001):
             yield {"type": "math_problem_v1", "op": "uniform_expectation", "minimum": 1, "maximum": maximum}
-        for maximum in range(3, 21):
+        for maximum in range(3, 5001):
             yield {"type": "math_problem_v1", "op": "uniform_expectation", "minimum": -maximum, "maximum": maximum}
     elif criterion == "GRAD-SERIES-RADIUS":
-        for base in range(2, 31):
+        for base in range(2, 5002):
             yield {"type": "math_problem_v1", "op": "geometric_series_radius", "coefficient_base": base}
     elif criterion == "GRAD-CYCLIC-ORDER":
-        for modulus in range(8, 41):
+        for modulus in range(8, 209):
             for element in range(1, modulus):
                 yield {"type": "math_problem_v1", "op": "cyclic_element_order", "element": element, "modulus": modulus}
     elif criterion == "GRAD-EIGEN-SPECTRUM":
-        for left in range(-8, 9):
-            for right in range(left, 9):
+        for left in range(-100, 101):
+            for right in range(left, 101):
                 yield {"type": "math_problem_v1", "op": "triangular_eigenvalues", "matrix": [[left, 1], [0, right]]}
     elif criterion == "FORMAL-POLY-IDENTITY":
-        for a in range(-8, 9):
-            for b in range(-8, 9):
+        for a in range(-70, 70):
+            for b in range(-70, 70):
                 yield {"type": "math_problem_v1", "op": "square_identity", "a": a, "b": b}
     elif criterion == "FORMAL-COUNTEREXAMPLE":
-        for value in range(2, 80):
+        for value in range(2, 5002):
             yield {"type": "math_problem_v1", "op": "odd_square_counterexample", "value": value}
     elif criterion == "FORMAL-EUCLID-INVARIANT":
-        for a in range(10, 60):
+        for a in range(10, 500):
             for b in range(2, a):
                 yield {"type": "math_problem_v1", "op": "euclid_gcd_invariant", "a": a, "b": b}
     else:
@@ -549,6 +557,7 @@ def _records_for_object(
     math_ir: dict[str, Any],
     phase_index: int,
     phases: tuple[dict[str, Any], ...] = PHASES,
+    language_variants_per_object: int = 2,
 ) -> Iterator[dict[str, Any]]:
     answer, derivation = solve_math_ir(math_ir)
     math_ir_text = canonical_json(math_ir)
@@ -556,7 +565,9 @@ def _records_for_object(
     object_id = _sha(math_ir)
     phase = phases[phase_index]
     prompts = _language_prompts(math_ir)
-    for variant, prompt in enumerate(prompts):
+    if not 1 <= language_variants_per_object <= len(prompts):
+        raise ValueError("language_variants_per_object exceeds available prompts")
+    for variant, prompt in enumerate(prompts[:language_variants_per_object]):
         dispatcher_target = {
             "route": "math",
             "criterion_id": criterion,
@@ -600,35 +611,114 @@ def _records_for_object(
         )
 
 
-def _split_objects(
-    criterion: str, split_object_counts: dict[str, int], seed: int
-) -> dict[str, list[dict[str, Any]]]:
-    candidates = list(_candidate_irs(criterion))
+@lru_cache(maxsize=None)
+def _candidate_capacity(criterion: str) -> int:
+    return sum(1 for _ in _candidate_irs(criterion))
+
+
+def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]:
+    phases = phases_for_config(config)
+    criteria = [criterion for phase in phases for criterion in phase["criteria"]]
+    total_records = config.get("total_train_records")
+    if total_records is None:
+        uniform = {
+            name: int(config["objects_per_criterion"][name]) for name in SPLITS
+        }
+        return {criterion: dict(uniform) for criterion in criteria}
+    variants = int(config.get("language_variants_per_object", 1))
+    if int(total_records) % variants:
+        raise ValueError("total_train_records must be divisible by language variants")
+    target = int(total_records) // variants
+    validation = int(config["objects_per_criterion"]["validation"])
+    test = int(config["objects_per_criterion"]["test"])
+    available = {
+        criterion: _candidate_capacity(criterion) - validation - test
+        for criterion in criteria
+    }
+    if any(value < 1 for value in available.values()):
+        short = [criterion for criterion, value in available.items() if value < 1]
+        raise ValueError(f"criteria lack split capacity: {short}")
+    if sum(available.values()) < target:
+        raise ValueError(
+            f"candidate capacity {sum(available.values())} is below requested {target}"
+        )
+    train = {criterion: 0 for criterion in criteria}
+    remaining = target
+    while remaining:
+        eligible = [criterion for criterion in criteria if train[criterion] < available[criterion]]
+        if not eligible:
+            raise RuntimeError("training allocation exhausted unexpectedly")
+        share = max(1, remaining // len(eligible))
+        progressed = 0
+        for criterion in eligible:
+            count = min(share, available[criterion] - train[criterion], remaining)
+            train[criterion] += count
+            remaining -= count
+            progressed += count
+            if not remaining:
+                break
+        if not progressed:
+            raise RuntimeError("training allocation made no progress")
+    return {
+        criterion: {"train": train[criterion], "validation": validation, "test": test}
+        for criterion in criteria
+    }
+
+
+@lru_cache(maxsize=None)
+def _split_objects_cached(
+    criterion: str,
+    train_count: int,
+    validation_count: int,
+    test_count: int,
+    seed: int,
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    split_object_counts = {
+        "train": train_count,
+        "validation": validation_count,
+        "test": test_count,
+    }
     required = sum(split_object_counts.values())
+    candidates = nsmallest(
+        required,
+        _candidate_irs(criterion),
+        key=lambda item: _sha([seed, criterion, item]),
+    )
     if len(candidates) < required:
         raise ValueError(
             f"criterion {criterion} has {len(candidates)} objects, needs {required}"
         )
-    candidates.sort(key=lambda item: _sha([seed, criterion, item]))
-    output: dict[str, list[dict[str, Any]]] = {}
+    output: dict[str, tuple[dict[str, Any], ...]] = {}
     offset = 0
     for split in SPLITS:
         count = int(split_object_counts[split])
-        output[split] = candidates[offset : offset + count]
+        output[split] = tuple(candidates[offset : offset + count])
         offset += count
     return output
+
+
+def _split_objects(
+    criterion: str, split_object_counts: dict[str, int], seed: int
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    return _split_objects_cached(
+        criterion,
+        int(split_object_counts["train"]),
+        int(split_object_counts["validation"]),
+        int(split_object_counts["test"]),
+        int(seed),
+    )
 
 
 def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]:
     if split not in SPLITS:
         raise ValueError(f"unsupported split: {split}")
     seed = int(config["seed"])
-    split_object_counts = {
-        name: int(config["objects_per_criterion"][name]) for name in SPLITS
-    }
     phases = phases_for_config(config)
+    counts_by_criterion = _criterion_split_counts(config)
+    variants = int(config.get("language_variants_per_object", 2))
     for phase_index, phase in enumerate(phases):
         for criterion in phase["criteria"]:
+            split_object_counts = counts_by_criterion[criterion]
             objects = _split_objects(criterion, split_object_counts, seed)[split]
             for math_ir in objects:
                 yield from _records_for_object(
@@ -637,6 +727,7 @@ def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]
                     math_ir=math_ir,
                     phase_index=phase_index,
                     phases=phases,
+                    language_variants_per_object=variants,
                 )
 
 
@@ -674,9 +765,13 @@ def iter_phase_training_records(
         count = base + (1 if criterion_index < remainder else 0)
         rows = rows_by_criterion[criterion]
         rows.sort(key=lambda record: _sha([config["seed"], phase_index, record["record_id"]]))
-        if count > len(rows):
-            raise ValueError(f"not enough replay rows for criterion {criterion}")
-        yield from rows[:count]
+        if not rows:
+            raise ValueError(f"no replay rows for criterion {criterion}")
+        # Replay is intentionally sampled with replacement. Small, already
+        # mastered domains (for example bounded KS1 number bonds) may contain
+        # fewer distinct objects than their fair cumulative replay quota.
+        for index in range(count):
+            yield rows[index % len(rows)]
 
 
 def iter_phase_validation_records(
@@ -790,12 +885,16 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
         "generator_sha256": file_sha256(Path(__file__)),
         "seed": int(config["seed"]),
         "objects_per_criterion": config["objects_per_criterion"],
-        "language_variants_per_object": 2,
+        "criterion_split_object_counts": _criterion_split_counts(config),
+        "language_variants_per_object": int(
+            config.get("language_variants_per_object", 2)
+        ),
         "phases": list(phases),
         "replay_policy": {
             "active_fraction": float(config["replay_policy"]["active_fraction"]),
             "prior_fraction": float(config["replay_policy"]["prior_fraction"]),
             "prior_sampling": "criterion_balanced_all_accepted_phases",
+            "prior_replacement": "deterministic_cycle_when_quota_exceeds_domain",
             "future_phase_exposure": "forbidden",
         },
         "files": files,
