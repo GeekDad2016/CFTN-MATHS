@@ -431,10 +431,38 @@ def math_epoch_dataset(
                 for index, family in enumerate(sorted(families)):
                     family_pool = families[family]
                     count = requested // len(families) + int(index < requested % len(families))
-                    sampled.extend(rng.sample(family_pool, min(count, len(family_pool))))
-                    extra = max(0, count - len(family_pool))
-                    sampled.extend(rng.choice(family_pool) for _ in range(extra))
-                    replacement_examples += extra
+                    if bool(group.get("balance_operations_within_families", False)):
+                        operations: dict[str, list[dict[str, Any]]] = {}
+                        for record in family_pool:
+                            operation = str(record.get("operation", "")).strip()
+                            if not operation:
+                                raise ValueError(
+                                    "operation-balanced curriculum rows require operation"
+                                )
+                            operations.setdefault(operation, []).append(record)
+                        for operation_index, operation in enumerate(sorted(operations)):
+                            operation_pool = operations[operation]
+                            operation_count = count // len(operations) + int(
+                                operation_index < count % len(operations)
+                            )
+                            sampled.extend(
+                                rng.sample(
+                                    operation_pool,
+                                    min(operation_count, len(operation_pool)),
+                                )
+                            )
+                            extra = max(0, operation_count - len(operation_pool))
+                            sampled.extend(
+                                rng.choice(operation_pool) for _ in range(extra)
+                            )
+                            replacement_examples += extra
+                    else:
+                        sampled.extend(
+                            rng.sample(family_pool, min(count, len(family_pool)))
+                        )
+                        extra = max(0, count - len(family_pool))
+                        sampled.extend(rng.choice(family_pool) for _ in range(extra))
+                        replacement_examples += extra
             elif requested <= len(pool):
                 sampled = rng.sample(pool, requested)
             else:
@@ -450,6 +478,13 @@ def math_epoch_dataset(
                 "replacement_examples": replacement_examples,
                 "sampling_with_replacement": replacement_examples > 0,
                 "family_counts": dict(sorted(Counter(str(row.get("family", "unknown")) for row in sampled).items())),
+                "operation_counts": dict(
+                    sorted(
+                        Counter(
+                            str(row.get("operation", "unknown")) for row in sampled
+                        ).items()
+                    )
+                ),
             }
         rng.shuffle(epoch_records)
         metadata = {
@@ -463,6 +498,14 @@ def math_epoch_dataset(
             "quota_groups": group_sampling,
             "sampled_source_counts": dict(sorted(Counter(str(row.get("source", "unknown")) for row in epoch_records).items())),
             "sampled_family_counts": dict(sorted(Counter(str(row.get("family", "unknown")) for row in epoch_records).items())),
+            "sampled_operation_counts": dict(
+                sorted(
+                    Counter(
+                        str(row.get("operation", "unknown"))
+                        for row in epoch_records
+                    ).items()
+                )
+            ),
         }
         return EquationDataset(epoch_records), metadata
     source_quotas = (
@@ -1121,7 +1164,7 @@ def _phase_generation_acceptance(
     add_check("primary_generation_accuracy", primary.get("accuracy", 0.0), minimum_accuracy)
     add_check("primary_valid_rate", primary.get("valid_rate", 0.0), minimum_valid_rate)
 
-    for dimension in ("source", "family", "difficulty"):
+    for dimension in ("source", "family", "difficulty", "operation"):
         threshold_key = f"minimum_generation_accuracy_by_{dimension}"
         configured = phase.get(threshold_key, {})
         if not isinstance(configured, dict):
@@ -1509,6 +1552,10 @@ def train_math_tower(
             capacity_expansion["target_layers"]
         )
     model = build_math_tower(effective_config).to(device)
+    phase_local_optimization = dict(
+        contract.get("curriculum", {}).get("phase_local_optimization", {})
+    )
+    phase_local_enabled = bool(phase_local_optimization.get("enabled", False))
     optimizer = AdamW(
         model.parameters(),
         lr=float(settings["learning_rate"]),
@@ -1522,12 +1569,31 @@ def train_math_tower(
     steps_per_epoch = max(
         1, math.ceil(scheduled_examples / int(settings["batch_size"]))
     )
-    total_steps = int(settings["max_epochs"]) * steps_per_epoch
+    phase_maximum_epochs = max(
+        (int(phase.get("maximum_epochs", 1)) for phase in phases),
+        default=int(settings["max_epochs"]),
+    )
+    total_steps = (
+        phase_maximum_epochs * steps_per_epoch
+        if phase_local_enabled
+        else int(settings["max_epochs"]) * steps_per_epoch
+    )
+    scheduler_warmup_fraction = (
+        float(phase_local_optimization.get("warmup_epochs", 0))
+        / max(1, phase_maximum_epochs)
+        if phase_local_enabled
+        else float(settings["warmup_fraction"])
+    )
+    scheduler_minimum_learning_rate = (
+        float(phase_local_optimization["minimum_learning_rate"])
+        if phase_local_enabled
+        else float(settings["minimum_learning_rate"])
+    )
     scheduler = make_scheduler(
         optimizer,
         total_steps=total_steps,
-        warmup_fraction=float(settings["warmup_fraction"]),
-        minimum_ratio=float(settings["minimum_learning_rate"])
+        warmup_fraction=scheduler_warmup_fraction,
+        minimum_ratio=scheduler_minimum_learning_rate
         / float(settings["learning_rate"]),
     )
     dtype = precision_dtype(settings["precision"], device)
@@ -1538,6 +1604,7 @@ def train_math_tower(
     best_checkpoint_metric: float | None = None
     patience = 0
     source_provenance: dict[str, Any] | None = None
+    optimizer_phase_name: str | None = None
     if resume and initial_checkpoint is not None:
         raise ValueError("resume and initial_checkpoint are mutually exclusive")
     if initial_checkpoint is not None:
@@ -1610,6 +1677,9 @@ def train_math_tower(
                     saved_curriculum_state["consecutive_passes"]
                 ),
             }
+            optimizer_phase_name = checkpoint.get("extra", {}).get(
+                "optimizer_phase_name"
+            )
     preservation_settings = dict(contract.get("preservation_distillation") or {})
     preservation_teacher: MathTower | None = None
     preservation_sources = {
@@ -1932,6 +2002,24 @@ def train_math_tower(
                 )
                 phase_epoch = None
             phase_name = str(phase["name"]) if phase is not None else None
+            phase_optimizer_reset = False
+            if phase_local_enabled and optimizer_phase_name != phase_name:
+                if optimizer_phase_name is not None:
+                    optimizer = AdamW(
+                        model.parameters(),
+                        lr=float(settings["learning_rate"]),
+                        weight_decay=float(settings["weight_decay"]),
+                    )
+                    scheduler = make_scheduler(
+                        optimizer,
+                        total_steps=total_steps,
+                        warmup_fraction=scheduler_warmup_fraction,
+                        minimum_ratio=scheduler_minimum_learning_rate
+                        / float(settings["learning_rate"]),
+                    )
+                    scaler = make_scaler(device, dtype)
+                    phase_optimizer_reset = True
+                optimizer_phase_name = phase_name
             if phase_name != active_phase_name:
                 best_metric = float("-inf")
                 patience = 0
@@ -2227,6 +2315,13 @@ def train_math_tower(
                 "preservation_weight": preservation_weight,
                 "preservation_sources": sorted(preservation_sources),
                 "learning_rate": optimizer.param_groups[0]["lr"],
+                "phase_local_optimization": {
+                    "enabled": phase_local_enabled,
+                    "optimizer_reset_this_epoch": phase_optimizer_reset,
+                    "optimizer_phase": optimizer_phase_name,
+                    "warmup_epochs": phase_local_optimization.get("warmup_epochs"),
+                    "minimum_learning_rate": scheduler_minimum_learning_rate,
+                },
                 "validation": validation,
                 "selection_metric": selection_metric,
                 "selection_basis": selection_basis,
@@ -2314,6 +2409,7 @@ def train_math_tower(
                         if competency_curriculum_enabled
                         else None
                     ),
+                    "optimizer_phase_name": optimizer_phase_name,
                 },
             )
             checkpoint_path = work_dir / f"checkpoint_epoch_{epoch:04d}.pth"

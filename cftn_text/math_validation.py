@@ -180,12 +180,24 @@ def evaluate_generation_panel(
               for d in terminations] if require_eos else [True] * len(generations))
     metrics, correctness = score_v2_generations([g if ok else "" for g, ok in zip(generations, clean)], eligible)
     trace_groups = defaultdict(lambda: {"examples": 0, "correct": 0})
+    operation_groups = defaultdict(lambda: {"examples": 0, "correct": 0})
     for record, generation, ok in zip(eligible, generations, clean):
         group = trace_groups[str(record.get("family", "unknown"))]
         group["examples"] += 1
         group["correct"] += int(ok and generation.strip() == str(record.get("target_trace", "")))
+    for record, correct in zip(eligible, correctness):
+        group = operation_groups[str(record.get("operation", "unknown"))]
+        group["examples"] += 1
+        group["correct"] += int(correct)
     trace_exact = {name: {**group, "rate": group["correct"] / max(1, group["examples"])}
                    for name, group in trace_groups.items()}
+    by_operation = {
+        name: {
+            **group,
+            "accuracy": group["correct"] / max(1, group["examples"]),
+        }
+        for name, group in operation_groups.items()
+    }
     rows = []
     for record, generation, correct in zip(eligible, generations, correctness):
         rows.append(
@@ -193,6 +205,7 @@ def evaluate_generation_panel(
                 "record_id": record.get("record_id", record.get("content_id")),
                 "source": record.get("source"),
                 "family": record.get("family"),
+                "operation": record.get("operation"),
                 "difficulty": record.get("difficulty"),
                 "problem": record.get("problem"),
                 "expected_answer": record.get("normalized_answer"),
@@ -211,6 +224,7 @@ def evaluate_generation_panel(
     elapsed = time.time() - started_at
     return {
         **metrics,
+        "by_operation": by_operation,
         "trace_exact_by_family": trace_exact,
         "require_eos": require_eos,
         "unclean_terminations": len(clean) - sum(clean),

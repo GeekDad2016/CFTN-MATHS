@@ -33,6 +33,10 @@ def build_contract(
     active_examples = examples_per_epoch * 3 // 4
     replay_examples = examples_per_epoch - active_examples
     phases = list(manifest["phases"])
+    criterion_operations = {
+        str(criterion): [str(operation) for operation in operations]
+        for criterion, operations in manifest.get("criterion_operations", {}).items()
+    }
     panels: list[dict] = []
     contract_phases: list[dict] = []
     prior: list[str] = []
@@ -56,6 +60,7 @@ def build_contract(
                 "examples": examples_per_epoch if not prior else active_examples,
                 "filters": {"families": active},
                 "balance_families": True,
+                "balance_operations_within_families": True,
             }
         ]
         minimum_by_panel = {active_name: 0.85}
@@ -80,6 +85,7 @@ def build_contract(
                     "examples": replay_examples,
                     "filters": {"families": list(prior)},
                     "balance_families": True,
+                    "balance_operations_within_families": True,
                 }
             )
             minimum_by_panel[retention_name] = 1.0
@@ -100,6 +106,11 @@ def build_contract(
                 "minimum_valid_rate": 0.95,
                 "minimum_generation_accuracy_by_family": {
                     criterion: 0.75 for criterion in active
+                },
+                "minimum_generation_accuracy_by_operation": {
+                    operation: 0.75
+                    for criterion in active
+                    for operation in criterion_operations.get(criterion, [])
                 },
                 "minimum_trace_exact_by_family": {
                     criterion: 0.70 for criterion in active
@@ -128,6 +139,12 @@ def build_contract(
         "curriculum": {
             "transition_policy": "competency_gated_v3",
             "examples_per_epoch": examples_per_epoch,
+            "phase_local_optimization": {
+                "enabled": True,
+                "reset_optimizer": True,
+                "warmup_epochs": 3,
+                "minimum_learning_rate": 3e-5,
+            },
         },
         "phases": contract_phases,
     }
@@ -142,9 +159,9 @@ def main() -> None:
     )
     parser.add_argument("--config", default="config/math_master_experiment_local.yaml")
     parser.add_argument("--dataset-config", default="config/math_master_experiment_v1.json")
-    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v2")
+    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v3")
     parser.add_argument(
-        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v2/run"
+        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v3/run"
     )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()

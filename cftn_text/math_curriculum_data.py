@@ -198,7 +198,7 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
             for right in range(10, 100):
                 if left + right <= 100:
                     yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
-                if left >= right:
+                if left >= right and (left, right) != (10, 10):
                     yield {"type": "math_problem_v1", "op": "subtract", "left": left, "right": right}
     elif criterion == "2MD-1":
         for factor in (2, 5, 10):
@@ -624,6 +624,7 @@ def _records_for_object(
         dispatcher_target = {
             "route": "math",
             "criterion_id": criterion,
+            "operation": str(math_ir["op"]),
             "math_ir": math_ir,
         }
         extras = {
@@ -635,6 +636,7 @@ def _records_for_object(
             "answer": answer,
             "verifier_spec": {"kind": "exact_math_ir_v1", "math_ir": math_ir},
             "criterion_id": criterion,
+            "operation": str(math_ir["op"]),
             "curriculum_phase": phase["name"],
             "curriculum_phase_index": phase_index,
             "prerequisite_ids": _phase_prerequisites(phase_index, phases),
@@ -667,6 +669,11 @@ def _records_for_object(
 @lru_cache(maxsize=None)
 def _candidate_capacity(criterion: str) -> int:
     return sum(1 for _ in _candidate_irs(criterion))
+
+
+@lru_cache(maxsize=None)
+def _criterion_operations(criterion: str) -> tuple[str, ...]:
+    return tuple(sorted({str(item["op"]) for item in _candidate_irs(criterion)}))
 
 
 def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]:
@@ -726,27 +733,37 @@ def _split_objects_cached(
     test_count: int,
     seed: int,
 ) -> dict[str, tuple[dict[str, Any], ...]]:
-    split_object_counts = {
-        "train": train_count,
-        "validation": validation_count,
-        "test": test_count,
-    }
-    required = sum(split_object_counts.values())
-    candidates = nsmallest(
-        required,
-        _candidate_irs(criterion),
-        key=lambda item: _sha([seed, criterion, item]),
-    )
-    if len(candidates) < required:
-        raise ValueError(
-            f"criterion {criterion} has {len(candidates)} objects, needs {required}"
-        )
+    operations = _criterion_operations(criterion)
     output: dict[str, tuple[dict[str, Any], ...]] = {}
-    offset = 0
-    for split in SPLITS:
-        count = int(split_object_counts[split])
-        output[split] = tuple(candidates[offset : offset + count])
-        offset += count
+    held_out_ids: set[str] = set()
+    for split, total in (("validation", validation_count), ("test", test_count)):
+        selected: list[dict[str, Any]] = []
+        for index, operation in enumerate(operations):
+            count = total // len(operations) + int(index < total % len(operations))
+            operation_rows = nsmallest(
+                count,
+                (
+                    item
+                    for item in _candidate_irs(criterion)
+                    if str(item["op"]) == operation and _sha(item) not in held_out_ids
+                ),
+                key=lambda item: _sha([seed, criterion, split, operation, item]),
+            )
+            if len(operation_rows) < count:
+                raise ValueError(
+                    f"criterion {criterion} operation {operation} lacks {split} capacity"
+                )
+            selected.extend(operation_rows)
+            held_out_ids.update(_sha(item) for item in operation_rows)
+        output[split] = tuple(selected)
+    train = nsmallest(
+        train_count,
+        (item for item in _candidate_irs(criterion) if _sha(item) not in held_out_ids),
+        key=lambda item: _sha([seed, criterion, "train", item]),
+    )
+    if len(train) < train_count:
+        raise ValueError(f"criterion {criterion} lacks train capacity")
+    output["train"] = tuple(train)
     return output
 
 
@@ -939,6 +956,11 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
         "seed": int(config["seed"]),
         "objects_per_criterion": config["objects_per_criterion"],
         "criterion_split_object_counts": _criterion_split_counts(config),
+        "criterion_operations": {
+            criterion: list(_criterion_operations(criterion))
+            for phase in phases
+            for criterion in phase["criteria"]
+        },
         "language_variants_per_object": int(
             config.get("language_variants_per_object", 2)
         ),

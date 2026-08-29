@@ -1,8 +1,8 @@
 project:
   name: cftn_math_master_experiment_local
   seed: 29082026
-  artifact_root: ${CFTN_ARTIFACT_ROOT:-C:/CFTN/artifacts/math_master_experiment_100k_v2}
-  data_root: ${CFTN_DATA_ROOT:-C:/CFTN/.datasets/math_master_experiment_100k_v2}
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-C:/CFTN/artifacts/math_master_experiment_100k_v3}
+  data_root: ${CFTN_DATA_ROOT:-C:/CFTN/.datasets/math_master_experiment_100k_v3}
 
 data:
   format: cftn_canonical_math_curriculum_v1

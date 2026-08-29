@@ -45,8 +45,14 @@ then 75% active and 25% criterion-balanced cumulative replay. This provides up
 to 3,840 optimizer steps per phase at batch size 8 while retaining early
 promotion when a phase is mastered sooner.
 
+Sampling is hierarchical: criteria are balanced first, then operations within
+each criterion. Every phase starts a fresh optimizer and a phase-local cosine
+schedule with a three-epoch warmup from zero to `3e-4`, decaying to `3e-5` by
+epoch 60. Model weights carry forward; optimizer momentum does not. Active
+validation is deterministically stratified by operation as well as criterion.
+
 The experiment writes under
-`C:\CFTN\artifacts\math_master_experiment_100k_v2`. Earlier small-corpus and
+`C:\CFTN\artifacts\math_master_experiment_100k_v3`. Earlier small-corpus and
 failed-build artifacts remain preserved as evidence.
 
 The local read-only dashboard is available on the LAN at

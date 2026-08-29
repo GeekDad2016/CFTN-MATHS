@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -154,13 +155,36 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
             splits[f"phase_{index:02d}_retention"] = {
                 "records": sum(len(prior["criteria"]) for prior in MASTER_PHASES[:index])
             }
-    contract = build_contract({"phases": list(MASTER_PHASES), "splits": splits})
+    criterion_operations = {
+        "1NPV-1": ["missing_count_sequence", "predecessor", "successor"],
+        "1NPV-2": ["compare"],
+        "1AS-1": ["compose", "compose_three"],
+    }
+    contract = build_contract(
+        {
+            "phases": list(MASTER_PHASES),
+            "splits": splits,
+            "criterion_operations": criterion_operations,
+        }
+    )
     assert len(contract["phases"]) == 15
     assert sum(phase["maximum_epochs"] for phase in contract["phases"]) == 900
     assert all(phase["minimum_epochs"] == 10 for phase in contract["phases"])
     assert all(phase["maximum_epochs"] == 60 for phase in contract["phases"])
     assert contract["phases"][1]["quota_groups"][0]["examples"] == 384
     assert contract["phases"][1]["quota_groups"][1]["examples"] == 128
+    assert all(
+        group["balance_operations_within_families"]
+        for phase in contract["phases"]
+        for group in phase["quota_groups"]
+    )
+    assert contract["phases"][0]["minimum_generation_accuracy_by_operation"]
+    assert contract["curriculum"]["phase_local_optimization"] == {
+        "enabled": True,
+        "reset_optimizer": True,
+        "warmup_epochs": 3,
+        "minimum_learning_rate": 3e-5,
+    }
     assert contract["math_training"]["generation_validation"]["panels"][0]["max_new_tokens"] == 224
     assert contract["phases"][-1]["stop_on_pass"] is True
 
@@ -169,6 +193,23 @@ def test_phase_one_generation_budget_covers_longest_procedural_target() -> None:
     config = _master_config()
     rows = list(iter_phase_validation_records(config, 0, "active"))
     assert max(len(row["target_trace"].encode("utf-8")) for row in rows) < 224
+
+
+def test_phase_one_validation_is_operation_stratified() -> None:
+    config = json.loads(
+        (Path(__file__).parents[1] / "config" / "math_master_experiment_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    rows = list(iter_phase_validation_records(config, 0, "active"))
+    assert Counter(row["operation"] for row in rows) == {
+        "compare": 12,
+        "compose": 6,
+        "compose_three": 6,
+        "missing_count_sequence": 4,
+        "predecessor": 4,
+        "successor": 4,
+    }
 
 
 def test_100k_experiment_allocates_exact_distinct_training_total() -> None:
