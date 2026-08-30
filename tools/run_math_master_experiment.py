@@ -329,43 +329,13 @@ def build_v8_cumulative_contract(contract: dict, manifest: dict) -> dict:
 
 
 def build_v9_cumulative_balanced_contract(contract: dict, manifest: dict) -> dict:
-    """Keep every cumulative row, then top up sparse active criteria only.
+    """V9 uses the V5-compatible targeted dataset with full cumulative replay.
 
-    V8 established that full cumulative exposure preserves mastered skills.  V9
-    keeps that base intact, but ensures an active criterion cannot be drowned
-    out merely because an older criterion has a much larger sealed corpus.
+    Coverage is corrected in the sealed dataset only for the agreed original
+    stages 2, 3, and 5.  Do not duplicate other phase rows at sampling time.
     """
 
-    balanced = build_v8_cumulative_contract(contract, manifest)
-    criterion_counts = {
-        str(key).removeprefix("train."): int(value)
-        for key, value in manifest.get("audit", {}).get("criterion_counts", {}).items()
-        if str(key).startswith("train.")
-    }
-    merged = build_v7_merged_contract(contract)
-    active_minimum = 2_500
-    for phase, merged_phase in zip(balanced["phases"], merged["phases"]):
-        active_families = list(merged_phase["quota_groups"][0]["filters"]["families"])
-        topups: list[dict] = []
-        for family in active_families:
-            available = criterion_counts[family]
-            additional = max(0, active_minimum - available)
-            if not additional:
-                continue
-            topups.append(
-                {
-                    "name": f"active_topup_{family}",
-                    "examples": additional,
-                    "filters": {"families": [family]},
-                    "balance_families": True,
-                    "balance_operations_within_families": True,
-                    "allow_overlap": True,
-                }
-            )
-        phase["active_topup_minimum_per_criterion"] = active_minimum
-        phase["quota_groups"].extend(topups)
-        phase["examples_per_epoch"] += sum(int(group["examples"]) for group in topups)
-    return balanced
+    return build_v8_cumulative_contract(contract, manifest)
 
 
 def build_smoke_contract(contract: dict) -> dict:

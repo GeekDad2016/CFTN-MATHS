@@ -284,25 +284,7 @@ def test_v7_reuses_v5_panels_and_merges_only_runtime_phases() -> None:
     )
 
     balanced = build_v9_cumulative_balanced_contract(base, manifest)
-    stage_two_topups = {
-        group["name"]: group
-        for group in balanced["phases"][1]["quota_groups"]
-        if group["name"].startswith("active_topup_")
-    }
-    expected_topups = {
-        f"active_topup_{criterion}": 2_500 - count
-        for criterion, count in {
-            key.removeprefix("train."): value
-            for key, value in manifest["audit"]["criterion_counts"].items()
-        }.items()
-        if criterion in merged["phases"][1]["quota_groups"][0]["filters"]["families"]
-        and count < 2_500
-    }
-    assert {name: group["examples"] for name, group in stage_two_topups.items()} == expected_topups
-    assert all(group["allow_overlap"] for group in stage_two_topups.values())
-    assert balanced["phases"][1]["examples_per_epoch"] == (
-        cumulative["phases"][1]["examples_per_epoch"] + sum(expected_topups.values())
-    )
+    assert balanced == cumulative
 
 
 def test_smoke_contract_disables_all_scientific_acceptance_gates() -> None:

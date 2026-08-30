@@ -1,0 +1,43 @@
+{
+  "format": "cftn_canonical_math_curriculum_v1",
+  "curriculum_profile": "master_experiment_v1",
+  "dataset_recipe": "canonical_compact_semantic_hybrid_v5",
+  "procedure_schema": "compact_executable_v2",
+  "trace_acceptance_metric": "semantic_v1",
+  "seed": 29082026,
+  "total_train_records": 100000,
+  "language_variants_per_object": 1,
+  "objects_per_criterion": {"train": 12, "validation": 12, "test": 12},
+  "split_overrides": {"1AS-1": {"validation": 22, "test": 22}},
+  "criterion_train_targets": {
+    "1AS-1": 308, "1AS-2": 2500, "1NF-1": 2500,
+    "1NPV-1": 465, "1NPV-2": 3135,
+    "2AS-1": 2500, "2AS-2": 2500, "2AS-3": 327, "2AS-4": 3135,
+    "2MD-1": 2500, "2MD-2": 2500, "2NPV-1": 2500, "2NPV-2": 2500,
+    "KS2-MULTI-DIGIT": 2473, "KS2-LONG-MULTIPLY": 2473,
+    "KS2-EXACT-DIVIDE": 2473, "KS2-FRACTION-ADD": 2473,
+    "KS2-PERCENT": 2473, "KS2-RECTANGLE": 2473,
+    "KS3-LINEAR": 2473, "KS3-POWERS": 1087, "KS3-PYTHAGORAS": 2314,
+    "GCSE-QUADRATIC": 2473, "GCSE-SIMULTANEOUS": 2473, "GCSE-SEQUENCE": 2473,
+    "AL-DIFFERENTIATE": 2472, "AL-INTEGRATE": 2473,
+    "AL-BINOMIAL-COEFFICIENT": 2472, "AL-COMBINATION": 2472,
+    "AL-BINOMIAL-PROB": 2472, "AL-SUVAT": 2473,
+    "UG-MATRIX-DET": 2473, "UG-MATRIX-SOLVE": 2472,
+    "UG-POLYNOMIAL-LIMIT": 2472, "UG-MOD-INVERSE": 2472,
+    "UG-PERMUTATIONS": 2472, "UG-EXPECTATION": 2472,
+    "GRAD-SERIES-RADIUS": 2472, "GRAD-CYCLIC-ORDER": 2472,
+    "GRAD-EIGEN-SPECTRUM": 2472, "FORMAL-POLY-IDENTITY": 2472,
+    "FORMAL-COUNTEREXAMPLE": 2472, "FORMAL-EUCLID-INVARIANT": 2472
+  },
+  "result_balanced_criteria": ["1AS-1"],
+  "replay_policy": {"active_fraction": 0.75, "prior_fraction": 0.25},
+  "experiment_scope": {
+    "purpose": "v9_v5_compatible_targeted_stage_2_3_5_coverage",
+    "dataset_change_scope": "only_original_stages_2_3_5",
+    "comprehensive_coverage": false,
+    "upper_level_interpretation": "representative_verified_capability_probe",
+    "research_phase_interpretation": "formal_research_preparation_not_open_problem_solving",
+    "future_phase_training_exposure": "forbidden",
+    "split_policy": "semantic_problem_disjoint_across_train_validation_test"
+  }
+}

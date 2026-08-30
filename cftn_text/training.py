@@ -418,7 +418,7 @@ def math_epoch_dataset(
             if "" in pool_ids:
                 raise ValueError("curriculum quota group rows require record_id")
             overlap = eligible_record_ids & pool_ids
-            if overlap and not bool(group.get("allow_overlap", False)):
+            if overlap:
                 raise ValueError(
                     f"curriculum quota groups overlap on {len(overlap)} records; "
                     "skill buckets must be disjoint"
