@@ -30,6 +30,8 @@ from tools.run_math_master_experiment import (
     build_contract,
     build_smoke_contract,
     build_v7_merged_contract,
+    build_v8_cumulative_contract,
+    build_v9_cumulative_balanced_contract,
 )
 
 
@@ -208,6 +210,7 @@ def test_local_runner_contract_is_bounded_and_phase_gated() -> None:
         for phase in contract["phases"]
         for group in phase["quota_groups"]
     )
+
     assert contract["phases"][0]["minimum_generation_accuracy_by_operation"]
     assert contract["phases"][0]["quota_groups"][0][
         "balance_results_within_operations_for_families"
@@ -230,9 +233,22 @@ def test_v7_reuses_v5_panels_and_merges_only_runtime_phases() -> None:
             splits[f"phase_{index:02d}_retention"] = {
                 "records": sum(len(prior["criteria"]) for prior in MASTER_PHASES[:index])
             }
-    base = build_contract(
-        {"phases": list(MASTER_PHASES), "splits": splits, "criterion_operations": {}}
-    )
+    manifest = {
+        "phases": list(MASTER_PHASES),
+        "splits": splits,
+        "criterion_operations": {},
+        "audit": {
+            "criterion_counts": {
+                f"train.{criterion}": index + 1
+                for index, criterion in enumerate(
+                    criterion
+                    for phase in MASTER_PHASES
+                    for criterion in phase["criteria"]
+                )
+            }
+        },
+    }
+    base = build_contract(manifest)
     merged = build_v7_merged_contract(base)
 
     assert len(merged["phases"]) == 12
@@ -249,6 +265,44 @@ def test_v7_reuses_v5_panels_and_merges_only_runtime_phases() -> None:
     assert merged["math_training"]["generation_validation"]["panels"] == base[
         "math_training"
     ]["generation_validation"]["panels"]
+
+    cumulative = build_v8_cumulative_contract(base, manifest)
+    assert cumulative["phases"][0]["quota_groups"][0]["filters"]["families"] == [
+        criterion for phase in MASTER_PHASES[:3] for criterion in phase["criteria"]
+    ]
+    assert cumulative["phases"][1]["quota_groups"][0]["filters"]["families"] == [
+        criterion for phase in MASTER_PHASES[:5] for criterion in phase["criteria"]
+    ]
+    assert cumulative["phases"][-1]["quota_groups"][0]["filters"]["families"] == [
+        criterion for phase in MASTER_PHASES for criterion in phase["criteria"]
+    ]
+    assert all(
+        phase["quota_groups"][0]["name"] == "complete_cumulative_training_set"
+        and phase["quota_groups"][0]["balance_families"] is False
+        and phase["examples_per_epoch"] == phase["quota_groups"][0]["examples"]
+        for phase in cumulative["phases"]
+    )
+
+    balanced = build_v9_cumulative_balanced_contract(base, manifest)
+    stage_two_topups = {
+        group["name"]: group
+        for group in balanced["phases"][1]["quota_groups"]
+        if group["name"].startswith("active_topup_")
+    }
+    expected_topups = {
+        f"active_topup_{criterion}": 2_500 - count
+        for criterion, count in {
+            key.removeprefix("train."): value
+            for key, value in manifest["audit"]["criterion_counts"].items()
+        }.items()
+        if criterion in merged["phases"][1]["quota_groups"][0]["filters"]["families"]
+        and count < 2_500
+    }
+    assert {name: group["examples"] for name, group in stage_two_topups.items()} == expected_topups
+    assert all(group["allow_overlap"] for group in stage_two_topups.values())
+    assert balanced["phases"][1]["examples_per_epoch"] == (
+        cumulative["phases"][1]["examples_per_epoch"] + sum(expected_topups.values())
+    )
 
 
 def test_smoke_contract_disables_all_scientific_acceptance_gates() -> None:

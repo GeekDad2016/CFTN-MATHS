@@ -379,8 +379,11 @@ def math_epoch_dataset(
     else:
         return dataset, {"enabled": False, "phase": "all"}
     target = int(
-        config["data"].get("curriculum", {}).get(
-            "examples_per_epoch", len(dataset)
+        (phase or {}).get(
+            "examples_per_epoch",
+            config["data"].get("curriculum", {}).get(
+                "examples_per_epoch", len(dataset)
+            ),
         )
     )
     quota_groups = (
@@ -415,7 +418,7 @@ def math_epoch_dataset(
             if "" in pool_ids:
                 raise ValueError("curriculum quota group rows require record_id")
             overlap = eligible_record_ids & pool_ids
-            if overlap:
+            if overlap and not bool(group.get("allow_overlap", False)):
                 raise ValueError(
                     f"curriculum quota groups overlap on {len(overlap)} records; "
                     "skill buckets must be disjoint"
@@ -1664,29 +1667,13 @@ def train_math_tower(
         lr=float(settings["learning_rate"]),
         weight_decay=float(settings["weight_decay"]),
     )
-    scheduled_examples = int(
-        curriculum_config["data"].get("curriculum", {}).get(
-            "examples_per_epoch", len(train_dataset)
-        )
+    configured_examples = int(
+        curriculum_config["data"].get("curriculum", {}).get("examples_per_epoch", len(train_dataset))
     )
-    steps_per_epoch = max(
-        1, math.ceil(scheduled_examples / int(settings["batch_size"]))
-    )
-    phase_maximum_epochs = max(
-        (int(phase.get("maximum_epochs", 1)) for phase in phases),
-        default=int(settings["max_epochs"]),
-    )
-    total_steps = (
-        phase_maximum_epochs * steps_per_epoch
-        if phase_local_enabled
-        else int(settings["max_epochs"]) * steps_per_epoch
-    )
-    scheduler_warmup_fraction = (
-        float(phase_local_optimization.get("warmup_epochs", 0))
-        / max(1, phase_maximum_epochs)
-        if phase_local_enabled
-        else float(settings["warmup_fraction"])
-    )
+    configured_steps_per_epoch = max(1, math.ceil(configured_examples / int(settings["batch_size"])))
+    phase_maximum_epochs = max((int(phase.get("maximum_epochs", 1)) for phase in phases), default=int(settings["max_epochs"]))
+    total_steps = int(settings["max_epochs"]) * configured_steps_per_epoch
+    scheduler_warmup_fraction = float(settings["warmup_fraction"])
     scheduler_minimum_learning_rate = (
         float(phase_local_optimization["minimum_learning_rate"])
         if phase_local_enabled
@@ -1699,6 +1686,25 @@ def train_math_tower(
         minimum_ratio=scheduler_minimum_learning_rate
         / float(settings["learning_rate"]),
     )
+
+    def phase_scheduler(current_phase: dict | None) -> tuple[LambdaLR, int, int, float]:
+        """Construct a fresh phase-local schedule from actual sampled rows."""
+        examples = int((current_phase or {}).get("examples_per_epoch", configured_examples))
+        steps = max(1, math.ceil(examples / int(settings["batch_size"])))
+        maximum_epochs = int((current_phase or {}).get("maximum_epochs", settings["max_epochs"]))
+        phase_total_steps = maximum_epochs * steps
+        warmup_fraction = float(phase_local_optimization.get("warmup_epochs", 0)) / max(1, maximum_epochs)
+        return (
+            make_scheduler(
+                optimizer,
+                total_steps=phase_total_steps,
+                warmup_fraction=warmup_fraction,
+                minimum_ratio=scheduler_minimum_learning_rate / float(settings["learning_rate"]),
+            ),
+            examples,
+            phase_total_steps,
+            warmup_fraction,
+        )
     dtype = precision_dtype(settings["precision"], device)
     scaler = make_scaler(device, dtype)
     start_epoch = 1
@@ -2108,20 +2114,10 @@ def train_math_tower(
             phase_optimizer_reset = False
             if phase_local_enabled and optimizer_phase_name != phase_name:
                 if optimizer_phase_name is not None:
-                    optimizer = AdamW(
-                        model.parameters(),
-                        lr=float(settings["learning_rate"]),
-                        weight_decay=float(settings["weight_decay"]),
-                    )
-                    scheduler = make_scheduler(
-                        optimizer,
-                        total_steps=total_steps,
-                        warmup_fraction=scheduler_warmup_fraction,
-                        minimum_ratio=scheduler_minimum_learning_rate
-                        / float(settings["learning_rate"]),
-                    )
+                    optimizer = AdamW(model.parameters(), lr=float(settings["learning_rate"]), weight_decay=float(settings["weight_decay"]))
                     scaler = make_scaler(device, dtype)
                     phase_optimizer_reset = True
+                scheduler, scheduled_examples, total_steps, scheduler_warmup_fraction = phase_scheduler(phase)
                 optimizer_phase_name = phase_name
             if phase_name != active_phase_name:
                 best_metric = float("-inf")
@@ -2443,6 +2439,9 @@ def train_math_tower(
                     "enabled": phase_local_enabled,
                     "optimizer_reset_this_epoch": phase_optimizer_reset,
                     "optimizer_phase": optimizer_phase_name,
+                    "effective_examples_per_epoch": scheduled_examples,
+                    "effective_total_steps": total_steps,
+                    "effective_warmup_fraction": scheduler_warmup_fraction,
                     "warmup_epochs": phase_local_optimization.get("warmup_epochs"),
                     "minimum_learning_rate": scheduler_minimum_learning_rate,
                 },

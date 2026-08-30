@@ -371,3 +371,14 @@ but it still needs complete operation coverage, multiple meaningful structured
 views, enough sampled exposure per epoch, held-out semantic objects, and
 cumulative replay. Larger future datasets should scale these explicit support
 dimensions and quotas rather than allowing a global allocator to hide gaps.
+
+## V9 follow-up: phase-aware scheduler accounting
+
+V8 changes runtime allocation so a later curriculum phase can consume the full
+cumulative training set once per epoch. The optimizer scheduler must therefore
+derive `steps_per_epoch` and total decay steps from that phase's effective
+`examples_per_epoch`, rather than the global nominal sample budget. Otherwise a
+phase with thousands of rows per epoch reaches its minimum learning rate after
+only a small number of epochs. V9 must reset the optimizer and scheduler at
+each phase boundary, use the phase-specific batch count for warm-up and cosine
+decay, and record both the configured and effective step budgets in metrics.

@@ -11,7 +11,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 from cftn_text.config import load_config
-from tools.run_math_master_experiment import build_contract, build_v7_merged_contract
+from tools.run_math_master_experiment import (
+    build_contract,
+    build_v7_merged_contract,
+    build_v8_cumulative_contract,
+    build_v9_cumulative_balanced_contract,
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -100,6 +105,10 @@ def collect_snapshot(
     )
     if contract_profile == "v7_merged" and contract["phases"]:
         contract = build_v7_merged_contract(contract)
+    elif contract_profile == "v8_cumulative" and contract["phases"]:
+        contract = build_v8_cumulative_contract(contract, manifest)
+    elif contract_profile == "v9_cumulative_balanced" and contract["phases"]:
+        contract = build_v9_cumulative_balanced_contract(contract, manifest)
     compact = [_compact_metric(row) for row in metrics]
     latest = compact[-1] if compact else {}
     active_name = latest.get("phase")
@@ -227,7 +236,11 @@ def main() -> None:
     parser.add_argument("--config", default="config/math_master_experiment_local_v6.yaml")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8789)
-    parser.add_argument("--contract-profile", choices=("v5", "v7_merged"), default="v5")
+    parser.add_argument(
+        "--contract-profile",
+        choices=("v5", "v7_merged", "v8_cumulative", "v9_cumulative_balanced"),
+        default="v5",
+    )
     args = parser.parse_args()
     server = ThreadingHTTPServer(
         (args.host, args.port),

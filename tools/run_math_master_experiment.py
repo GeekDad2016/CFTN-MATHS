@@ -289,6 +289,85 @@ def build_v7_merged_contract(contract: dict) -> dict:
     return merged
 
 
+def build_v8_cumulative_contract(contract: dict, manifest: dict) -> dict:
+    """Use V7's merged phases with every prior training row in later stages."""
+
+    cumulative = build_v7_merged_contract(contract)
+    criterion_counts = {
+        str(key).removeprefix("train."): int(value)
+        for key, value in manifest.get("audit", {}).get("criterion_counts", {}).items()
+        if str(key).startswith("train.")
+    }
+    if not criterion_counts:
+        raise ValueError("V8 cumulative allocation requires manifest train criterion counts")
+
+    cumulative_families: list[str] = []
+    for phase in cumulative["phases"]:
+        current = list(phase["quota_groups"][0]["filters"]["families"])
+        cumulative_families.extend(
+            family for family in current if family not in cumulative_families
+        )
+        missing = sorted(set(cumulative_families) - set(criterion_counts))
+        if missing:
+            raise ValueError(
+                "V8 manifest is missing train counts for: " + ", ".join(missing)
+            )
+        cumulative_examples = sum(
+            criterion_counts[family] for family in cumulative_families
+        )
+        phase["families"] = list(cumulative_families)
+        phase["examples_per_epoch"] = cumulative_examples
+        phase["quota_groups"] = [
+            {
+                "name": "complete_cumulative_training_set",
+                "examples": cumulative_examples,
+                "filters": {"families": list(cumulative_families)},
+                "balance_families": False,
+            }
+        ]
+    return cumulative
+
+
+def build_v9_cumulative_balanced_contract(contract: dict, manifest: dict) -> dict:
+    """Keep every cumulative row, then top up sparse active criteria only.
+
+    V8 established that full cumulative exposure preserves mastered skills.  V9
+    keeps that base intact, but ensures an active criterion cannot be drowned
+    out merely because an older criterion has a much larger sealed corpus.
+    """
+
+    balanced = build_v8_cumulative_contract(contract, manifest)
+    criterion_counts = {
+        str(key).removeprefix("train."): int(value)
+        for key, value in manifest.get("audit", {}).get("criterion_counts", {}).items()
+        if str(key).startswith("train.")
+    }
+    merged = build_v7_merged_contract(contract)
+    active_minimum = 2_500
+    for phase, merged_phase in zip(balanced["phases"], merged["phases"]):
+        active_families = list(merged_phase["quota_groups"][0]["filters"]["families"])
+        topups: list[dict] = []
+        for family in active_families:
+            available = criterion_counts[family]
+            additional = max(0, active_minimum - available)
+            if not additional:
+                continue
+            topups.append(
+                {
+                    "name": f"active_topup_{family}",
+                    "examples": additional,
+                    "filters": {"families": [family]},
+                    "balance_families": True,
+                    "balance_operations_within_families": True,
+                    "allow_overlap": True,
+                }
+            )
+        phase["active_topup_minimum_per_criterion"] = active_minimum
+        phase["quota_groups"].extend(topups)
+        phase["examples_per_epoch"] += sum(int(group["examples"]) for group in topups)
+    return balanced
+
+
 def build_smoke_contract(contract: dict) -> dict:
     smoke_contract = copy.deepcopy(contract)
     smoke_phase = copy.deepcopy(smoke_contract["phases"][0])
@@ -335,7 +414,11 @@ def main() -> None:
         "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v6/run"
     )
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--contract-profile", choices=("v5", "v7_merged"), default="v5")
+    parser.add_argument(
+        "--contract-profile",
+        choices=("v5", "v7_merged", "v8_cumulative", "v9_cumulative_balanced"),
+        default="v5",
+    )
     parser.add_argument("--initial-checkpoint")
     args = parser.parse_args()
 
@@ -383,6 +466,10 @@ def main() -> None:
     )
     if args.contract_profile == "v7_merged":
         contract = build_v7_merged_contract(contract)
+    elif args.contract_profile == "v8_cumulative":
+        contract = build_v8_cumulative_contract(contract, manifest)
+    elif args.contract_profile == "v9_cumulative_balanced":
+        contract = build_v9_cumulative_balanced_contract(contract, manifest)
     if args.initial_checkpoint:
         contract["source_checkpoint_sha256"] = file_sha256(args.initial_checkpoint)
     max_batches = None
