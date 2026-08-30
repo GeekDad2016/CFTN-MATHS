@@ -330,3 +330,44 @@ transitions and source-only sampling with repeated free-generation gates and
 disjoint skill buckets. This isolates curriculum/supervision from another
 capacity change. Imported DeepMind answers remain explicitly unverified; no
 plausible synthetic reasoning is relabelled as a verified procedure.
+
+## Balanced progression dataset v6
+
+The compact V5 experiment proved that a nominal 100,000-row corpus can still
+be educationally sparse. Its global water-fill allocator exhausted bounded
+early domains, silently reassigned their unused quota to later criteria, and
+left some foundational phases with only a few hundred unique rows. The stored
+total therefore did not describe the exposure received by each stage.
+
+The v6 local experiment replaces that behavior with a fail-closed contract:
+
+- every one of the 43 criteria has an explicit train quota and all quotas must
+  sum exactly to 100,000;
+- the five foundational phases contain 4,000--6,000 selected rows each and
+  each later phase contains 7,500; no criterion contains fewer than 1,200;
+- finite early facts are expanded through typed mathematical representations
+  and strategies in the canonical IR, not through duplicated wording. The
+  math tower still receives no natural-language prompt;
+- Year-2 addition introduces only the new 11--20 result band, while accepted
+  0--10 facts arrive through cumulative replay. Future-phase examples remain
+  forbidden;
+- the KS2 multiplication domain explicitly includes every multiplier 2--100,
+  and exact division includes every divisor 2--100. This covers 7, 11, 22 and
+  55 rather than relying on accidental samples;
+- train, validation and test are split by the semantic problem with pedagogical
+  view fields removed. Different representations of the same arithmetic object
+  cannot leak across splits;
+- every later phase uses 75% active data and 25% criterion-balanced replay over
+  all accepted phases. The stored phase view must provide at least 32 rows for
+  every prior criterion, using deterministic cycling only when a finite mastered
+  domain is smaller than its fair replay quota;
+- the streaming audit rejects criterion, operation or representation shortfall,
+  semantic split overlap, prompt overlap, invalid executable targets, future
+  exposure, and insufficient replay before the manifest can be sealed.
+
+The key scaling lesson is to distinguish **mathematical support** from raw row
+count. A bounded fact domain may legitimately have fewer numeric combinations,
+but it still needs complete operation coverage, multiple meaningful structured
+views, enough sampled exposure per epoch, held-out semantic objects, and
+cumulative replay. Larger future datasets should scale these explicit support
+dimensions and quotas rather than allowing a global allocator to hide gaps.

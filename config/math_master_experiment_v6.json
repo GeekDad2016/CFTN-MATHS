@@ -1,0 +1,88 @@
+{
+  "format": "cftn_canonical_math_curriculum_v1",
+  "curriculum_profile": "master_experiment_v1",
+  "dataset_recipe": "canonical_balanced_progression_v6",
+  "procedure_schema": "compact_executable_v2",
+  "trace_acceptance_metric": "semantic_v1",
+  "seed": 30082026,
+  "total_train_records": 100000,
+  "language_variants_per_object": 1,
+  "objects_per_criterion": {
+    "train": 12,
+    "validation": 12,
+    "test": 12
+  },
+  "split_overrides": {
+    "1AS-1": {
+      "validation": 22,
+      "test": 22
+    }
+  },
+  "criterion_train_targets": {
+    "1NPV-1": 1200,
+    "1NPV-2": 1800,
+    "1AS-1": 2000,
+    "1NF-1": 2000,
+    "1AS-2": 2000,
+    "2NPV-1": 1200,
+    "2NPV-2": 1200,
+    "2AS-1": 1800,
+    "2AS-2": 1800,
+    "2AS-3": 2500,
+    "2AS-4": 3500,
+    "2MD-1": 2000,
+    "2MD-2": 2000,
+    "KS2-MULTI-DIGIT": 2500,
+    "KS2-LONG-MULTIPLY": 2500,
+    "KS2-EXACT-DIVIDE": 2500,
+    "KS2-FRACTION-ADD": 2500,
+    "KS2-PERCENT": 2500,
+    "KS2-RECTANGLE": 2500,
+    "KS3-LINEAR": 2500,
+    "KS3-POWERS": 2500,
+    "KS3-PYTHAGORAS": 2500,
+    "GCSE-QUADRATIC": 2500,
+    "GCSE-SIMULTANEOUS": 2500,
+    "GCSE-SEQUENCE": 2500,
+    "AL-DIFFERENTIATE": 2500,
+    "AL-INTEGRATE": 2500,
+    "AL-BINOMIAL-COEFFICIENT": 2500,
+    "AL-COMBINATION": 2500,
+    "AL-BINOMIAL-PROB": 2500,
+    "AL-SUVAT": 2500,
+    "UG-MATRIX-DET": 2500,
+    "UG-MATRIX-SOLVE": 2500,
+    "UG-POLYNOMIAL-LIMIT": 2500,
+    "UG-MOD-INVERSE": 2500,
+    "UG-PERMUTATIONS": 2500,
+    "UG-EXPECTATION": 2500,
+    "GRAD-SERIES-RADIUS": 2500,
+    "GRAD-CYCLIC-ORDER": 2500,
+    "GRAD-EIGEN-SPECTRUM": 2500,
+    "FORMAL-POLY-IDENTITY": 2500,
+    "FORMAL-COUNTEREXAMPLE": 2500,
+    "FORMAL-EUCLID-INVARIANT": 2500
+  },
+  "result_balanced_criteria": [
+    "1AS-1"
+  ],
+  "replay_policy": {
+    "active_fraction": 0.75,
+    "prior_fraction": 0.25,
+    "minimum_rows_per_prior_criterion": 32
+  },
+  "dataset_quality_requirements": {
+    "minimum_train_records_per_criterion": 1000,
+    "minimum_train_records_per_operation": 64,
+    "minimum_train_records_per_variant": 32
+  },
+  "experiment_scope": {
+    "purpose": "local_12gb_100k_balanced_cumulative_curriculum_experiment",
+    "systematic_primary_arithmetic_coverage": true,
+    "comprehensive_coverage": false,
+    "upper_level_interpretation": "representative_verified_capability_probe",
+    "research_phase_interpretation": "formal_research_preparation_not_open_problem_solving",
+    "future_phase_training_exposure": "forbidden",
+    "split_policy": "semantic_problem_disjoint_across_train_validation_test"
+  }
+}

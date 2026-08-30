@@ -11,6 +11,8 @@ def test_dashboard_is_single_column_and_refreshes_every_30_seconds() -> None:
     assert "setInterval(refresh,30000)" in PAGE
     assert "Phase epoch" in PAGE
     assert "Validation trend" in PAGE
+    assert "Every scientific criterion below must pass" in PAGE
+    assert "Acceptance criterion" in PAGE
 
 
 def test_dashboard_collects_compact_phase_budget(tmp_path: Path) -> None:
@@ -102,6 +104,13 @@ def test_dashboard_prefers_per_epoch_acceptance_over_terminal_gate() -> None:
                 "generation_accuracy": 0.25,
                 "valid_rate": 1.0,
                 "pass": False,
+                "checks": {
+                    "primary_generation_accuracy": {
+                        "observed": 0.25,
+                        "minimum": 0.85,
+                        "pass": False,
+                    }
+                },
             },
             "curriculum_gate": None,
         }
@@ -109,3 +118,8 @@ def test_dashboard_prefers_per_epoch_acceptance_over_terminal_gate() -> None:
     assert compact["generation_accuracy"] == 0.25
     assert compact["valid_rate"] == 1.0
     assert compact["gate_pass"] is False
+    assert compact["acceptance_checks"]["primary_generation_accuracy"] == {
+        "observed": 0.25,
+        "minimum": 0.85,
+        "pass": False,
+    }

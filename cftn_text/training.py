@@ -1161,6 +1161,10 @@ def generation_panel_specs_for_phase(
     for key in (
         "minimum_generation_accuracy_by_panel",
         "minimum_valid_rate_by_panel",
+        "minimum_generation_accuracy_by_panel_family",
+        "minimum_generation_accuracy_by_panel_operation",
+        "minimum_trace_exact_by_panel_family",
+        "minimum_trace_semantic_by_panel_family",
     ):
         thresholds = phase.get(key, {})
         if not isinstance(thresholds, dict):
@@ -1316,6 +1320,45 @@ def _phase_generation_acceptance(
             else:
                 add_check(key, observed.get("accuracy", 0.0), float(minimum))
                 checks[key]["examples"] = int(observed.get("examples", 0))
+
+    for field, observed_field, label in (
+        ("minimum_generation_accuracy_by_panel_operation", "by_operation", "panel_operation"),
+        ("minimum_trace_exact_by_panel_family", "trace_exact_by_family", "panel_trace"),
+        (
+            "minimum_trace_semantic_by_panel_family",
+            "trace_semantic_by_family",
+            "panel_trace_semantic",
+        ),
+    ):
+        configured_panels = phase.get(field, {})
+        if not isinstance(configured_panels, dict):
+            raise ValueError(f"{field} must be an object")
+        for panel_name, thresholds in configured_panels.items():
+            if not isinstance(thresholds, dict):
+                raise ValueError(f"{field} panel thresholds must be an object")
+            panel = generation_panels.get(str(panel_name))
+            if panel is None:
+                checks[f"{label}:{panel_name}:available"] = {
+                    "observed": None,
+                    "minimum": 1.0,
+                    "pass": False,
+                }
+                continue
+            observed_groups = panel.get(observed_field, {})
+            for group_name, minimum in thresholds.items():
+                observed = observed_groups.get(str(group_name))
+                rate_key = "accuracy" if observed_field == "by_operation" else "rate"
+                key = f"{label}:{panel_name}:{group_name}"
+                if observed is None:
+                    checks[key] = {
+                        "observed": None,
+                        "minimum": float(minimum),
+                        "examples": 0,
+                        "pass": False,
+                    }
+                else:
+                    add_check(key, observed.get(rate_key, 0.0), float(minimum))
+                    checks[key]["examples"] = int(observed.get("examples", 0))
 
     if "minimum_teacher_forced_token_accuracy" in phase:
         add_check(

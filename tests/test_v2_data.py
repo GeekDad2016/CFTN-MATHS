@@ -20,9 +20,46 @@ from cftn_text.v2_data import (
     iter_gsm_symbolic_records,
     iter_local_records,
     iter_mathqa_records,
+    load_v2_records,
+    make_v2_record,
     prepare_v2_manifests,
     validate_v2_record,
 )
+
+
+def test_v2_target_trace_fix_preserves_canonical_and_repairs_sealed_legacy_rows(
+    tmp_path: Path,
+):
+    canonical = make_v2_record(
+        split="train",
+        source="test",
+        family="2NPV-1",
+        difficulty=2,
+        problem='{"op":"place_value","type":"math_problem_v1","value":23}',
+        answer="2,3",
+        target_trace=(
+            '<work>[{"op":"place_value","result":"2,3"}]</work>'
+            "<answer>2,3</answer>"
+        ),
+    )
+    assert canonical["target_trace"].count("<answer>") == 1
+
+    legacy = make_v2_record(
+        split="train",
+        source="test",
+        family="2NPV-1",
+        difficulty=2,
+        problem='{"op":"place_value","type":"math_problem_v1","value":23}',
+        answer="2,3",
+        target_trace=(
+            '<work>[{"op":"place_value","result":"2,3"}]</work>'
+            "<answer>2,3</answer><answer>23</answer>"
+        ),
+    )
+    path = tmp_path / "legacy.jsonl"
+    path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+    loaded = load_v2_records(path)
+    assert loaded[0]["target_trace"] == canonical["target_trace"]
 
 
 def test_sealed_generator_curriculum_selects_by_recorded_difficulty():

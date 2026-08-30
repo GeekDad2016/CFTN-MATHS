@@ -1,7 +1,7 @@
 project:
-  name: cftn_math_master_experiment_local_v5_150
+  name: cftn_math_master_experiment_local_v7
   seed: 29082026
-  artifact_root: ${CFTN_ARTIFACT_ROOT:-C:/CFTN/artifacts/math_master_experiment_100k_v5_150}
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-C:/CFTN/artifacts/math_master_experiment_v7}
   data_root: ${CFTN_DATA_ROOT:-C:/CFTN/.datasets/math_master_experiment_100k_v5}
 
 data:
@@ -55,9 +55,9 @@ bridge:
 math_training:
   batch_size: 8
   eval_batch_size: 16
-  max_epochs: 2250
+  max_epochs: 1800
   minimum_epochs: 10
-  early_stop_patience: 2250
+  early_stop_patience: 1800
   learning_rate: 0.0003
   minimum_learning_rate: 0.00001
   warmup_fraction: 0.005

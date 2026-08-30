@@ -165,7 +165,13 @@ def make_v2_record(
             else target_answer
         )
     ).strip()
-    if not trace.endswith(target_answer):
+    trace_answers = _ANSWER_TAG.findall(trace)
+    canonical_2npv_trace = (
+        str(family) in {"2NPV-1", "2NPV-2"}
+        and len(trace_answers) == 1
+        and normalize_answer(trace_answers[0]) == normalized_answer
+    )
+    if not trace.endswith(target_answer) and not canonical_2npv_trace:
         trace = f"{trace}{target_answer}"
     if (gpt_problem is None) != (math_problem is None):
         raise ValueError("private GPT and math views must be supplied together")
@@ -244,7 +250,14 @@ def validate_v2_record(record: dict[str, Any]) -> None:
     expected_answer = f"<answer>{normalized_answer}</answer>"
     if record["target_answer"] != expected_answer:
         raise ValueError("V2 target_answer does not match normalized_answer")
-    if not str(record["target_trace"]).endswith(expected_answer):
+    trace = str(record["target_trace"])
+    trace_answers = _ANSWER_TAG.findall(trace)
+    canonical_2npv_trace = (
+        str(record["family"]) in {"2NPV-1", "2NPV-2"}
+        and len(trace_answers) == 1
+        and normalize_answer(trace_answers[0]) == normalized_answer
+    )
+    if not trace.endswith(expected_answer) and not canonical_2npv_trace:
         raise ValueError("V2 target_trace must end with target_answer")
     for field in ("native_program", "execution_trace"):
         value = record[field]
@@ -268,6 +281,25 @@ def validate_v2_record(record: dict[str, Any]) -> None:
         raise ValueError("V2 record_id does not match record contents")
 
 
+def _repair_legacy_target_trace(record: dict[str, Any]) -> dict[str, Any]:
+    """Repair only the sealed V5 duplicate-answer-tag construction bug in memory."""
+
+    family = str(record.get("family", ""))
+    trace = str(record.get("target_trace", ""))
+    target_answer = str(record.get("target_answer", ""))
+    if (
+        family in {"2NPV-1", "2NPV-2"}
+        and trace.count("<answer>") == 2
+        and target_answer
+        and trace.endswith(target_answer)
+    ):
+        repaired = trace.rsplit(target_answer, 1)[0]
+        if repaired.endswith("</answer>") and repaired.count("<answer>") == 1:
+            record = dict(record)
+            record["target_trace"] = repaired
+    return record
+
+
 def load_v2_records(path: str | Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with Path(path).open("r", encoding="utf-8") as handle:
@@ -281,7 +313,7 @@ def load_v2_records(path: str | Path) -> list[dict[str, Any]]:
                 raise ValueError(
                     f"invalid V2 record at {path}:{line_number}: {exc}"
                 ) from exc
-            records.append(item)
+            records.append(_repair_legacy_target_trace(item))
     return records
 
 

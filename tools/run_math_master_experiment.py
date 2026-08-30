@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from cftn_text.config import load_config
+from cftn_text.data_generator import file_sha256
 from cftn_text.math_curriculum_data import audit_dataset, prepare_dataset
 from cftn_text.training import train_math_tower
 
@@ -171,6 +172,123 @@ def build_contract(
     }
 
 
+def build_v7_merged_contract(contract: dict) -> dict:
+    """Merge V5 phases 1-3 and 4-5 without changing any dataset bytes."""
+
+    merged = copy.deepcopy(contract)
+    old = merged["phases"]
+    if len(old) != 15:
+        raise ValueError("V7 requires the exact 15-phase V5 contract")
+
+    examples_per_epoch = int(merged["curriculum"]["examples_per_epoch"])
+    active_examples = examples_per_epoch * 3 // 4
+    replay_examples = examples_per_epoch - active_examples
+
+    def active_families(index: int) -> list[str]:
+        return list(old[index]["quota_groups"][0]["filters"]["families"])
+
+    def make_phase(indices: tuple[int, ...], *, name: str, prior_indices: tuple[int, ...]) -> dict:
+        active = [family for index in indices for family in active_families(index)]
+        prior = [family for index in prior_indices for family in active_families(index)]
+        result_balanced = sorted(
+            {
+                family
+                for index in indices
+                for family in old[index]["quota_groups"][0].get(
+                    "balance_results_within_operations_for_families", []
+                )
+            }
+        )
+        phase = copy.deepcopy(old[indices[-1]])
+        phase.update(
+            {
+                "name": name,
+                "families": [*prior, *active],
+                "quota_groups": [
+                    {
+                        "name": "active",
+                        "examples": examples_per_epoch if not prior else active_examples,
+                        "filters": {"families": active},
+                        "balance_families": True,
+                        "balance_operations_within_families": True,
+                        "balance_results_within_operations_for_families": result_balanced,
+                    }
+                ],
+                "primary_generation_panel": f"active_{indices[-1]:02d}",
+                "minimum_generation_accuracy_by_family": {},
+                "minimum_generation_accuracy_by_operation": {},
+                "minimum_trace_exact_by_family": {},
+                "minimum_trace_semantic_by_family": {},
+                "minimum_generation_accuracy_by_panel": {
+                    f"active_{index:02d}": 0.85 for index in indices
+                },
+                "minimum_valid_rate_by_panel": {
+                    f"active_{index:02d}": 0.95 for index in indices
+                },
+                "minimum_generation_accuracy_by_panel_family": {
+                    f"active_{index:02d}": old[index][
+                        "minimum_generation_accuracy_by_family"
+                    ]
+                    for index in indices
+                },
+                "minimum_generation_accuracy_by_panel_operation": {
+                    f"active_{index:02d}": old[index][
+                        "minimum_generation_accuracy_by_operation"
+                    ]
+                    for index in indices
+                },
+                "minimum_trace_exact_by_panel_family": {
+                    f"active_{index:02d}": old[index]["minimum_trace_exact_by_family"]
+                    for index in indices
+                },
+                "minimum_trace_semantic_by_panel_family": {
+                    f"active_{index:02d}": old[index][
+                        "minimum_trace_semantic_by_family"
+                    ]
+                    for index in indices
+                },
+                "stop_on_pass": False,
+            }
+        )
+        if prior:
+            retention_index = indices[0]
+            retention_name = f"retention_{retention_index:02d}"
+            phase["quota_groups"].append(
+                {
+                    "name": "cumulative_replay",
+                    "examples": replay_examples,
+                    "filters": {"families": prior},
+                    "balance_families": True,
+                    "balance_operations_within_families": True,
+                    "balance_results_within_operations_for_families": sorted(
+                        {
+                            family
+                            for index in prior_indices
+                            for family in old[index]["quota_groups"][0].get(
+                                "balance_results_within_operations_for_families", []
+                            )
+                        }
+                    ),
+                }
+            )
+            phase["minimum_generation_accuracy_by_panel"][retention_name] = 1.0
+            phase["minimum_valid_rate_by_panel"][retention_name] = 1.0
+            phase["minimum_generation_accuracy_by_panel_family"][retention_name] = {
+                family: 1.0 for family in prior
+            }
+        return phase
+
+    merged["phases"] = [
+        make_phase((0, 1, 2), name="stage_01_foundations_merged", prior_indices=()),
+        make_phase((3, 4), name="stage_04_arithmetic_merged", prior_indices=(0, 1, 2)),
+        *copy.deepcopy(old[5:]),
+    ]
+    merged["math_training"]["max_epochs"] = sum(
+        int(phase["maximum_epochs"]) for phase in merged["phases"]
+    )
+    return merged
+
+
 def build_smoke_contract(contract: dict) -> dict:
     smoke_contract = copy.deepcopy(contract)
     smoke_phase = copy.deepcopy(smoke_contract["phases"][0])
@@ -205,18 +323,20 @@ def build_smoke_contract(contract: dict) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build, start, or resume the compact local math master experiment"
+        description="Build, start, or resume the balanced local math master experiment"
     )
     parser.add_argument(
         "command", choices=("auto", "build", "audit", "smoke"), default="auto", nargs="?"
     )
-    parser.add_argument("--config", default="config/math_master_experiment_local_v5.yaml")
-    parser.add_argument("--dataset-config", default="config/math_master_experiment_v5.json")
-    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v5")
+    parser.add_argument("--config", default="config/math_master_experiment_local_v6.yaml")
+    parser.add_argument("--dataset-config", default="config/math_master_experiment_v6.json")
+    parser.add_argument("--data", default="C:/CFTN/.datasets/math_master_experiment_100k_v6")
     parser.add_argument(
-        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v5/run"
+        "--artifact", default="C:/CFTN/artifacts/math_master_experiment_100k_v6/run"
     )
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--contract-profile", choices=("v5", "v7_merged"), default="v5")
+    parser.add_argument("--initial-checkpoint")
     args = parser.parse_args()
 
     data_root = Path(args.data).resolve()
@@ -261,13 +381,17 @@ def main() -> None:
         ),
         examples_per_epoch=int(curriculum_settings.get("examples_per_epoch", 512)),
     )
+    if args.contract_profile == "v7_merged":
+        contract = build_v7_merged_contract(contract)
+    if args.initial_checkpoint:
+        contract["source_checkpoint_sha256"] = file_sha256(args.initial_checkpoint)
     max_batches = None
     if args.command == "smoke":
         contract = build_smoke_contract(contract)
         max_batches = 1
     config["math_training"]["max_epochs"] = contract["math_training"]["max_epochs"]
     artifact = Path(args.artifact + ("_smoke" if args.command == "smoke" else "")).resolve()
-    resume = any(artifact.glob("math.epoch_*.pth")) or (artifact / "math.latest.pth").exists()
+    resume = any(artifact.glob("checkpoint_epoch_*.pth")) or (artifact / "math.latest.pth").exists()
     result = train_math_tower(
         config,
         device_name=args.device,
@@ -277,6 +401,7 @@ def main() -> None:
         artifact_directory=artifact,
         working_directory=artifact,
         recovery_contract=contract,
+        initial_checkpoint=None if resume else args.initial_checkpoint,
     )
     metrics = result.get("metrics", {})
     gpu = metrics.get("gpu", result.get("gpu", {}))

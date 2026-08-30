@@ -9,7 +9,7 @@ import tempfile
 from collections import Counter
 from fractions import Fraction
 from functools import lru_cache
-from heapq import nsmallest
+from heapq import heappush, heapreplace, nsmallest
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -24,6 +24,8 @@ SPLITS = ("train", "validation", "test")
 EXPANDED_PROCEDURE_SCHEMA = "expanded_count_on_v1"
 COMPACT_PROCEDURE_SCHEMA = "compact_executable_v2"
 PROCEDURE_SCHEMAS = {EXPANDED_PROCEDURE_SCHEMA, COMPACT_PROCEDURE_SCHEMA}
+V6_DATASET_RECIPE = "canonical_balanced_progression_v6"
+PEDAGOGICAL_VARIANT_FIELDS = frozenset({"representation", "strategy"})
 
 
 PHASES: tuple[dict[str, Any], ...] = (
@@ -106,7 +108,6 @@ MASTER_PHASES: tuple[dict[str, Any], ...] = tuple(
     {**phase, "level": "KS1"} for phase in PHASES
 ) + MASTER_EXTENSION_PHASES
 
-
 def _sha(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
@@ -130,7 +131,7 @@ def _phase_prerequisites(
     ]
 
 
-def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
+def _base_candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
     if criterion == "1NPV-1":
         for value in range(1, 100):
             yield {"type": "math_problem_v1", "op": "predecessor", "value": value}
@@ -166,11 +167,18 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
                         "operands": [first, second, third],
                     }
     elif criterion == "1NF-1":
+        # Stage 2 adds non-overlapping two-digit-plus-small-number facts;
+        # facts owned by the across-ten and later within-100 stages remain
+        # in those stages.
         for left in range(11):
             for right in range(11):
                 if left + right <= 10:
                     yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
-                if left >= right:
+        for left in range(11, 21):
+            for right in range(10):
+                if left + right <= 20:
+                    yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
+                if left >= right and left <= 10:
                     yield {"type": "math_problem_v1", "op": "subtract", "left": left, "right": right}
     elif criterion == "1AS-2":
         for total in range(2, 21):
@@ -184,11 +192,13 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
             if value % 10:
                 yield {"type": "math_problem_v1", "op": "neighbouring_tens", "value": value}
     elif criterion == "2AS-1":
-        for left in range(1, 20):
-            for right in range(1, 10):
-                if left < 10 < left + right <= 20:
+        # Stage 3 teaches both directions of crossing ten, not only the
+        # subset with a single-digit first operand.
+        for left in range(21):
+            for right in range(21):
+                if 10 < left + right <= 20 and left <= 10 < left + right:
                     yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
-                if 11 <= left <= 20 and left - right < 10:
+                if left >= right and right < 10 and 0 <= left - right < 10 and left >= 10:
                     yield {"type": "math_problem_v1", "op": "subtract", "left": left, "right": right}
     elif criterion == "2AS-2":
         for left in range(21):
@@ -208,12 +218,17 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
                 if left >= right and (left, right) != (10, 10):
                     yield {"type": "math_problem_v1", "op": "subtract", "left": left, "right": right}
     elif criterion == "2MD-1":
-        for factor in (2, 5, 10):
-            for groups in range(22):
+        # Stage 5 must teach multiplication as a general operation.  Keep
+        # the original table facts, but include the missing factors such as
+        # 7, 11, 22 and 55 instead of hard-coding 2/5/10.
+        for factor in range(2, 100):
+            for groups in range(0, 101):
                 yield {"type": "math_problem_v1", "op": "multiply", "left": factor, "right": groups}
     elif criterion == "2MD-2":
-        for divisor in (2, 5, 10):
-            for quotient in range(1, 31):
+        for divisor in range(2, 101):
+            for quotient in range(1, 101):
+                if divisor <= 51 and quotient >= 2 and not (divisor in {2, 5, 10} and quotient <= 30):
+                    continue
                 yield {"type": "math_problem_v1", "op": "divide", "dividend": divisor * quotient, "divisor": divisor}
     elif criterion == "KS2-MULTI-DIGIT":
         for left in range(100, 300):
@@ -342,6 +357,341 @@ def _candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
                 yield {"type": "math_problem_v1", "op": "euclid_gcd_invariant", "a": a, "b": b}
     else:
         raise ValueError(f"unknown criterion: {criterion}")
+
+
+def _variant_specs(criterion: str) -> tuple[dict[str, str], ...]:
+    """Typed, language-free views used only by the balanced v6 recipe.
+
+    The representation and strategy tokens are part of the mathematical IR.
+    They therefore teach invariance across useful mathematical views without
+    putting natural-language wording into the tower input.
+    """
+
+    domains: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+        "1NPV-1": (
+            ("count_sequence", "number_line"),
+            ("forward", "backward"),
+        ),
+        "1AS-1": (
+            (
+                "equation",
+                "part_whole",
+                "number_line",
+                "ten_frame",
+                "base_ten",
+                "fact_family",
+                "balance",
+                "bar_model",
+                "recomposition",
+            ),
+            ("direct", "count_on", "make_ten", "inverse_check"),
+        ),
+        "1NF-1": (
+            (
+                "equation",
+                "part_whole",
+                "number_line",
+                "ten_frame",
+                "fact_family",
+                "balance",
+                "bar_model",
+            ),
+            ("direct_recall", "count_on", "make_ten", "inverse_check"),
+        ),
+        "1AS-2": (
+            ("equation", "part_whole", "number_line", "fact_family", "balance"),
+            ("complete_whole", "inverse_check"),
+        ),
+        "2NPV-1": (
+            ("base_ten", "expanded_form", "place_value_chart", "partition", "recombine"),
+            ("read", "compose", "decompose", "verify"),
+        ),
+        "2NPV-2": (
+            ("number_line", "place_value_chart", "interval", "rounding_frame", "base_ten", "ordering"),
+            ("locate", "bound", "decompose", "verify"),
+        ),
+        "2AS-1": (
+            ("equation", "part_whole", "number_line", "base_ten"),
+            ("bridge_ten", "make_ten"),
+        ),
+        "2AS-2": (
+            ("equation", "part_whole", "number_line", "comparison", "fact_family"),
+            ("count_up", "subtract"),
+        ),
+        "2AS-3": (
+            ("equation", "number_line", "place_value", "base_ten"),
+            ("step", "inverse_check"),
+        ),
+        "2MD-1": (
+            ("equation", "array", "equal_groups", "number_line"),
+            ("skip_count", "repeated_addition"),
+        ),
+        "2MD-2": (
+            ("equation", "array", "equal_groups", "fact_family"),
+            ("sharing", "inverse_multiply"),
+        ),
+    }
+    domain = domains.get(criterion)
+    if domain is None:
+        return ({},)
+    representations, strategies = domain
+    return tuple(
+        {"representation": representation, "strategy": strategy}
+        for representation in representations
+        for strategy in strategies
+    )
+
+
+def _v6_base_candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
+    """Broaden taught domains without leaking examples from a future phase."""
+
+    if criterion == "1AS-1":
+        for left in range(11):
+            for right in range(left, 11 - left):
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "add",
+                    "operands": [left, right],
+                }
+        for first in range(11):
+            for second in range(first, 11 - first):
+                for third in range(second, 11 - first - second):
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "add",
+                        "operands": [first, second, third],
+                    }
+        return
+    if criterion == "1NF-1":
+        for left in range(11):
+            for right in range(left, 11):
+                if left + right <= 10:
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "add",
+                        "left": left,
+                        "right": right,
+                    }
+        for left in range(11):
+            for right in range(left + 1):
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "subtract",
+                    "left": left,
+                    "right": right,
+                }
+        return
+    if criterion == "2AS-1":
+        # This phase teaches the new 11..20 result band. Facts wholly inside
+        # 0..10 remain replay from the accepted Year-1 phase.
+        for left in range(21):
+            for right in range(left, 21):
+                if 11 <= left + right <= 20:
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "add",
+                        "left": left,
+                        "right": right,
+                    }
+        for left in range(11, 21):
+            for right in range(left + 1):
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "subtract",
+                    "left": left,
+                    "right": right,
+                }
+        return
+    if criterion == "2AS-4":
+        for left in range(10, 100):
+            for right in range(10, 100):
+                if left <= right and 21 <= left + right <= 100:
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "add",
+                        "left": left,
+                        "right": right,
+                    }
+                if left >= right and left > 20:
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "subtract",
+                        "left": left,
+                        "right": right,
+                    }
+        return
+    if criterion == "2MD-1":
+        seen: set[tuple[int, int]] = set()
+        for factor in (2, 5, 10):
+            for groups in range(101):
+                left, right = sorted((factor, groups))
+                if (left, right) in seen:
+                    continue
+                seen.add((left, right))
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "multiply",
+                    "left": left,
+                    "right": right,
+                }
+        return
+    if criterion == "2MD-2":
+        for divisor in (2, 5, 10):
+            for quotient in range(1, 101):
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "divide",
+                    "dividend": divisor * quotient,
+                    "divisor": divisor,
+                }
+        return
+    if criterion == "KS2-MULTI-DIGIT":
+        for left in range(100, 1000):
+            for right in range(10, 500):
+                if left <= right and left + right <= 1498:
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "add",
+                        "left": left,
+                        "right": right,
+                    }
+                if left >= right:
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "subtract",
+                        "left": left,
+                        "right": right,
+                    }
+        return
+    if criterion == "KS2-LONG-MULTIPLY":
+        # Includes one-digit and two-digit multipliers systematically, so
+        # factors such as 7, 11, 22 and 55 are explicitly taught.
+        for left in range(10, 1000):
+            for right in range(2, min(100, left) + 1):
+                if right in {2, 5, 10} and left <= 100:
+                    continue
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "multiply",
+                    "left": left,
+                    "right": right,
+                }
+        return
+    if criterion == "KS2-FRACTION-ADD":
+        for denominator in range(2, 51):
+            for left in range(1, denominator):
+                for right in range(left, denominator):
+                    yield {
+                        "type": "math_problem_v1",
+                        "op": "fraction_add",
+                        "left": [left, denominator],
+                        "right": [right, denominator],
+                    }
+        return
+    if criterion == "KS2-RECTANGLE":
+        for width in range(2, 102):
+            for height in range(width, 102):
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "rectangle_area",
+                    "width": width,
+                    "height": height,
+                }
+        return
+    if criterion == "KS2-EXACT-DIVIDE":
+        for divisor in range(2, 101):
+            for quotient in range(2, 501):
+                if divisor in {2, 5, 10} and quotient <= 100:
+                    continue
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "divide",
+                    "dividend": divisor * quotient,
+                    "divisor": divisor,
+                }
+        return
+    if criterion == "KS3-POWERS":
+        for base in range(-200, 201):
+            for exponent in range(2, 13):
+                yield {
+                    "type": "math_problem_v1",
+                    "op": "power",
+                    "base": base,
+                    "exponent": exponent,
+                }
+        return
+    yield from _base_candidate_irs(criterion)
+
+
+def _candidate_irs(
+    criterion: str, dataset_recipe: str | None = None
+) -> Iterator[dict[str, Any]]:
+    if dataset_recipe != V6_DATASET_RECIPE:
+        yield from _base_candidate_irs(criterion)
+        return
+    for base in _v6_base_candidate_irs(criterion):
+        for variant in _variant_specs(criterion):
+            yield {**base, **variant}
+
+
+def _semantic_math_ir(math_ir: dict[str, Any]) -> dict[str, Any]:
+    semantic = {
+        key: value
+        for key, value in math_ir.items()
+        if key not in PEDAGOGICAL_VARIANT_FIELDS
+    }
+    operation = str(semantic.get("op", ""))
+    if operation in {"add", "multiply"} and {
+        "left",
+        "right",
+    } <= semantic.keys():
+        semantic["left"], semantic["right"] = sorted(
+            (semantic["left"], semantic["right"])
+        )
+    if operation == "add" and isinstance(semantic.get("operands"), list):
+        semantic["operands"] = sorted(semantic["operands"])
+    if operation == "fraction_add":
+        semantic["left"], semantic["right"] = sorted(
+            (semantic["left"], semantic["right"])
+        )
+    if operation == "rectangle_area":
+        semantic["width"], semantic["height"] = sorted(
+            (semantic["width"], semantic["height"])
+        )
+    return semantic
+
+
+def _semantic_object_id(math_ir: dict[str, Any]) -> str:
+    return _sha(_semantic_math_ir(math_ir))
+
+
+def _numeric_values(value: Any) -> Iterator[int]:
+    if isinstance(value, bool):
+        return
+    if isinstance(value, int):
+        yield value
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _numeric_values(item)
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _numeric_values(item)
+
+
+def _value_band(math_ir: dict[str, Any]) -> str:
+    values = [abs(value) for value in _numeric_values(_semantic_math_ir(math_ir))]
+    maximum = max(values, default=0)
+    if maximum <= 10:
+        return "0_10"
+    if maximum <= 20:
+        return "11_20"
+    if maximum <= 100:
+        return "21_100"
+    if maximum <= 1000:
+        return "101_1000"
+    return "over_1000"
 
 
 def solve_math_ir(
@@ -519,7 +869,7 @@ def _fraction_answer(value: Fraction) -> str:
     return str(value.numerator) if value.denominator == 1 else f"{value.numerator}/{value.denominator}"
 
 
-def _language_prompts(
+def _base_language_prompts(
     math_ir: dict[str, Any], *, criterion: str | None = None
 ) -> tuple[str, ...]:
     op = math_ir["op"]
@@ -550,6 +900,10 @@ def _language_prompts(
             "difference": (f"Find the difference between {left} and {right}.", f"How far apart are {left} and {right}?"),
             "multiply": (f"Calculate {left} x {right}.", f"What is the product of {left} and {right}?"),
         }
+        if criterion == "2AS-1":
+            return tuple(f"{prompt} Use a make-ten step." for prompt in templates[op])
+        if criterion in {"2MD-1", "2MD-2"}:
+            return tuple(f"{prompt} Use a fact-family check." for prompt in templates[op])
         return templates[op]
     if op == "missing_addend":
         known, total = math_ir["known"], math_ir["total"]
@@ -565,7 +919,10 @@ def _language_prompts(
         return (f"Calculate {value} + ({delta}).", f"Change {value} by {delta}.")
     if op == "divide":
         dividend, divisor = math_ir["dividend"], math_ir["divisor"]
-        return (f"Calculate {dividend} divided by {divisor}.", f"How many groups of {divisor} are in {dividend}?")
+        prompts = (f"Calculate {dividend} divided by {divisor}.", f"How many groups of {divisor} are in {dividend}?")
+        if criterion == "2MD-2":
+            return tuple(f"{prompt} Use a fact-family check." for prompt in prompts)
+        return prompts
     if op == "fraction_add":
         left, right = math_ir["left"], math_ir["right"]
         return (f"Add {left[0]}/{left[1]} and {right[0]}/{right[1]}.", f"Find {left[0]}/{left[1]} + {right[0]}/{right[1]} in simplest form.")
@@ -622,6 +979,21 @@ def _language_prompts(
     if op == "euclid_gcd_invariant":
         return (f"Verify gcd({math_ir['a']},{math_ir['b']}) = gcd({math_ir['b']},{math_ir['a']} mod {math_ir['b']}).", f"Check one Euclidean-algorithm invariant step for {math_ir['a']} and {math_ir['b']}.")
     raise ValueError(f"no language templates for operation: {op}")
+
+
+def _language_prompts(
+    math_ir: dict[str, Any], *, criterion: str | None = None
+) -> tuple[str, ...]:
+    prompts = _base_language_prompts(math_ir, criterion=criterion)
+    representation = str(math_ir.get("representation", "")).strip()
+    strategy = str(math_ir.get("strategy", "")).strip()
+    if not representation and not strategy:
+        return prompts
+    instruction = (
+        f" Encode the mathematical request with representation={representation}"
+        f" and strategy={strategy}."
+    )
+    return tuple(prompt + instruction for prompt in prompts)
 
 
 def _canonical_json_with_spans(
@@ -777,11 +1149,17 @@ def _records_for_object(
     phases: tuple[dict[str, Any], ...] = PHASES,
     language_variants_per_object: int = 2,
     procedure_schema: str = EXPANDED_PROCEDURE_SCHEMA,
+    dataset_recipe: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     answer, derivation = solve_math_ir(math_ir, procedure_schema=procedure_schema)
     math_ir_text = canonical_json(math_ir)
     trace, spans = _trace(answer, derivation, math_ir)
     object_id = _sha(math_ir)
+    semantic_object_id = (
+        _semantic_object_id(math_ir)
+        if dataset_recipe == V6_DATASET_RECIPE
+        else object_id
+    )
     phase = phases[phase_index]
     prompts = _language_prompts(math_ir, criterion=criterion)
     if not 1 <= language_variants_per_object <= len(prompts):
@@ -811,9 +1189,15 @@ def _records_for_object(
             "representation": "canonical_json_math_ir_v1",
             "evaluation_mode": "held_out_objects_within_taught_domain",
             "math_object_id": object_id,
+            "math_semantic_id": semantic_object_id,
             "language_variant": variant,
             "procedure_schema": procedure_schema,
             "computation_spans": spans,
+            "pedagogical_representation": str(
+                math_ir.get("representation", "canonical")
+            ),
+            "pedagogical_strategy": str(math_ir.get("strategy", "canonical")),
+            "value_band": _value_band(math_ir),
         }
         yield make_v2_record(
             split=split,
@@ -834,8 +1218,17 @@ def _records_for_object(
 
 
 @lru_cache(maxsize=None)
-def _candidate_capacity(criterion: str) -> int:
-    return sum(1 for _ in _candidate_irs(criterion))
+def _candidate_capacity(criterion: str, dataset_recipe: str | None = None) -> int:
+    return sum(1 for _ in _candidate_irs(criterion, dataset_recipe))
+
+
+@lru_cache(maxsize=None)
+def _semantic_candidate_capacity(
+    criterion: str, dataset_recipe: str | None = None
+) -> int:
+    if dataset_recipe != V6_DATASET_RECIPE:
+        return _candidate_capacity(criterion, dataset_recipe)
+    return sum(1 for _ in _v6_base_candidate_irs(criterion))
 
 
 def _operation_key(math_ir: dict[str, Any]) -> str:
@@ -847,8 +1240,17 @@ def _operation_key(math_ir: dict[str, Any]) -> str:
 
 
 @lru_cache(maxsize=None)
-def _criterion_operations(criterion: str) -> tuple[str, ...]:
-    return tuple(sorted({_operation_key(item) for item in _candidate_irs(criterion)}))
+def _criterion_operations(
+    criterion: str, dataset_recipe: str | None = None
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                _operation_key(item)
+                for item in _candidate_irs(criterion, dataset_recipe)
+            }
+        )
+    )
 
 
 def _criterion_split_count(config: dict[str, Any], criterion: str, split: str) -> int:
@@ -859,6 +1261,7 @@ def _criterion_split_count(config: dict[str, Any], criterion: str, split: str) -
 def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]:
     phases = phases_for_config(config)
     criteria = [criterion for phase in phases for criterion in phase["criteria"]]
+    dataset_recipe = str(config.get("dataset_recipe", "")) or None
     total_records = config.get("total_train_records")
     if total_records is None:
         return {
@@ -881,11 +1284,29 @@ def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]
         for criterion in criteria
     }
     available = {
-        criterion: _candidate_capacity(criterion)
-        - validation[criterion]
-        - test[criterion]
+        criterion: _candidate_capacity(criterion, dataset_recipe)
+        - (validation[criterion] + test[criterion])
+        * (
+            len(_variant_specs(criterion))
+            if dataset_recipe == V6_DATASET_RECIPE
+            else 1
+        )
         for criterion in criteria
     }
+    semantic_capacity = {
+        criterion: _semantic_candidate_capacity(criterion, dataset_recipe)
+        for criterion in criteria
+    }
+    insufficient_holdout = [
+        criterion
+        for criterion in criteria
+        if validation[criterion] + test[criterion] >= semantic_capacity[criterion]
+    ]
+    if insufficient_holdout:
+        raise ValueError(
+            "criteria lack semantically disjoint holdout capacity: "
+            + ", ".join(insufficient_holdout)
+        )
     if any(value < 1 for value in available.values()):
         short = [criterion for criterion, value in available.items() if value < 1]
         raise ValueError(f"criteria lack split capacity: {short}")
@@ -893,23 +1314,60 @@ def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]
         raise ValueError(
             f"candidate capacity {sum(available.values())} is below requested {target}"
         )
-    train = {criterion: 0 for criterion in criteria}
-    remaining = target
-    while remaining:
-        eligible = [criterion for criterion in criteria if train[criterion] < available[criterion]]
-        if not eligible:
-            raise RuntimeError("training allocation exhausted unexpectedly")
-        share = max(1, remaining // len(eligible))
-        progressed = 0
-        for criterion in eligible:
-            count = min(share, available[criterion] - train[criterion], remaining)
-            train[criterion] += count
-            remaining -= count
-            progressed += count
-            if not remaining:
-                break
-        if not progressed:
-            raise RuntimeError("training allocation made no progress")
+    explicit_targets = config.get("criterion_train_targets")
+    if explicit_targets is not None:
+        normalized_targets = {
+            str(criterion): int(count)
+            for criterion, count in dict(explicit_targets).items()
+        }
+        missing = sorted(set(criteria) - set(normalized_targets))
+        unexpected = sorted(set(normalized_targets) - set(criteria))
+        if missing or unexpected:
+            raise ValueError(
+                "criterion_train_targets must exactly cover the curriculum; "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        if any(count < 1 for count in normalized_targets.values()):
+            raise ValueError("criterion_train_targets must all be positive")
+        if sum(normalized_targets.values()) != target:
+            raise ValueError(
+                "criterion_train_targets must sum to total_train_records"
+            )
+        shortfalls = {
+            criterion: {
+                "requested": normalized_targets[criterion],
+                "available": available[criterion],
+            }
+            for criterion in criteria
+            if normalized_targets[criterion] > available[criterion]
+        }
+        if shortfalls:
+            raise ValueError(f"criterion train target capacity shortfall: {shortfalls}")
+        train = normalized_targets
+    else:
+        train = {criterion: 0 for criterion in criteria}
+        remaining = target
+        while remaining:
+            eligible = [
+                criterion
+                for criterion in criteria
+                if train[criterion] < available[criterion]
+            ]
+            if not eligible:
+                raise RuntimeError("training allocation exhausted unexpectedly")
+            share = max(1, remaining // len(eligible))
+            progressed = 0
+            for criterion in eligible:
+                count = min(
+                    share, available[criterion] - train[criterion], remaining
+                )
+                train[criterion] += count
+                remaining -= count
+                progressed += count
+                if not remaining:
+                    break
+            if not progressed:
+                raise RuntimeError("training allocation made no progress")
     return {
         criterion: {
             "train": train[criterion],
@@ -927,16 +1385,34 @@ def _balanced_result_rows(
     count: int,
     split: str,
     seed: int,
-    held_out_ids: set[str],
+    held_out_semantic_ids: set[str],
+    dataset_recipe: str | None,
 ) -> list[dict[str, Any]]:
-    buckets: dict[str, list[dict[str, Any]]] = {}
-    for item in _candidate_irs(criterion):
-        if _operation_key(item) != operation or _sha(item) in held_out_ids:
+    identity = (
+        _semantic_object_id
+        if dataset_recipe == V6_DATASET_RECIPE
+        else _sha
+    )
+    bucket_maps: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in _candidate_irs(criterion, dataset_recipe):
+        semantic_id = identity(item)
+        if (
+            _operation_key(item) != operation
+            or semantic_id in held_out_semantic_ids
+        ):
             continue
         answer, _ = solve_math_ir(item)
-        buckets.setdefault(answer, []).append(item)
+        answer_bucket = bucket_maps.setdefault(answer, {})
+        incumbent = answer_bucket.get(semantic_id)
+        if incumbent is None or _sha(
+            [seed, criterion, split, operation, item]
+        ) < _sha([seed, criterion, split, operation, incumbent]):
+            answer_bucket[semantic_id] = item
+    buckets = {
+        answer: list(rows.values()) for answer, rows in bucket_maps.items()
+    }
     selected: list[dict[str, Any]] = []
-    selected_ids: set[str] = set()
+    selected_semantic_ids: set[str] = set()
     round_index = 0
     while len(selected) < count:
         progressed = False
@@ -950,7 +1426,7 @@ def _balanced_result_rows(
             remaining = [
                 item
                 for item in buckets[answer]
-                if _sha(item) not in selected_ids
+                if identity(item) not in selected_semantic_ids
             ]
             # Always retain at least one example of every result in training.
             if len(remaining) <= 1:
@@ -962,7 +1438,7 @@ def _balanced_result_rows(
                 ),
             )
             selected.append(chosen)
-            selected_ids.add(_sha(chosen))
+            selected_semantic_ids.add(identity(chosen))
             progressed = True
             if len(selected) == count:
                 break
@@ -975,6 +1451,21 @@ def _balanced_result_rows(
     return selected
 
 
+def _smallest_distinct_semantic_rows(
+    count: int,
+    rows: Iterable[dict[str, Any]],
+    *,
+    key,
+) -> list[dict[str, Any]]:
+    best_by_semantic: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        semantic_id = _semantic_object_id(item)
+        incumbent = best_by_semantic.get(semantic_id)
+        if incumbent is None or key(item) < key(incumbent):
+            best_by_semantic[semantic_id] = item
+    return nsmallest(count, best_by_semantic.values(), key=key)
+
+
 @lru_cache(maxsize=None)
 def _split_objects_cached(
     criterion: str,
@@ -983,10 +1474,20 @@ def _split_objects_cached(
     test_count: int,
     seed: int,
     result_stratified: bool,
+    dataset_recipe: str | None,
 ) -> dict[str, tuple[dict[str, Any], ...]]:
-    operations = _criterion_operations(criterion)
+    identity = (
+        _semantic_object_id
+        if dataset_recipe == V6_DATASET_RECIPE
+        else _sha
+    )
+    operations = _criterion_operations(criterion, dataset_recipe)
     output: dict[str, tuple[dict[str, Any], ...]] = {}
-    held_out_ids: set[str] = set()
+    held_out_semantic_ids: set[str] = set()
+    has_variants = (
+        dataset_recipe == V6_DATASET_RECIPE
+        and len(_variant_specs(criterion)) > 1
+    )
     for split, total in (("validation", validation_count), ("test", test_count)):
         selected: list[dict[str, Any]] = []
         for index, operation in enumerate(operations):
@@ -998,29 +1499,42 @@ def _split_objects_cached(
                     count=count,
                     split=split,
                     seed=seed,
-                    held_out_ids=held_out_ids,
+                    held_out_semantic_ids=held_out_semantic_ids,
+                    dataset_recipe=dataset_recipe,
                 )
             else:
-                operation_rows = nsmallest(
-                    count,
-                    (
-                        item
-                        for item in _candidate_irs(criterion)
-                        if _operation_key(item) == operation
-                        and _sha(item) not in held_out_ids
-                    ),
-                    key=lambda item: _sha([seed, criterion, split, operation, item]),
+                candidates = (
+                    item
+                    for item in _candidate_irs(criterion, dataset_recipe)
+                    if _operation_key(item) == operation
+                    and identity(item) not in held_out_semantic_ids
+                )
+                selection_key = lambda item: _sha(
+                    [seed, criterion, split, operation, item]
+                )
+                operation_rows = (
+                    _smallest_distinct_semantic_rows(
+                        count, candidates, key=selection_key
+                    )
+                    if has_variants
+                    else nsmallest(count, candidates, key=selection_key)
                 )
             if len(operation_rows) < count:
                 raise ValueError(
                     f"criterion {criterion} operation {operation} lacks {split} capacity"
                 )
             selected.extend(operation_rows)
-            held_out_ids.update(_sha(item) for item in operation_rows)
+            held_out_semantic_ids.update(
+                identity(item) for item in operation_rows
+            )
         output[split] = tuple(selected)
     train = nsmallest(
         train_count,
-        (item for item in _candidate_irs(criterion) if _sha(item) not in held_out_ids),
+        (
+            item
+            for item in _candidate_irs(criterion, dataset_recipe)
+            if identity(item) not in held_out_semantic_ids
+        ),
         key=lambda item: _sha([seed, criterion, "train", item]),
     )
     if len(train) < train_count:
@@ -1035,6 +1549,7 @@ def _split_objects(
     seed: int,
     *,
     result_stratified: bool = False,
+    dataset_recipe: str | None = None,
 ) -> dict[str, tuple[dict[str, Any], ...]]:
     return _split_objects_cached(
         criterion,
@@ -1043,6 +1558,7 @@ def _split_objects(
         int(split_object_counts["test"]),
         int(seed),
         bool(result_stratified),
+        dataset_recipe,
     )
 
 
@@ -1054,6 +1570,7 @@ def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]
         str(value) for value in config.get("result_balanced_criteria", [])
     }
     phases = phases_for_config(config)
+    dataset_recipe = str(config.get("dataset_recipe", "")) or None
     counts_by_criterion = _criterion_split_counts(config)
     variants = int(config.get("language_variants_per_object", 2))
     procedure_schema = str(
@@ -1069,6 +1586,7 @@ def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]
                 split_object_counts,
                 seed,
                 result_stratified=criterion in result_stratified,
+                dataset_recipe=dataset_recipe,
             )[split]
             for math_ir in objects:
                 yield from _records_for_object(
@@ -1079,6 +1597,7 @@ def iter_records(config: dict[str, Any], split: str) -> Iterator[dict[str, Any]]
                     phases=phases,
                     language_variants_per_object=variants,
                     procedure_schema=procedure_schema,
+                    dataset_recipe=dataset_recipe,
                 )
 
 
@@ -1104,6 +1623,20 @@ def iter_phase_training_records(
     if not prior_criteria:
         return
     replay_total = round(len(active_rows) * prior_fraction / active_fraction)
+    minimum_per_prior = int(
+        config["replay_policy"].get(
+            "minimum_rows_per_prior_criterion", 0
+        )
+    )
+    if minimum_per_prior < 0:
+        raise ValueError("minimum replay rows per prior criterion cannot be negative")
+    required_replay = minimum_per_prior * len(prior_criteria)
+    if minimum_per_prior and replay_total < required_replay:
+        raise ValueError(
+            f"phase {phase_index} replay budget {replay_total} cannot provide "
+            f"{minimum_per_prior} rows for each of {len(prior_criteria)} "
+            "previously accepted criteria"
+        )
     base, remainder = divmod(replay_total, len(prior_criteria))
     rows_by_criterion: dict[str, list[dict[str, Any]]] = {
         criterion: [] for criterion in prior_criteria
@@ -1122,6 +1655,95 @@ def iter_phase_training_records(
         # mastered domains (for example bounded KS1 number bonds) may contain
         # fewer distinct objects than their fair cumulative replay quota.
         for index in range(count):
+            yield rows[index % len(rows)]
+
+
+def _iter_phase_training_records_from_train_file(
+    config: dict[str, Any], phase_index: int, train_path: Path
+) -> Iterator[dict[str, Any]]:
+    """Build a phase view in one bounded-memory pass over sealed train rows."""
+
+    phases = phases_for_config(config)
+    if phase_index < 0 or phase_index >= len(phases):
+        raise ValueError(f"invalid phase index: {phase_index}")
+    counts = _criterion_split_counts(config)
+    variants = int(config.get("language_variants_per_object", 2))
+    active_criteria = set(phases[phase_index]["criteria"])
+    prior_criteria = _phase_prerequisites(phase_index, phases)
+    active_total = variants * sum(
+        counts[criterion]["train"] for criterion in active_criteria
+    )
+    active_fraction = float(config["replay_policy"]["active_fraction"])
+    prior_fraction = float(config["replay_policy"]["prior_fraction"])
+    if abs(active_fraction + prior_fraction - 1.0) > 1e-9:
+        raise ValueError("active and prior replay fractions must sum to one")
+    replay_total = (
+        round(active_total * prior_fraction / active_fraction)
+        if prior_criteria
+        else 0
+    )
+    base, remainder = (
+        divmod(replay_total, len(prior_criteria))
+        if prior_criteria
+        else (0, 0)
+    )
+    replay_quotas = {
+        criterion: base + int(index < remainder)
+        for index, criterion in enumerate(prior_criteria)
+    }
+    minimum_per_prior = int(
+        config["replay_policy"].get(
+            "minimum_rows_per_prior_criterion", 0
+        )
+    )
+    if minimum_per_prior < 0:
+        raise ValueError("minimum replay rows per prior criterion cannot be negative")
+    if minimum_per_prior and any(
+        quota < minimum_per_prior for quota in replay_quotas.values()
+    ):
+        raise ValueError(
+            f"phase {phase_index} cannot provide the configured replay floor"
+        )
+
+    # Each heap retains only the deterministically smallest rows required for
+    # that criterion. Negative integer hashes turn heapq into a bounded max-heap.
+    replay_heaps: dict[str, list[tuple[int, str, dict[str, Any]]]] = {
+        criterion: [] for criterion in prior_criteria
+    }
+    active_seen = 0
+    for _line_number, record in _iter_jsonl(train_path):
+        criterion = str(record["criterion_id"])
+        if criterion in active_criteria:
+            active_seen += 1
+            yield record
+            continue
+        quota = replay_quotas.get(criterion, 0)
+        if not quota:
+            continue
+        row_hash = _sha([config["seed"], phase_index, record["record_id"]])
+        item = (-int(row_hash, 16), str(record["record_id"]), record)
+        heap = replay_heaps[criterion]
+        if len(heap) < quota:
+            heappush(heap, item)
+        elif item[0] > heap[0][0]:
+            heapreplace(heap, item)
+    if active_seen != active_total:
+        raise ValueError(
+            f"phase {phase_index} active row count {active_seen} != {active_total}"
+        )
+    for criterion in prior_criteria:
+        quota = replay_quotas[criterion]
+        if not quota:
+            continue
+        rows = [item[2] for item in replay_heaps[criterion]]
+        rows.sort(
+            key=lambda record: _sha(
+                [config["seed"], phase_index, record["record_id"]]
+            )
+        )
+        if not rows:
+            raise ValueError(f"no replay rows for criterion {criterion}")
+        for index in range(quota):
             yield rows[index % len(rows)]
 
 
@@ -1191,12 +1813,19 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
             "sha256": file_sha256(path),
         }
     phases = phases_for_config(config)
+    dataset_recipe = str(config.get("dataset_recipe", "")) or None
+    split_counts = _criterion_split_counts(config)
     phase_files: dict[str, dict[str, Any]] = {}
     phase_validation_files: dict[str, dict[str, Any]] = {}
     split_files = dict(files)
     for phase_index, phase in enumerate(phases):
         path = output_root / "phase_views" / f"{phase_index:02d}_{phase['name']}.train.jsonl"
-        count = _write_jsonl(path, iter_phase_training_records(config, phase_index))
+        count = _write_jsonl(
+            path,
+            _iter_phase_training_records_from_train_file(
+                config, phase_index, output_root / files["train"]["path"]
+            ),
+        )
         phase_files[phase["name"]] = {
             "phase_index": phase_index,
             "path": path.relative_to(output_root).as_posix(),
@@ -1242,9 +1871,31 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
         "generator_sha256": file_sha256(Path(__file__)),
         "seed": int(config["seed"]),
         "objects_per_criterion": config["objects_per_criterion"],
-        "criterion_split_object_counts": _criterion_split_counts(config),
+        "criterion_split_object_counts": split_counts,
+        "criterion_capacity": {
+            criterion: {
+                "candidate_objects": _candidate_capacity(
+                    criterion, dataset_recipe
+                ),
+                "semantic_objects": _semantic_candidate_capacity(
+                    criterion, dataset_recipe
+                ),
+                "selected_train_objects": split_counts[criterion]["train"],
+            }
+            for phase in phases
+            for criterion in phase["criteria"]
+        },
+        "phase_train_targets": {
+            phase["name"]: sum(
+                split_counts[criterion]["train"]
+                for criterion in phase["criteria"]
+            )
+            for phase in phases
+        },
         "criterion_operations": {
-            criterion: list(_criterion_operations(criterion))
+            criterion: list(
+                _criterion_operations(criterion, dataset_recipe)
+            )
             for phase in phases
             for criterion in phase["criteria"]
         },
@@ -1260,6 +1911,11 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
             "prior_fraction": float(config["replay_policy"]["prior_fraction"]),
             "prior_sampling": "criterion_balanced_all_accepted_phases",
             "prior_replacement": "deterministic_cycle_when_quota_exceeds_domain",
+            "minimum_rows_per_prior_criterion": int(
+                config["replay_policy"].get(
+                    "minimum_rows_per_prior_criterion", 0
+                )
+            ),
             "future_phase_exposure": "forbidden",
         },
         "files": files,
@@ -1334,10 +1990,17 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
     db_path = Path(db_name)
     counters: Counter[str] = Counter()
     criterion_counts: Counter[str] = Counter()
+    operation_counts: Counter[str] = Counter()
+    variant_counts: Counter[str] = Counter()
+    value_band_counts: Counter[str] = Counter()
     try:
         connection = sqlite3.connect(db_path)
         connection.execute("CREATE TABLE records (record_id TEXT PRIMARY KEY, split TEXT NOT NULL)")
         connection.execute("CREATE TABLE objects (object_id TEXT PRIMARY KEY, split TEXT NOT NULL)")
+        connection.execute(
+            "CREATE TABLE semantic_objects "
+            "(semantic_id TEXT PRIMARY KEY, split TEXT NOT NULL)"
+        )
         connection.execute("CREATE TABLE prompts (prompt_hash TEXT PRIMARY KEY, split TEXT NOT NULL)")
         for split in SPLITS:
             file_info = manifest["files"][split]
@@ -1396,6 +2059,32 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
                         )
                     elif existing[0] != split:
                         raise ValueError("math object occurs in multiple splits")
+                    expected_semantic_id = (
+                        _semantic_object_id(record["math_ir"])
+                        if str(
+                            manifest.get("config", {}).get(
+                                "dataset_recipe", ""
+                            )
+                        )
+                        == V6_DATASET_RECIPE
+                        else _sha(record["math_ir"])
+                    )
+                    if record.get("math_semantic_id") != expected_semantic_id:
+                        raise ValueError("math semantic identity mismatch")
+                    existing_semantic = connection.execute(
+                        "SELECT split FROM semantic_objects WHERE semantic_id = ?",
+                        (expected_semantic_id,),
+                    ).fetchone()
+                    if existing_semantic is None:
+                        connection.execute(
+                            "INSERT INTO semantic_objects(semantic_id, split) "
+                            "VALUES (?, ?)",
+                            (expected_semantic_id, split),
+                        )
+                    elif existing_semantic[0] != split:
+                        raise ValueError(
+                            "semantic math problem occurs in multiple splits"
+                        )
                     prompt_hash = _sha(record["natural_language_prompt"].casefold())
                     connection.execute(
                         "INSERT INTO prompts(prompt_hash, split) VALUES (?, ?)",
@@ -1405,6 +2094,18 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
                     raise ValueError(f"{path}:{line_number}: {error}") from error
                 counters[f"records.{split}"] += 1
                 criterion_counts[f"{split}.{criterion}"] += 1
+                if split == "train":
+                    operation_counts[
+                        f"{criterion}.{record['operation']}"
+                    ] += 1
+                    variant_counts[
+                        f"{criterion}."
+                        f"{record.get('pedagogical_representation', 'canonical')}."
+                        f"{record.get('pedagogical_strategy', 'canonical')}"
+                    ] += 1
+                    value_band_counts[
+                        f"{criterion}.{record.get('value_band', 'unknown')}"
+                    ] += 1
             connection.commit()
             if counters[f"records.{split}"] != int(file_info["records"]):
                 raise ValueError(f"record count mismatch for {split}")
@@ -1471,22 +2172,81 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
                     )
                 mode_counts[mode] = count
             phase_validation_audits[phase_name] = mode_counts
+        requirements = dict(
+            manifest.get("config", {}).get(
+                "dataset_quality_requirements", {}
+            )
+        )
+        minimum_criterion = int(
+            requirements.get("minimum_train_records_per_criterion", 0)
+        )
+        criterion_shortfalls = {
+            criterion: criterion_counts[f"train.{criterion}"]
+            for criterion in criterion_phase
+            if criterion_counts[f"train.{criterion}"] < minimum_criterion
+        }
+        if criterion_shortfalls:
+            raise ValueError(
+                f"criterion training count shortfall: {criterion_shortfalls}"
+            )
+        minimum_operation = int(
+            requirements.get("minimum_train_records_per_operation", 0)
+        )
+        operation_shortfalls = {}
+        for criterion, operations in manifest.get(
+            "criterion_operations", {}
+        ).items():
+            for operation in operations:
+                count = operation_counts[f"{criterion}.{operation}"]
+                if count < minimum_operation:
+                    operation_shortfalls[f"{criterion}.{operation}"] = count
+        if operation_shortfalls:
+            raise ValueError(
+                f"operation training count shortfall: {operation_shortfalls}"
+            )
+        minimum_variant = int(
+            requirements.get("minimum_train_records_per_variant", 0)
+        )
+        variant_shortfalls = {}
+        if str(manifest.get("config", {}).get("dataset_recipe", "")) == V6_DATASET_RECIPE:
+            for criterion in criterion_phase:
+                for variant in _variant_specs(criterion):
+                    if not variant:
+                        continue
+                    key = (
+                        f"{criterion}.{variant['representation']}."
+                        f"{variant['strategy']}"
+                    )
+                    count = variant_counts[key]
+                    if count < minimum_variant:
+                        variant_shortfalls[key] = count
+        if variant_shortfalls:
+            raise ValueError(
+                f"pedagogical variant training count shortfall: {variant_shortfalls}"
+            )
         return {
             "status": "passed",
             "records": {split: counters[f"records.{split}"] for split in SPLITS},
             "criterion_counts": dict(sorted(criterion_counts.items())),
+            "training_diversity": {
+                "operation_counts": dict(sorted(operation_counts.items())),
+                "variant_counts": dict(sorted(variant_counts.items())),
+                "value_band_counts": dict(sorted(value_band_counts.items())),
+            },
             "phase_views": phase_audits,
             "phase_validation": phase_validation_audits,
             "checks": [
                 "streaming_json_validation",
                 "sqlite_bounded_memory_uniqueness",
                 "no_math_object_split_overlap",
+                "no_semantic_math_problem_split_overlap",
                 "no_prompt_split_overlap",
                 "executable_answer_and_derivation",
                 "canonical_language_free_math_view",
                 "strict_phase_and_prerequisite_metadata",
                 "future_phase_training_exposure_forbidden",
                 "criterion_balanced_cumulative_replay",
+                "explicit_criterion_operation_and_variant_capacity",
                 "valid_computation_spans",
             ],
         }
