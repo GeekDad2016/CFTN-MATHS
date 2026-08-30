@@ -1,7 +1,7 @@
 {
   "format": "cftn_canonical_math_curriculum_v1",
   "curriculum_profile": "master_experiment_v1",
-  "dataset_recipe": "canonical_compact_semantic_hybrid_v5",
+  "dataset_recipe": "canonical_targeted_v5_stage235_v9",
   "procedure_schema": "compact_executable_v2",
   "trace_acceptance_metric": "semantic_v1",
   "seed": 29082026,

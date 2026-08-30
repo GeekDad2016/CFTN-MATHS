@@ -25,6 +25,10 @@ EXPANDED_PROCEDURE_SCHEMA = "expanded_count_on_v1"
 COMPACT_PROCEDURE_SCHEMA = "compact_executable_v2"
 PROCEDURE_SCHEMAS = {EXPANDED_PROCEDURE_SCHEMA, COMPACT_PROCEDURE_SCHEMA}
 V6_DATASET_RECIPE = "canonical_balanced_progression_v6"
+V9_DATASET_RECIPE = "canonical_targeted_v5_stage235_v9"
+V9_VARIANT_CRITERIA = frozenset(
+    {"1NF-1", "1AS-2", "2NPV-1", "2NPV-2", "2AS-1", "2AS-2", "2MD-1", "2MD-2"}
+)
 PEDAGOGICAL_VARIANT_FIELDS = frozenset({"representation", "strategy"})
 
 
@@ -399,23 +403,38 @@ def _variant_specs(criterion: str) -> tuple[dict[str, str], ...]:
             ("direct_recall", "count_on", "make_ten", "inverse_check"),
         ),
         "1AS-2": (
-            ("equation", "part_whole", "number_line", "fact_family", "balance"),
+            (
+                "equation", "part_whole", "number_line", "fact_family", "balance",
+                "bar_model", "ten_frame",
+            ),
             ("complete_whole", "inverse_check"),
         ),
         "2NPV-1": (
-            ("base_ten", "expanded_form", "place_value_chart", "partition", "recombine"),
+            (
+                "base_ten", "expanded_form", "place_value_chart", "partition", "recombine",
+                "digit_cards", "abacus", "place_value_table", "bundles", "arrow_cards",
+            ),
             ("read", "compose", "decompose", "verify"),
         ),
         "2NPV-2": (
-            ("number_line", "place_value_chart", "interval", "rounding_frame", "base_ten", "ordering"),
+            (
+                "number_line", "place_value_chart", "interval", "rounding_frame", "base_ten", "ordering",
+                "open_number_line", "tens_frame", "compare_bounds", "partition", "benchmark_tens",
+            ),
             ("locate", "bound", "decompose", "verify"),
         ),
         "2AS-1": (
-            ("equation", "part_whole", "number_line", "base_ten"),
+            (
+                "equation", "part_whole", "number_line", "base_ten", "ten_frame",
+                "bar_model", "fact_family", "balance", "number_bond", "open_number_line",
+            ),
             ("bridge_ten", "make_ten"),
         ),
         "2AS-2": (
-            ("equation", "part_whole", "number_line", "comparison", "fact_family"),
+            (
+                "equation", "part_whole", "number_line", "comparison", "fact_family",
+                "ten_frame", "bar_model", "number_bond", "open_number_line",
+            ),
             ("count_up", "subtract"),
         ),
         "2AS-3": (
@@ -626,12 +645,25 @@ def _v6_base_candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
 def _candidate_irs(
     criterion: str, dataset_recipe: str | None = None
 ) -> Iterator[dict[str, Any]]:
+    if dataset_recipe == V6_DATASET_RECIPE:
+        for base in _v6_base_candidate_irs(criterion):
+            for variant in _variant_specs(criterion):
+                yield {**base, **variant}
+        return
+    if dataset_recipe == V9_DATASET_RECIPE and criterion in V9_VARIANT_CRITERIA:
+        for base in _base_candidate_irs(criterion):
+            for variant in _variant_specs(criterion):
+                yield {**base, **variant}
+        return
     if dataset_recipe != V6_DATASET_RECIPE:
         yield from _base_candidate_irs(criterion)
         return
-    for base in _v6_base_candidate_irs(criterion):
-        for variant in _variant_specs(criterion):
-            yield {**base, **variant}
+
+
+def _uses_pedagogical_variants(criterion: str, dataset_recipe: str | None) -> bool:
+    return dataset_recipe == V6_DATASET_RECIPE or (
+        dataset_recipe == V9_DATASET_RECIPE and criterion in V9_VARIANT_CRITERIA
+    )
 
 
 def _semantic_math_ir(math_ir: dict[str, Any]) -> dict[str, Any]:
@@ -1157,7 +1189,7 @@ def _records_for_object(
     object_id = _sha(math_ir)
     semantic_object_id = (
         _semantic_object_id(math_ir)
-        if dataset_recipe == V6_DATASET_RECIPE
+        if _uses_pedagogical_variants(criterion, dataset_recipe)
         else object_id
     )
     phase = phases[phase_index]
@@ -1226,7 +1258,7 @@ def _candidate_capacity(criterion: str, dataset_recipe: str | None = None) -> in
 def _semantic_candidate_capacity(
     criterion: str, dataset_recipe: str | None = None
 ) -> int:
-    if dataset_recipe != V6_DATASET_RECIPE:
+    if not _uses_pedagogical_variants(criterion, dataset_recipe):
         return _candidate_capacity(criterion, dataset_recipe)
     return sum(1 for _ in _v6_base_candidate_irs(criterion))
 
@@ -1288,7 +1320,7 @@ def _criterion_split_counts(config: dict[str, Any]) -> dict[str, dict[str, int]]
         - (validation[criterion] + test[criterion])
         * (
             len(_variant_specs(criterion))
-            if dataset_recipe == V6_DATASET_RECIPE
+            if _uses_pedagogical_variants(criterion, dataset_recipe)
             else 1
         )
         for criterion in criteria
@@ -1390,7 +1422,7 @@ def _balanced_result_rows(
 ) -> list[dict[str, Any]]:
     identity = (
         _semantic_object_id
-        if dataset_recipe == V6_DATASET_RECIPE
+        if _uses_pedagogical_variants(criterion, dataset_recipe)
         else _sha
     )
     bucket_maps: dict[str, dict[str, dict[str, Any]]] = {}
@@ -1485,7 +1517,7 @@ def _split_objects_cached(
     output: dict[str, tuple[dict[str, Any], ...]] = {}
     held_out_semantic_ids: set[str] = set()
     has_variants = (
-        dataset_recipe == V6_DATASET_RECIPE
+        _uses_pedagogical_variants(criterion, dataset_recipe)
         and len(_variant_specs(criterion)) > 1
     )
     for split, total in (("validation", validation_count), ("test", test_count)):
@@ -2061,12 +2093,10 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
                         raise ValueError("math object occurs in multiple splits")
                     expected_semantic_id = (
                         _semantic_object_id(record["math_ir"])
-                        if str(
-                            manifest.get("config", {}).get(
-                                "dataset_recipe", ""
-                            )
+                        if _uses_pedagogical_variants(
+                            str(record["criterion_id"]),
+                            str(manifest.get("config", {}).get("dataset_recipe", "")),
                         )
-                        == V6_DATASET_RECIPE
                         else _sha(record["math_ir"])
                     )
                     if record.get("math_semantic_id") != expected_semantic_id:
@@ -2208,8 +2238,11 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
             requirements.get("minimum_train_records_per_variant", 0)
         )
         variant_shortfalls = {}
-        if str(manifest.get("config", {}).get("dataset_recipe", "")) == V6_DATASET_RECIPE:
+        recipe = str(manifest.get("config", {}).get("dataset_recipe", ""))
+        if recipe in {V6_DATASET_RECIPE, V9_DATASET_RECIPE}:
             for criterion in criterion_phase:
+                if not _uses_pedagogical_variants(criterion, recipe):
+                    continue
                 for variant in _variant_specs(criterion):
                     if not variant:
                         continue
