@@ -1510,7 +1510,7 @@ def _split_objects_cached(
 ) -> dict[str, tuple[dict[str, Any], ...]]:
     identity = (
         _semantic_object_id
-        if dataset_recipe == V6_DATASET_RECIPE
+        if _uses_pedagogical_variants(criterion, dataset_recipe)
         else _sha
     )
     operations = _criterion_operations(criterion, dataset_recipe)
