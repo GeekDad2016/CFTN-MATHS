@@ -399,6 +399,8 @@ def _variant_specs(criterion: str) -> tuple[dict[str, str], ...]:
                 "fact_family",
                 "balance",
                 "bar_model",
+                "counters",
+                "number_bond",
             ),
             ("direct_recall", "count_on", "make_ten", "inverse_check"),
         ),
@@ -1498,6 +1500,45 @@ def _smallest_distinct_semantic_rows(
     return nsmallest(count, best_by_semantic.values(), key=key)
 
 
+def _balanced_variant_rows(
+    count: int,
+    rows: Iterable[dict[str, Any]],
+    *,
+    key,
+) -> list[dict[str, Any]]:
+    """Select structural views round-robin across taught semantic objects."""
+
+    by_semantic: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_semantic.setdefault(_semantic_object_id(row), []).append(row)
+    selected: list[dict[str, Any]] = []
+    used: set[str] = set()
+    round_index = 0
+    while len(selected) < count:
+        progressed = False
+        for semantic_id in sorted(
+            by_semantic,
+            key=lambda value: _sha(["variant_round", round_index, value]),
+        ):
+            choices = [
+                row
+                for row in by_semantic[semantic_id]
+                if _sha(row) not in used
+            ]
+            if not choices:
+                continue
+            chosen = min(choices, key=key)
+            selected.append(chosen)
+            used.add(_sha(chosen))
+            progressed = True
+            if len(selected) == count:
+                break
+        if not progressed:
+            break
+        round_index += 1
+    return selected
+
+
 @lru_cache(maxsize=None)
 def _split_objects_cached(
     criterion: str,
@@ -1560,14 +1601,23 @@ def _split_objects_cached(
                 identity(item) for item in operation_rows
             )
         output[split] = tuple(selected)
-    train = nsmallest(
-        train_count,
-        (
-            item
-            for item in _candidate_irs(criterion, dataset_recipe)
-            if identity(item) not in held_out_semantic_ids
-        ),
-        key=lambda item: _sha([seed, criterion, "train", item]),
+    train_candidates = (
+        item
+        for item in _candidate_irs(criterion, dataset_recipe)
+        if identity(item) not in held_out_semantic_ids
+    )
+    train = (
+        _balanced_variant_rows(
+            train_count,
+            train_candidates,
+            key=lambda item: _sha([seed, criterion, "train", item]),
+        )
+        if has_variants
+        else nsmallest(
+            train_count,
+            train_candidates,
+            key=lambda item: _sha([seed, criterion, "train", item]),
+        )
     )
     if len(train) < train_count:
         raise ValueError(f"criterion {criterion} lacks train capacity")
