@@ -195,7 +195,11 @@ def _base_candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
             for right in range(21):
                 if 10 < left + right <= 20 and left <= 10 < left + right:
                     yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
-                if left >= right and right < 10 and 0 <= left - right < 10 and left >= 10:
+                # 10 - n is already a Year-1 fact.  This criterion begins
+                # the across-ten subtraction domain at 11 - n, keeping
+                # identical mathematical objects in one curriculum criterion
+                # and therefore one dataset split.
+                if left >= right and right < 10 and 0 <= left - right < 10 and left > 10:
                     yield {"type": "math_problem_v1", "op": "subtract", "left": left, "right": right}
     elif criterion == "2AS-2":
         for left in range(21):
@@ -210,7 +214,7 @@ def _base_candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
     elif criterion == "2AS-4":
         for left in range(10, 100):
             for right in range(10, 100):
-                if left + right <= 100:
+                if left + right <= 100 and (left, right) != (10, 10):
                     yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
                 if left >= right and (left, right) != (10, 10):
                     yield {"type": "math_problem_v1", "op": "subtract", "left": left, "right": right}
