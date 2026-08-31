@@ -26,6 +26,7 @@ COMPACT_PROCEDURE_SCHEMA = "compact_executable_v2"
 PROCEDURE_SCHEMAS = {EXPANDED_PROCEDURE_SCHEMA, COMPACT_PROCEDURE_SCHEMA}
 V6_DATASET_RECIPE = "canonical_balanced_progression_v6"
 V9_DATASET_RECIPE = "canonical_targeted_v5_stage235_v9"
+V10_DATASET_RECIPE = "canonical_v10_multiplication_decomposition_v1"
 V9_VARIANT_CRITERIA = frozenset(
     {"1NF-1", "1AS-2", "2NPV-1", "2NPV-2", "2AS-1", "2AS-2", "2MD-1", "2MD-2"}
 )
@@ -654,6 +655,12 @@ def _candidate_irs(
             for variant in _variant_specs(criterion):
                 yield {**base, **variant}
         return
+    if dataset_recipe == V10_DATASET_RECIPE:
+        # V10 retains the V5 mathematical domains.  Its difference is the
+        # versioned multiplication procedure emitted below, not a change to
+        # any earlier recipe's candidate domain.
+        yield from _base_candidate_irs(criterion)
+        return
     if dataset_recipe != V6_DATASET_RECIPE:
         yield from _base_candidate_irs(criterion)
         return
@@ -729,6 +736,7 @@ def solve_math_ir(
     math_ir: dict[str, Any],
     *,
     procedure_schema: str = EXPANDED_PROCEDURE_SCHEMA,
+    dataset_recipe: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     if procedure_schema not in PROCEDURE_SCHEMAS:
         raise ValueError(f"unsupported procedure schema: {procedure_schema}")
@@ -801,7 +809,27 @@ def solve_math_ir(
     elif op == "add_signed":
         result = int(math_ir["value"]) + int(math_ir["delta"])
     elif op == "multiply":
-        result = int(math_ir["left"]) * int(math_ir["right"])
+        left, right = int(math_ir["left"]), int(math_ir["right"])
+        result = left * right
+        if dataset_recipe == V10_DATASET_RECIPE:
+            left_tens, left_ones = divmod(left, 10)
+            right_tens, right_ones = divmod(right, 10)
+            left_tens_value, right_tens_value = left_tens * 10, right_tens * 10
+            partials = (
+                left_tens_value * right_tens_value,
+                left_tens_value * right_ones,
+                left_ones * right_tens_value,
+                left_ones * right_ones,
+            )
+            derivation = [
+                {"op": "decompose", "ones": left_ones, "tens": left_tens, "value": left},
+                {"op": "decompose", "ones": right_ones, "tens": right_tens, "value": right},
+                {"left": left_tens_value, "op": "multiply", "result": str(partials[0]), "right": right_tens_value},
+                {"left": left_tens_value, "op": "multiply", "result": str(partials[1]), "right": right_ones},
+                {"left": left_ones, "op": "multiply", "result": str(partials[2]), "right": right_tens_value},
+                {"left": left_ones, "op": "multiply", "result": str(partials[3]), "right": right_ones},
+                {"op": "add", "operands": list(partials), "result": str(result)},
+            ]
     elif op == "divide":
         dividend, divisor = int(math_ir["dividend"]), int(math_ir["divisor"])
         if divisor == 0 or dividend % divisor:
@@ -1104,6 +1132,10 @@ def _trace_roles(
                 computed.add((0, "steps", index, "sequence", sequence_index))
         if len(derivation) > 1:
             computed.add((1, "result"))
+    elif op == "multiply" and len(derivation) > 1:
+        for index, step in enumerate(derivation):
+            if "result" in step:
+                computed.add((index, "result"))
     else:
         computed.add((0, "result"))
     return {path: "compute" for path in computed}
@@ -1163,7 +1195,9 @@ def trace_semantically_matches(generation: str, record: dict[str, Any]) -> bool:
         record.get("procedure_schema", EXPANDED_PROCEDURE_SCHEMA)
     )
     expected_answer, expected_work = solve_math_ir(
-        record["math_ir"], procedure_schema=procedure_schema
+        record["math_ir"],
+        procedure_schema=procedure_schema,
+        dataset_recipe=record.get("dataset_recipe"),
     )
     return (
         text[answer_value_start:answer_end] == expected_answer
@@ -1182,7 +1216,11 @@ def _records_for_object(
     procedure_schema: str = EXPANDED_PROCEDURE_SCHEMA,
     dataset_recipe: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    answer, derivation = solve_math_ir(math_ir, procedure_schema=procedure_schema)
+    answer, derivation = solve_math_ir(
+        math_ir,
+        procedure_schema=procedure_schema,
+        dataset_recipe=dataset_recipe,
+    )
     math_ir_text = canonical_json(math_ir)
     trace, spans = _trace(answer, derivation, math_ir)
     object_id = _sha(math_ir)
@@ -1201,12 +1239,14 @@ def _records_for_object(
             "criterion_id": criterion,
             "operation": _operation_key(math_ir),
             "math_ir": math_ir,
+            "dataset_recipe": dataset_recipe,
         }
         extras = {
             "curriculum_schema": SCHEMA,
             "natural_language_prompt": prompt,
             "dispatcher_target": dispatcher_target,
             "math_ir": math_ir,
+            "dataset_recipe": dataset_recipe,
             "derivation": derivation,
             "answer": answer,
             "verifier_spec": {"kind": "exact_math_ir_v1", "math_ir": math_ir},
@@ -2109,6 +2149,10 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
                     expected_answer, expected_derivation = solve_math_ir(
                         record["math_ir"],
                         procedure_schema=expected_procedure_schema,
+                        dataset_recipe=record.get(
+                            "dataset_recipe",
+                            manifest.get("config", {}).get("dataset_recipe"),
+                        ),
                     )
                     if record["answer"] != expected_answer:
                         raise ValueError("answer does not match executable math IR")

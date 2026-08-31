@@ -1,0 +1,41 @@
+{
+  "format": "cftn_canonical_math_curriculum_v1",
+  "curriculum_profile": "master_experiment_v1",
+  "dataset_recipe": "canonical_v10_multiplication_decomposition_v1",
+  "generator_version": "v10_multiplication_decomposition_v1",
+  "procedure_schema": "compact_executable_v2",
+  "trace_acceptance_metric": "semantic_v1",
+  "seed": 29082026,
+  "total_train_records": 110392,
+  "language_variants_per_object": 1,
+  "objects_per_criterion": {"train": 12, "validation": 12, "test": 12},
+  "split_overrides": {"1AS-1": {"validation": 22, "test": 22}},
+  "criterion_train_targets": {
+    "1AS-1": 308, "1AS-2": 204, "1NF-1": 108,
+    "1NPV-1": 465, "1NPV-2": 3135,
+    "2AS-1": 48, "2AS-2": 207, "2AS-3": 327, "2AS-4": 3135,
+    "2MD-1": 8000, "2MD-2": 2500, "2NPV-1": 66, "2NPV-2": 57,
+    "KS2-MULTI-DIGIT": 3135, "KS2-LONG-MULTIPLY": 3135,
+    "KS2-EXACT-DIVIDE": 3135, "KS2-FRACTION-ADD": 3135,
+    "KS2-PERCENT": 3135, "KS2-RECTANGLE": 3135,
+    "KS3-LINEAR": 3135, "KS3-POWERS": 1087, "KS3-PYTHAGORAS": 2976,
+    "GCSE-QUADRATIC": 3135, "GCSE-SIMULTANEOUS": 3135, "GCSE-SEQUENCE": 3135,
+    "AL-DIFFERENTIATE": 3135, "AL-INTEGRATE": 3135,
+    "AL-BINOMIAL-COEFFICIENT": 3135, "AL-COMBINATION": 3135,
+    "AL-BINOMIAL-PROB": 3135, "AL-SUVAT": 3135,
+    "UG-MATRIX-DET": 3135, "UG-MATRIX-SOLVE": 3134,
+    "UG-POLYNOMIAL-LIMIT": 3134, "UG-MOD-INVERSE": 3134,
+    "UG-PERMUTATIONS": 3134, "UG-EXPECTATION": 3134,
+    "GRAD-SERIES-RADIUS": 3134, "GRAD-CYCLIC-ORDER": 3134,
+    "GRAD-EIGEN-SPECTRUM": 3134, "FORMAL-POLY-IDENTITY": 3134,
+    "FORMAL-COUNTEREXAMPLE": 3134, "FORMAL-EUCLID-INVARIANT": 3134
+  },
+  "result_balanced_criteria": ["1AS-1"],
+  "replay_policy": {"active_fraction": 0.75, "prior_fraction": 0.25},
+  "experiment_scope": {
+    "purpose": "v10_stage_4_multiplication_generalisation",
+    "dataset_change_scope": "only_original_stage_5_multiplication",
+    "future_phase_training_exposure": "forbidden",
+    "split_policy": "semantic_problem_disjoint_across_train_validation_test"
+  }
+}

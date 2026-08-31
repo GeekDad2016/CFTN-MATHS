@@ -339,6 +339,12 @@ def build_v9_cumulative_balanced_contract(contract: dict, manifest: dict) -> dic
     return build_v8_cumulative_contract(contract, manifest)
 
 
+def build_v10_multiplication_contract(contract: dict, manifest: dict) -> dict:
+    """V10 uses cumulative replay with its sealed, versioned multiplication traces."""
+
+    return build_v8_cumulative_contract(contract, manifest)
+
+
 def build_smoke_contract(contract: dict) -> dict:
     smoke_contract = copy.deepcopy(contract)
     smoke_phase = copy.deepcopy(smoke_contract["phases"][0])
@@ -387,7 +393,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--contract-profile",
-        choices=("v5", "v7_merged", "v8_cumulative", "v9_cumulative_balanced"),
+        choices=("v5", "v7_merged", "v8_cumulative", "v9_cumulative_balanced", "v10_multiplication"),
         default="v5",
     )
     parser.add_argument("--initial-checkpoint")
@@ -441,6 +447,8 @@ def main() -> None:
         contract = build_v8_cumulative_contract(contract, manifest)
     elif args.contract_profile == "v9_cumulative_balanced":
         contract = build_v9_cumulative_balanced_contract(contract, manifest)
+    elif args.contract_profile == "v10_multiplication":
+        contract = build_v10_multiplication_contract(contract, manifest)
     if args.initial_checkpoint:
         contract["source_checkpoint_sha256"] = file_sha256(args.initial_checkpoint)
     max_batches = None
