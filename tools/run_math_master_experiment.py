@@ -332,7 +332,8 @@ def build_v9_cumulative_balanced_contract(contract: dict, manifest: dict) -> dic
     """V9 uses the V5-compatible targeted dataset with full cumulative replay.
 
     Coverage is corrected in the sealed dataset only for the agreed original
-    stages 2, 3, and 5.  Do not duplicate other phase rows at sampling time.
+    stage 5 multiplication and division criteria.  Do not duplicate other
+    phase rows at sampling time.
     """
 
     return build_v8_cumulative_contract(contract, manifest)

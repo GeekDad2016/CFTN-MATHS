@@ -7,7 +7,7 @@ project:
 data:
   format: cftn_canonical_math_curriculum_v1
   calibration_examples: 1
-  train_examples: 100000
+  train_examples: 104892
   validation_examples: 526
   test_examples: 526
   heldout_language_examples: 1
