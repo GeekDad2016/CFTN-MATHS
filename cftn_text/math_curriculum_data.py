@@ -171,18 +171,11 @@ def _base_candidate_irs(criterion: str) -> Iterator[dict[str, Any]]:
                         "operands": [first, second, third],
                     }
     elif criterion == "1NF-1":
-        # Stage 2 adds non-overlapping two-digit-plus-small-number facts;
-        # facts owned by the across-ten and later within-100 stages remain
-        # in those stages.
         for left in range(11):
             for right in range(11):
                 if left + right <= 10:
                     yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
-        for left in range(11, 21):
-            for right in range(10):
-                if left + right <= 20:
-                    yield {"type": "math_problem_v1", "op": "add", "left": left, "right": right}
-                if left >= right and left <= 10:
+                if left >= right:
                     yield {"type": "math_problem_v1", "op": "subtract", "left": left, "right": right}
     elif criterion == "1AS-2":
         for total in range(2, 21):
