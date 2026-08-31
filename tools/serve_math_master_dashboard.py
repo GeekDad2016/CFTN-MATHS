@@ -16,6 +16,7 @@ from tools.run_math_master_experiment import (
     build_v7_merged_contract,
     build_v8_cumulative_contract,
     build_v9_cumulative_balanced_contract,
+    build_v10_multiplication_contract,
 )
 
 
@@ -109,6 +110,8 @@ def collect_snapshot(
         contract = build_v8_cumulative_contract(contract, manifest)
     elif contract_profile == "v9_cumulative_balanced" and contract["phases"]:
         contract = build_v9_cumulative_balanced_contract(contract, manifest)
+    elif contract_profile == "v10_multiplication" and contract["phases"]:
+        contract = build_v10_multiplication_contract(contract, manifest)
     compact = [_compact_metric(row) for row in metrics]
     latest = compact[-1] if compact else {}
     active_name = latest.get("phase")
@@ -238,7 +241,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8789)
     parser.add_argument(
         "--contract-profile",
-        choices=("v5", "v7_merged", "v8_cumulative", "v9_cumulative_balanced"),
+        choices=("v5", "v7_merged", "v8_cumulative", "v9_cumulative_balanced", "v10_multiplication"),
         default="v5",
     )
     args = parser.parse_args()
