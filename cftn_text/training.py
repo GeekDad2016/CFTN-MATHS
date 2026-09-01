@@ -1714,6 +1714,16 @@ def train_math_tower(
     patience = 0
     source_provenance: dict[str, Any] | None = None
     optimizer_phase_name: str | None = None
+    # These are normally populated when a phase installs its local scheduler.
+    # On a resume the optimizer/scheduler state is restored directly, so the
+    # active phase does not re-enter that branch before metrics are recorded.
+    # Seed the reporting fields with the configured schedule and replace them
+    # below with the resumed phase's values once curriculum state is restored.
+    scheduled_examples = configured_examples
+    scheduler_total_steps = total_steps
+    scheduler_warmup_fraction = float(
+        phase_local_optimization.get("warmup_epochs", 0)
+    ) / max(1, int(settings["max_epochs"]))
     if resume and initial_checkpoint is not None:
         raise ValueError("resume and initial_checkpoint are mutually exclusive")
     if initial_checkpoint is not None:
@@ -1789,6 +1799,21 @@ def train_math_tower(
             optimizer_phase_name = checkpoint.get("extra", {}).get(
                 "optimizer_phase_name"
             )
+            resumed_phase = phases[int(competency_curriculum_state["phase_index"])]
+            scheduled_examples = int(
+                resumed_phase.get("examples_per_epoch", configured_examples)
+            )
+            phase_maximum_epochs = int(
+                resumed_phase.get("maximum_epochs", settings["max_epochs"])
+            )
+            scheduler_total_steps = max(
+                1,
+                phase_maximum_epochs
+                * math.ceil(scheduled_examples / int(settings["batch_size"])),
+            )
+            scheduler_warmup_fraction = float(
+                phase_local_optimization.get("warmup_epochs", 0)
+            ) / max(1, phase_maximum_epochs)
     preservation_settings = dict(contract.get("preservation_distillation") or {})
     preservation_teacher: MathTower | None = None
     preservation_sources = {
@@ -2117,7 +2142,12 @@ def train_math_tower(
                     optimizer = AdamW(model.parameters(), lr=float(settings["learning_rate"]), weight_decay=float(settings["weight_decay"]))
                     scaler = make_scaler(device, dtype)
                     phase_optimizer_reset = True
-                scheduler, scheduled_examples, total_steps, scheduler_warmup_fraction = phase_scheduler(phase)
+                (
+                    scheduler,
+                    scheduled_examples,
+                    scheduler_total_steps,
+                    scheduler_warmup_fraction,
+                ) = phase_scheduler(phase)
                 optimizer_phase_name = phase_name
             if phase_name != active_phase_name:
                 best_metric = float("-inf")
@@ -2440,7 +2470,7 @@ def train_math_tower(
                     "optimizer_reset_this_epoch": phase_optimizer_reset,
                     "optimizer_phase": optimizer_phase_name,
                     "effective_examples_per_epoch": scheduled_examples,
-                    "effective_total_steps": total_steps,
+                    "effective_total_steps": scheduler_total_steps,
                     "effective_warmup_fraction": scheduler_warmup_fraction,
                     "warmup_epochs": phase_local_optimization.get("warmup_epochs"),
                     "minimum_learning_rate": scheduler_minimum_learning_rate,

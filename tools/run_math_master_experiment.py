@@ -340,15 +340,14 @@ def build_v9_cumulative_balanced_contract(contract: dict, manifest: dict) -> dic
 
 
 def build_v10_multiplication_contract(contract: dict, manifest: dict) -> dict:
-    """V10 uses cumulative replay with its sealed, versioned multiplication traces."""
+    """V10 uses cumulative replay with lossless long-trace validation."""
 
     v10 = build_v8_cumulative_contract(contract, manifest)
     for panel in v10["math_training"]["generation_validation"]["panels"]:
-        if panel["name"] == "active_04":
-            # V10 multiplication emits two decompositions, four partial
-            # products, and a final sum.  The default 224-token limit cuts a
-            # valid trace before its answer tag.
-            panel["max_new_tokens"] = 512
+        # V10 emits structured derivations whose length grows with the taught
+        # operation. A shared 2,048-token allowance prevents a phase-specific
+        # generation cap from being mistaken for a mathematical failure.
+        panel["max_new_tokens"] = 2048
     return v10
 
 
