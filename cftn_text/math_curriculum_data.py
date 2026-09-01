@@ -746,12 +746,13 @@ def solve_math_ir(
     *,
     procedure_schema: str = EXPANDED_PROCEDURE_SCHEMA,
     dataset_recipe: str | None = None,
+    criterion: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     if procedure_schema not in PROCEDURE_SCHEMAS:
         raise ValueError(f"unsupported procedure schema: {procedure_schema}")
     op = math_ir["op"]
     if dataset_recipe == V11_DATASET_RECIPE:
-        v11 = solve_v11_procedure(math_ir)
+        v11 = solve_v11_procedure(math_ir, criterion=criterion)
         if v11 is not None:
             return v11
     if op == "successor":
@@ -1149,6 +1150,18 @@ def _trace_roles(
         for index, step in enumerate(derivation):
             if "result" in step:
                 computed.add((index, "result"))
+    elif op == "divide" and derivation and derivation[0].get("op") == "long_divide_step":
+        for index, step in enumerate(derivation):
+            if step.get("op") == "long_divide_step":
+                computed.update(
+                    {
+                        (index, "dividend"),
+                        (index, "quotient_digit"),
+                        (index, "remainder"),
+                    }
+                )
+            elif "result" in step:
+                computed.add((index, "result"))
     else:
         computed.add((0, "result"))
     return {path: "compute" for path in computed}
@@ -1211,6 +1224,7 @@ def trace_semantically_matches(generation: str, record: dict[str, Any]) -> bool:
         record["math_ir"],
         procedure_schema=procedure_schema,
         dataset_recipe=record.get("dataset_recipe"),
+        criterion=record.get("criterion_id"),
     )
     return (
         text[answer_value_start:answer_end] == expected_answer
@@ -1233,6 +1247,7 @@ def _records_for_object(
         math_ir,
         procedure_schema=procedure_schema,
         dataset_recipe=dataset_recipe,
+        criterion=criterion,
     )
     math_ir_text = canonical_json(math_ir)
     trace, spans = _trace(answer, derivation, math_ir)
@@ -2171,6 +2186,7 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
                             "dataset_recipe",
                             manifest.get("config", {}).get("dataset_recipe"),
                         ),
+                        criterion=record.get("criterion_id"),
                     )
                     if record["answer"] != expected_answer:
                         raise ValueError("answer does not match executable math IR")

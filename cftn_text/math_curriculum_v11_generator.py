@@ -14,11 +14,13 @@ V11_DATASET_RECIPE = "canonical_v11_ks2_procedures_v1"
 V11_GENERATOR_VERSION = "v11_ks2_procedures_v1"
 
 
-def solve_v11_procedure(math_ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]] | None:
+def solve_v11_procedure(
+    math_ir: dict[str, Any], *, criterion: str | None = None
+) -> tuple[str, list[dict[str, Any]]] | None:
     """Return the V11 derivation for operations whose procedures are upgraded."""
 
     operation = str(math_ir.get("op", ""))
-    if operation == "multiply":
+    if operation == "multiply" and criterion == "KS2-LONG-MULTIPLY":
         left, right = int(math_ir["left"]), int(math_ir["right"])
         result = left * right
         left_tens, left_ones = divmod(left, 10)
@@ -49,7 +51,7 @@ def solve_v11_procedure(math_ir: dict[str, Any]) -> tuple[str, list[dict[str, An
             raise ValueError("long-multiplication aggregation disagrees with product")
         return str(result), derivation
 
-    if operation == "divide":
+    if operation == "divide" and criterion == "KS2-EXACT-DIVIDE":
         dividend, divisor = int(math_ir["dividend"]), int(math_ir["divisor"])
         if divisor <= 0 or dividend % divisor:
             raise ValueError("V11 exact division requires a non-zero exact divisor")
