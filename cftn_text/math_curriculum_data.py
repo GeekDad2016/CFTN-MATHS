@@ -15,6 +15,7 @@ from typing import Any, Iterable, Iterator
 
 from .config import canonical_json
 from .data_generator import file_sha256
+from .math_curriculum_v11_generator import V11_DATASET_RECIPE, solve_v11_procedure
 from .v2_data import make_v2_record, validate_v2_record
 
 
@@ -115,6 +116,14 @@ MASTER_PHASES: tuple[dict[str, Any], ...] = tuple(
 
 def _sha(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _generator_source_path(config: dict[str, Any]) -> Path:
+    """Return the versioned generator source recorded by a dataset manifest."""
+
+    if str(config.get("dataset_recipe", "")) == V11_DATASET_RECIPE:
+        return Path(__file__).with_name("math_curriculum_v11_generator.py")
+    return Path(__file__)
 
 
 def phases_for_config(config: dict[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -655,7 +664,7 @@ def _candidate_irs(
             for variant in _variant_specs(criterion):
                 yield {**base, **variant}
         return
-    if dataset_recipe == V10_DATASET_RECIPE:
+    if dataset_recipe in {V10_DATASET_RECIPE, V11_DATASET_RECIPE}:
         # V10 retains the V5 mathematical domains.  Its difference is the
         # versioned multiplication procedure emitted below, not a change to
         # any earlier recipe's candidate domain.
@@ -741,6 +750,10 @@ def solve_math_ir(
     if procedure_schema not in PROCEDURE_SCHEMAS:
         raise ValueError(f"unsupported procedure schema: {procedure_schema}")
     op = math_ir["op"]
+    if dataset_recipe == V11_DATASET_RECIPE:
+        v11 = solve_v11_procedure(math_ir)
+        if v11 is not None:
+            return v11
     if op == "successor":
         result = int(math_ir["value"]) + 1
         derivation = [
@@ -1976,6 +1989,7 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
             split_files[f"phase_{phase_index:02d}_retention"] = retention_info
             validation_info["retention"] = retention_info
         phase_validation_files[phase["name"]] = validation_info
+    generator_source = _generator_source_path(config)
     manifest = {
         "format": FORMAT,
         "schema": SCHEMA,
@@ -1987,7 +2001,8 @@ def prepare_dataset(config: dict[str, Any], output_root: Path) -> dict[str, Any]
         ),
         "config": config,
         "config_sha256": _sha(config),
-        "generator_sha256": file_sha256(Path(__file__)),
+        "generator_path": str(generator_source),
+        "generator_sha256": file_sha256(generator_source),
         "seed": int(config["seed"]),
         "objects_per_criterion": config["objects_per_criterion"],
         "criterion_split_object_counts": split_counts,
@@ -2086,7 +2101,10 @@ def audit_dataset(output_root: Path, scratch_dir: Path | None = None) -> dict[st
         raise ValueError("manifest trace acceptance metric disagrees with config")
     if _sha(manifest.get("config")) != manifest.get("config_sha256"):
         raise ValueError("manifest config hash mismatch")
-    if file_sha256(Path(__file__)) != manifest.get("generator_sha256"):
+    generator_path = Path(manifest.get("generator_path", Path(__file__)))
+    if not generator_path.is_file():
+        raise FileNotFoundError(f"recorded generator source is missing: {generator_path}")
+    if file_sha256(generator_path) != manifest.get("generator_sha256"):
         raise ValueError("dataset was built by a different generator revision")
     recorded_manifest_sha = manifest.get("manifest_sha256")
     if recorded_manifest_sha is not None:
