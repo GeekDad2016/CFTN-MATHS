@@ -70,6 +70,33 @@ def test_identity_depth_expansion_preserves_source_function():
     assert len(rebuilt.blocks) == 5
 
 
+def test_cached_incremental_math_decoding_matches_full_forward():
+    torch.manual_seed(901)
+    model = MathTower(_tiny_tower_config(2), ByteMathTokenizer.vocab_size).eval()
+    prompt = torch.tensor([[2, 10, 20, 30]], dtype=torch.long)
+    prompt_mask = torch.ones_like(prompt)
+    prefix_lengths = torch.tensor([prompt.shape[1]], dtype=torch.long)
+
+    with torch.inference_mode():
+        full_prompt = model(prompt, prompt_mask, prefix_lengths)
+        cache, cached_prompt = model.begin_cached_generation(prompt)
+        next_token = 7
+        extended = torch.cat(
+            [prompt, torch.tensor([[next_token]], dtype=torch.long)], dim=1
+        )
+        full_extended = model(
+            extended, torch.ones_like(extended), prefix_lengths
+        )
+        cached_extended = model.cached_generation_step(cache, next_token)
+
+    assert torch.allclose(
+        full_prompt.logits[:, -1:], cached_prompt.logits, atol=1.0e-6
+    )
+    assert torch.allclose(
+        full_extended.logits[:, -1:], cached_extended.logits, atol=1.0e-6
+    )
+
+
 def test_v2_capacity_contract_is_a_fail_closed_single_variable_ablation():
     root = Path(__file__).resolve().parents[1]
     config = load_config(root / "config" / "v2_broad_math.yaml")

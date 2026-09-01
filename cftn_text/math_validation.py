@@ -164,19 +164,48 @@ def evaluate_generation_panel(
     started_at = time.time()
     generations: list[str] = []
     terminations = []
-    for start in range(0, len(eligible), max(1, int(batch_size))):
-        chunk = eligible[start : start + max(1, int(batch_size))]
+    # Greedy generation repeatedly runs a full causal forward pass.  Its peak
+    # attention memory grows with both batch size and the generated length, so
+    # a batch that fits short-answer panels can OOM on a procedural panel near
+    # the configured token cap.  Back off only the failing validation chunk;
+    # this preserves the exact records, order, decoding, and acceptance result.
+    next_batch_size = max(1, int(batch_size))
+    start = 0
+    oom_retries = 0
+    effective_batch_sizes: list[int] = []
+    while start < len(eligible):
+        chunk = eligible[start : start + next_batch_size]
+        try:
+            if require_eos:
+                from tools.pilot_math_primitives import generate_with_termination
+
+                decoded = generate_with_termination(
+                    model,
+                    tokenizer,
+                    [math_problem_for_view(record, input_view) for record in chunk],
+                    int(max_new_tokens),
+                )
+                generated = [d["generation"] for d in decoded]
+            else:
+                generated, _ = generate_math_tower(
+                    model,
+                    tokenizer,
+                    [math_problem_for_view(record, input_view) for record in chunk],
+                    max_new_tokens=int(max_new_tokens),
+                )
+        except torch.OutOfMemoryError:
+            if len(chunk) == 1:
+                raise
+            oom_retries += 1
+            next_batch_size = max(1, len(chunk) // 2)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            continue
         if require_eos:
-            from tools.pilot_math_primitives import generate_with_termination
-            decoded = generate_with_termination(model, tokenizer,
-                [math_problem_for_view(record, input_view) for record in chunk], int(max_new_tokens))
-            generated = [d["generation"] for d in decoded]
             terminations.extend(decoded)
-        else:
-            generated, _ = generate_math_tower(
-                model, tokenizer, [math_problem_for_view(record, input_view) for record in chunk],
-                max_new_tokens=int(max_new_tokens))
         generations.extend(generated)
+        effective_batch_sizes.append(len(chunk))
+        start += len(chunk)
     clean = ([d["eos_terminated"] and not d["unexpected_control_token"] and not d["context_limit_hit"] and not d["budget_hit"]
               for d in terminations] if require_eos else [True] * len(generations))
     metrics, correctness = score_v2_generations([g if ok else "" for g, ok in zip(generations, clean)], eligible)
@@ -261,6 +290,10 @@ def evaluate_generation_panel(
         "excluded_over_context_rate": excluded_over_context
         / max(1, excluded_over_context + len(eligible)),
         "max_new_tokens": int(max_new_tokens),
+        "requested_batch_size": int(batch_size),
+        "effective_batch_size_min": min(effective_batch_sizes, default=0),
+        "effective_batch_size_max": max(effective_batch_sizes, default=0),
+        "oom_batch_retries": oom_retries,
         "elapsed_seconds": elapsed,
         "examples_per_second": len(eligible) / max(1e-9, elapsed),
         "failure_examples": failures,
