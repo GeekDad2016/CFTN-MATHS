@@ -1875,6 +1875,7 @@ def train_math_tower(
         phase: dict[str, Any] | None,
         *,
         suffix: str,
+        status_epoch: int,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
         generation_panels: dict[str, dict[str, Any]] = {}
         if not (
@@ -1925,6 +1926,26 @@ def train_math_tower(
                 else f"generation_validation_{suffix}.jsonl"
             )
             generation_rows_path = work_dir / generation_rows_name
+
+            def report_panel_progress(progress: dict[str, Any]) -> None:
+                write_status(
+                    _status_payload(
+                        stage="math",
+                        state="running",
+                        epoch=status_epoch,
+                        global_step=global_step,
+                        metrics={
+                            "phase": "generation_validation",
+                            "curriculum_phase": (
+                                str(phase.get("name")) if phase is not None else None
+                            ),
+                            "panel": panel_name,
+                            **progress,
+                        },
+                        started_at=started_at,
+                    )
+                )
+
             generation_panels[panel_name] = evaluate_generation_panel(
                 model,
                 tokenizer,
@@ -1954,6 +1975,7 @@ def train_math_tower(
                 rows_path=generation_rows_path,
                 input_view=collator.input_view,
                 require_eos=bool(generation_settings.get("require_eos", False)),
+                progress_callback=report_panel_progress,
             )
             generation_panels[panel_name]["split"] = str(
                 panel_spec.get("split", "validation")
@@ -2046,6 +2068,7 @@ def train_math_tower(
                     evaluate_generation_panels_for_phase(
                         phase,
                         suffix=f"entrance_{phase_index:02d}_{phase_name}",
+                        status_epoch=0,
                     )
                 )
                 entrance_validation = copy.deepcopy(entrance_teacher_forced)
@@ -2342,6 +2365,7 @@ def train_math_tower(
                     evaluate_generation_panels_for_phase(
                         phase,
                         suffix=f"epoch_{epoch:04d}",
+                        status_epoch=epoch,
                     )
                 )
                 validation["generation"] = generation_validation

@@ -4,7 +4,7 @@ import json
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import torch
 import torch.nn.functional as F
@@ -144,6 +144,7 @@ def evaluate_generation_panel(
     rows_path: str | Path | None = None,
     input_view: str = SHARED_MATH_INPUT_VIEW,
     require_eos: bool = False,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run a compact native greedy-generation panel during math training."""
 
@@ -164,6 +165,11 @@ def evaluate_generation_panel(
     started_at = time.time()
     generations: list[str] = []
     terminations = []
+    generation_diagnostics: list[dict[str, Any]] = []
+    progressive_rows_path = Path(rows_path) if rows_path is not None else None
+    if progressive_rows_path is not None:
+        progressive_rows_path.parent.mkdir(parents=True, exist_ok=True)
+        progressive_rows_path.write_text("", encoding="utf-8")
     # Greedy generation repeatedly runs a full causal forward pass.  Its peak
     # attention memory grows with both batch size and the generated length, so
     # a batch that fits short-answer panels can OOM on a procedural panel near
@@ -187,11 +193,13 @@ def evaluate_generation_panel(
                 )
                 generated = [d["generation"] for d in decoded]
             else:
+                chunk_diagnostics: list[dict[str, Any]] = []
                 generated, _ = generate_math_tower(
                     model,
                     tokenizer,
                     [math_problem_for_view(record, input_view) for record in chunk],
                     max_new_tokens=int(max_new_tokens),
+                    diagnostics=chunk_diagnostics,
                 )
         except torch.OutOfMemoryError:
             if len(chunk) == 1:
@@ -203,9 +211,99 @@ def evaluate_generation_panel(
             continue
         if require_eos:
             terminations.extend(decoded)
+            chunk_diagnostics = [
+                {
+                    "generated_tokens": int(item.get("generated_tokens", 0)),
+                    "eos_terminated": bool(item.get("eos_terminated", False)),
+                    "context_limit_hit": bool(item.get("context_limit_hit", False)),
+                    "budget_hit": bool(item.get("budget_hit", False)),
+                    "cached_incremental": False,
+                }
+                for item in decoded
+            ]
+        generation_diagnostics.extend(chunk_diagnostics)
         generations.extend(generated)
         effective_batch_sizes.append(len(chunk))
         start += len(chunk)
+        chunk_clean = (
+            [
+                item["eos_terminated"]
+                and not item["context_limit_hit"]
+                and not item["budget_hit"]
+                for item in chunk_diagnostics
+            ]
+            if require_eos
+            else [True] * len(chunk)
+        )
+        _, chunk_correctness = score_v2_generations(
+            [value if ok else "" for value, ok in zip(generated, chunk_clean)],
+            chunk,
+        )
+        if progressive_rows_path is not None:
+            with progressive_rows_path.open("a", encoding="utf-8") as handle:
+                for record, generation, correct, ok, diagnostic in zip(
+                    chunk,
+                    generated,
+                    chunk_correctness,
+                    chunk_clean,
+                    chunk_diagnostics,
+                ):
+                    handle.write(
+                        json.dumps(
+                            {
+                                "record_id": record.get(
+                                    "record_id", record.get("content_id")
+                                ),
+                                "source": record.get("source"),
+                                "family": record.get("family"),
+                                "operation": record.get("operation"),
+                                "difficulty": record.get("difficulty"),
+                                "problem": record.get("problem"),
+                                "expected_answer": record.get("normalized_answer"),
+                                "generation": generation,
+                                "parsed_answer": extract_v2_answer(generation),
+                                "correct": bool(correct),
+                                "trace_exact": bool(
+                                    ok
+                                    and generation.strip()
+                                    == str(record.get("target_trace", ""))
+                                ),
+                                "trace_semantic": bool(
+                                    ok
+                                    and trace_semantically_matches(
+                                        generation, record
+                                    )
+                                ),
+                                "termination": diagnostic,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+                handle.flush()
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "completed_examples": start,
+                    "total_examples": len(eligible),
+                    "elapsed_seconds": time.time() - started_at,
+                    "eos_terminated": sum(
+                        int(item["eos_terminated"])
+                        for item in generation_diagnostics
+                    ),
+                    "context_limit_hits": sum(
+                        int(item["context_limit_hit"])
+                        for item in generation_diagnostics
+                    ),
+                    "budget_hits": sum(
+                        int(item["budget_hit"])
+                        for item in generation_diagnostics
+                    ),
+                    "oom_batch_retries": oom_retries,
+                    "effective_batch_size": len(chunk),
+                }
+            )
     clean = ([d["eos_terminated"] and not d["unexpected_control_token"] and not d["context_limit_hit"] and not d["budget_hit"]
               for d in terminations] if require_eos else [True] * len(generations))
     metrics, correctness = score_v2_generations([g if ok else "" for g, ok in zip(generations, clean)], eligible)
@@ -241,8 +339,8 @@ def evaluate_generation_panel(
         for name, group in operation_groups.items()
     }
     rows = []
-    for record, generation, correct, ok in zip(
-        eligible, generations, correctness, clean
+    for record, generation, correct, ok, diagnostic in zip(
+        eligible, generations, correctness, clean, generation_diagnostics
     ):
         rows.append(
             {
@@ -262,6 +360,7 @@ def evaluate_generation_panel(
                 "trace_semantic": bool(
                     ok and trace_semantically_matches(generation, record)
                 ),
+                "termination": diagnostic,
             }
         )
     if rows_path is not None:
@@ -282,7 +381,15 @@ def evaluate_generation_panel(
         "trace_semantic_by_family": trace_semantic,
         "require_eos": require_eos,
         "unclean_terminations": len(clean) - sum(clean),
-        "budget_hits": sum(d["budget_hit"] for d in terminations),
+        "eos_terminated": sum(
+            int(item["eos_terminated"]) for item in generation_diagnostics
+        ),
+        "context_limit_hits": sum(
+            int(item["context_limit_hit"]) for item in generation_diagnostics
+        ),
+        "budget_hits": sum(
+            int(item["budget_hit"]) for item in generation_diagnostics
+        ),
         "panel_policy": "deterministic_round_robin_source_family_difficulty_v1",
         "input_view": str(input_view),
         "requested_examples": int(maximum_examples),

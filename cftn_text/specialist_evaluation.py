@@ -85,6 +85,7 @@ def generate_math_tower(
     problems: list[str],
     *,
     max_new_tokens: int,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[int | None]]:
     if not problems:
         return [], []
@@ -113,15 +114,30 @@ def generate_math_tower(
                 )
             else:
                 answer_predictions.append(None)
+            generated_tokens = 0
+            finish_reason = "budget"
             for _ in range(int(max_new_tokens)):
                 token = int(output.logits[0, -1].argmax(dim=-1).item())
                 if len(sequence) >= model.max_sequence_length:
+                    finish_reason = "context_limit"
                     break
                 sequence.append(token)
+                generated_tokens += 1
                 if token == tokenizer.eos_token_id:
+                    finish_reason = "eos"
                     break
                 output = model.cached_generation_step(cache, token)
             generations.append(tokenizer.decode(sequence[prefix_length:]))
+            if diagnostics is not None:
+                diagnostics.append(
+                    {
+                        "generated_tokens": generated_tokens,
+                        "eos_terminated": finish_reason == "eos",
+                        "context_limit_hit": finish_reason == "context_limit",
+                        "budget_hit": finish_reason == "budget",
+                        "cached_incremental": True,
+                    }
+                )
         return generations, answer_predictions
     sequences = [
         tokenizer.encode_generation_prefix(problem, model.max_sequence_length)
@@ -132,6 +148,8 @@ def generate_math_tower(
     )
     answer_predictions: list[int | None] | None = None
     finished = [False] * len(sequences)
+    finish_reasons: list[str | None] = [None] * len(sequences)
+    generated_token_counts = [0] * len(sequences)
     for _ in range(int(max_new_tokens)):
         input_ids, attention_mask = pad_1d(sequences, tokenizer.pad_token_id)
         input_ids = input_ids.to(device)
@@ -151,16 +169,33 @@ def generate_math_tower(
                 continue
             if len(sequences[row]) >= model.max_sequence_length:
                 finished[row] = True
+                finish_reasons[row] = "context_limit"
                 continue
             sequences[row].append(int(token))
+            generated_token_counts[row] += 1
             if int(token) == tokenizer.eos_token_id:
                 finished[row] = True
+                finish_reasons[row] = "eos"
         if all(finished):
             break
+    for row, reason in enumerate(finish_reasons):
+        if reason is None:
+            finish_reasons[row] = "budget"
     generations = [
         tokenizer.decode(sequence[int(prefix_lengths[row].item()) :])
         for row, sequence in enumerate(sequences)
     ]
+    if diagnostics is not None:
+        diagnostics.extend(
+            {
+                "generated_tokens": generated_token_counts[row],
+                "eos_terminated": finish_reasons[row] == "eos",
+                "context_limit_hit": finish_reasons[row] == "context_limit",
+                "budget_hit": finish_reasons[row] == "budget",
+                "cached_incremental": False,
+            }
+            for row in range(len(sequences))
+        )
     return generations, answer_predictions or [None] * len(problems)
 
 

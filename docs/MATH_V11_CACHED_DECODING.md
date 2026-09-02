@@ -27,6 +27,13 @@ The existing validation OOM backoff remains a fail-safe for any future model
 without cached decoding; it does not change selected records, target answers,
 generation allowance, scoring, or acceptance thresholds.
 
+Validation audit rows are flushed after every completed chunk instead of only
+after the entire panel. `status.json` reports the active panel, completed and
+total examples, elapsed time, EOS completions, context-limit hits, token-budget
+hits, effective batch size, and OOM retries. A long or malformed generation is
+therefore observable while validation is still running, and partial evidence
+survives an infrastructure interruption.
+
 ## Verification and operational status
 
 `tests/test_math_capacity.py::test_cached_incremental_math_decoding_matches_full_forward`

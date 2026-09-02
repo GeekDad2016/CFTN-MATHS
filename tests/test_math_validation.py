@@ -82,9 +82,22 @@ def test_generation_panel_reports_failures_and_writes_audit_rows(
 ):
     records = [_record("a", "addition", 1, "2"), _record("b", "fraction", 2, "1/2")]
 
-    def fake_generate(_model, _tokenizer, problems, *, max_new_tokens):
+    def fake_generate(
+        _model, _tokenizer, problems, *, max_new_tokens, diagnostics=None
+    ):
         assert max_new_tokens == 32
         values = ["<answer>2</answer>", "<answer>3/4</answer>"]
+        if diagnostics is not None:
+            diagnostics.extend(
+                {
+                    "generated_tokens": 4,
+                    "eos_terminated": True,
+                    "context_limit_hit": False,
+                    "budget_hit": False,
+                    "cached_incremental": True,
+                }
+                for _ in problems
+            )
         return values[: len(problems)], [None] * len(problems)
 
     monkeypatch.setattr(
@@ -99,6 +112,7 @@ def test_generation_panel_reports_failures_and_writes_audit_rows(
             self.anchor = torch.nn.Parameter(torch.zeros(1))
 
     rows_path = tmp_path / "generation.jsonl"
+    progress = []
     report = evaluate_generation_panel(
         Model(),
         ByteMathTokenizer(),
@@ -108,21 +122,38 @@ def test_generation_panel_reports_failures_and_writes_audit_rows(
         max_new_tokens=32,
         failure_examples=1,
         rows_path=rows_path,
+        progress_callback=progress.append,
     )
 
     assert report["valid_rate"] == 1.0
     assert report["accuracy"] == 0.5
     assert report["by_family"]["fraction"]["accuracy"] == 0.0
     assert report["failure_examples"][0]["expected_answer"] == "1/2"
-    assert len([json.loads(line) for line in rows_path.read_text().splitlines()]) == 2
+    rows = [json.loads(line) for line in rows_path.read_text().splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["termination"]["eos_terminated"] is True
+    assert progress[-1]["completed_examples"] == 2
+    assert progress[-1]["eos_terminated"] == 2
 
 
 def test_generation_panel_uses_the_declared_input_view(monkeypatch):
     record = _record("cftn_generated", "variables_both_sides", 1, "2")
     record["math_problem"] = "PRIVATE ROLE-MAPPED REQUEST"
 
-    def fake_generate(_model, _tokenizer, problems, *, max_new_tokens):
+    def fake_generate(
+        _model, _tokenizer, problems, *, max_new_tokens, diagnostics=None
+    ):
         assert problems == ["PRIVATE ROLE-MAPPED REQUEST"]
+        if diagnostics is not None:
+            diagnostics.append(
+                {
+                    "generated_tokens": 4,
+                    "eos_terminated": True,
+                    "context_limit_hit": False,
+                    "budget_hit": False,
+                    "cached_incremental": True,
+                }
+            )
         return ["<answer>2</answer>"], [None]
 
     monkeypatch.setattr(
