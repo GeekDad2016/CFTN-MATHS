@@ -1437,6 +1437,17 @@ def _initial_competency_curriculum_state() -> dict[str, Any]:
     return {"phase_index": 0, "phase_epoch": 0, "consecutive_passes": 0}
 
 
+def _advance_generation_probe_streak(
+    current_streak: int, *, probe_passed: bool, required_passes: int
+) -> tuple[int, bool]:
+    """Advance probe evidence and report whether full confirmation is due."""
+
+    if current_streak < 0 or required_passes < 1:
+        raise ValueError("generation probe streak settings are invalid")
+    next_streak = current_streak + 1 if probe_passed else 0
+    return next_streak, next_streak >= required_passes
+
+
 def _zero_update_phase_skip_state(
     *,
     phases: list[dict[str, Any]],
@@ -2491,10 +2502,13 @@ def train_math_tower(
                 probe_pass = bool(
                     probe_acceptance is not None and probe_acceptance["pass"]
                 )
-                next_probe_streak = (
-                    probe_consecutive_passes + 1 if probe_pass else 0
+                next_probe_streak, full_confirmation_due = (
+                    _advance_generation_probe_streak(
+                        probe_consecutive_passes,
+                        probe_passed=probe_pass,
+                        required_passes=probe_required_passes,
+                    )
                 )
-                full_confirmation_due = next_probe_streak >= probe_required_passes
                 if full_confirmation_due:
                     generation_panels, generation_validation = (
                         evaluate_generation_panels_for_phase(
@@ -2811,6 +2825,9 @@ def train_math_tower(
                 )
             if competency_curriculum_enabled:
                 competency_curriculum_state = checkpoint_curriculum_state
+                # This state survives the current process as checkpoint extra,
+                # but must also survive into the next in-memory epoch.
+                probe_consecutive_passes = next_probe_streak
                 if bool(curriculum_transition["complete"]):
                     stop_reason = f"curriculum_gate_passed_{phase['name']}"
                     state = "completed"

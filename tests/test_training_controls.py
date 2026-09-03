@@ -11,6 +11,7 @@ from cftn_text.dataset import EquationDataset
 from cftn_text.training import (
     _bridge_collapse_diagnostics,
     _bridge_stability_policy,
+    _advance_generation_probe_streak,
     _phase_generation_acceptance,
     _initial_competency_curriculum_state,
     _update_competency_curriculum_state,
@@ -429,6 +430,21 @@ def test_competency_curriculum_advances_only_after_repeated_passes():
     state, _ = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
     state, transition = _update_competency_curriculum_state(phases=phases, state=state, accepted=True)
     assert transition["complete"] and not transition["failed"]
+
+
+def test_generation_probe_streak_requires_two_consecutive_passes():
+    streak, due = _advance_generation_probe_streak(
+        0, probe_passed=True, required_passes=2
+    )
+    assert (streak, due) == (1, False)
+    streak, due = _advance_generation_probe_streak(
+        streak, probe_passed=True, required_passes=2
+    )
+    assert (streak, due) == (2, True)
+    streak, due = _advance_generation_probe_streak(
+        streak, probe_passed=False, required_passes=2
+    )
+    assert (streak, due) == (0, False)
 
 
 def test_competency_curriculum_fails_closed_at_phase_cap():
