@@ -808,6 +808,11 @@ def build_math_tower_for_checkpoint(
             raise ValueError(
                 "checkpoint changes unsupported math architecture field " f"{key}"
             )
+    # Ordinary checkpoints attest the effective architecture too, but have no
+    # capacity-expansion provenance.  They are exactly the configured tower
+    # and must remain loadable by evaluation and diagnostic tools.
+    if int(effective.get("layers", -1)) == int(base.get("layers", -2)):
+        return build_math_tower(config)
     expansion = (
         checkpoint.get("extra", {})
         .get("metrics", {})
@@ -1550,6 +1555,7 @@ def train_math_tower(
     artifact_directory: str | Path | None = None,
     working_directory: str | Path | None = None,
     recovery_contract: dict[str, Any] | None = None,
+    runtime_math_batch_size: int | None = None,
 ) -> dict[str, Any]:
     seed = int(config["project"]["seed"])
     seed_everything(seed)
@@ -1574,6 +1580,21 @@ def train_math_tower(
     )
     settings = copy.deepcopy(config["math_training"])
     settings.update(contract.get("math_training", {}))
+    configured_math_batch_size = int(settings["batch_size"])
+    if runtime_math_batch_size is not None:
+        if int(runtime_math_batch_size) < 1:
+            raise ValueError("runtime math batch size must be positive")
+        settings["batch_size"] = int(runtime_math_batch_size)
+    runtime_math_profile = {
+        "configured_batch_size": configured_math_batch_size,
+        "effective_batch_size": int(settings["batch_size"]),
+        # Optimizer moments and the scheduler's step geometry belong to the
+        # previous effective batch size.  A changed batch starts a documented
+        # fresh optimizer/schedule while retaining the sealed model/curriculum.
+        "optimizer_scheduler_reset": (
+            int(settings["batch_size"]) != configured_math_batch_size
+        ),
+    }
     generation_validation_settings = copy.deepcopy(DEFAULT_V2_GENERATION_VALIDATION)
     generation_validation_settings.update(
         settings.get("generation_validation", {})
@@ -1604,6 +1625,33 @@ def train_math_tower(
         contract, phases
     )
     competency_curriculum_state = _initial_competency_curriculum_state()
+    initial_curriculum_state = contract.get("initial_competency_curriculum_state")
+    if initial_curriculum_state is not None:
+        if not competency_curriculum_enabled:
+            raise ValueError("initial curriculum state requires competency curriculum")
+        if resume or initial_checkpoint is None:
+            raise ValueError(
+                "initial curriculum state requires a fresh initial-checkpoint run"
+            )
+        if not isinstance(initial_curriculum_state, dict):
+            raise ValueError("initial curriculum state must be an object")
+        phase_index = int(initial_curriculum_state.get("phase_index", -1))
+        phase_epoch = int(initial_curriculum_state.get("phase_epoch", -1))
+        consecutive_passes = int(
+            initial_curriculum_state.get("consecutive_passes", -1)
+        )
+        if not 0 <= phase_index < len(phases):
+            raise ValueError("initial curriculum phase index is outside the contract")
+        if phase_epoch != 0 or consecutive_passes != 0:
+            raise ValueError(
+                "initial curriculum state must begin with zero phase epoch and streak"
+            )
+        competency_curriculum_state = {
+            "phase_index": phase_index,
+            "phase_epoch": 0,
+            "consecutive_passes": 0,
+        }
+    probe_consecutive_passes = 0
     tokenizer = ByteMathTokenizer()
     collator_class = MathCollator
     if settings.get("objective") in {
@@ -1757,6 +1805,8 @@ def train_math_tower(
             "optimizer_reset": True,
             "scheduler_reset": True,
         }
+        if initial_curriculum_state is not None:
+            source_provenance["curriculum_reset"] = competency_curriculum_state
         if expansion_attestation is not None:
             source_provenance["capacity_expansion"] = expansion_attestation
     if resume:
@@ -1770,11 +1820,25 @@ def train_math_tower(
             expected_manifest_sha256=manifest["manifest_sha256"],
             map_location=device,
         )
+        checkpoint_runtime_profile = checkpoint.get("extra", {}).get(
+            "runtime_math_profile", {}
+        )
+        if (
+            isinstance(checkpoint_runtime_profile, dict)
+            and int(
+                checkpoint_runtime_profile.get("effective_batch_size", -1)
+            )
+            == int(settings["batch_size"])
+        ):
+            # A prior B32 checkpoint already has moments/schedule calibrated
+            # to this effective batch size; preserve them on ordinary resume.
+            runtime_math_profile["optimizer_scheduler_reset"] = False
         model.load_state_dict(checkpoint["model_state"], strict=True)
-        optimizer.load_state_dict(checkpoint["optimizer_state"])
-        scheduler.load_state_dict(checkpoint["scheduler_state"])
-        if checkpoint["scaler_state"]:
-            scaler.load_state_dict(checkpoint["scaler_state"])
+        if not runtime_math_profile["optimizer_scheduler_reset"]:
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+            scheduler.load_state_dict(checkpoint["scheduler_state"])
+            if checkpoint["scaler_state"]:
+                scaler.load_state_dict(checkpoint["scaler_state"])
         restore_rng_state(checkpoint["rng_state"])
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint["global_step"])
@@ -1796,8 +1860,15 @@ def train_math_tower(
                     saved_curriculum_state["consecutive_passes"]
                 ),
             }
-            optimizer_phase_name = checkpoint.get("extra", {}).get(
-                "optimizer_phase_name"
+            probe_consecutive_passes = int(
+                checkpoint.get("extra", {}).get("probe_consecutive_passes", 0)
+            )
+            if probe_consecutive_passes < 0:
+                raise ValueError("checkpoint probe streak is invalid")
+            optimizer_phase_name = (
+                None
+                if runtime_math_profile["optimizer_scheduler_reset"]
+                else checkpoint.get("extra", {}).get("optimizer_phase_name")
             )
             resumed_phase = phases[int(competency_curriculum_state["phase_index"])]
             scheduled_examples = int(
@@ -1876,7 +1947,10 @@ def train_math_tower(
         *,
         suffix: str,
         status_epoch: int,
+        tier: str = "full",
     ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+        if tier not in {"probe", "full"}:
+            raise ValueError("generation validation tier must be probe or full")
         generation_panels: dict[str, dict[str, Any]] = {}
         if not (
             manifest.get("format") in {
@@ -1920,10 +1994,36 @@ def train_math_tower(
                 raise RuntimeError(
                     f"generation validation panel {panel_name} selected no records"
                 )
+            full_examples = int(
+                panel_spec.get("examples", generation_settings.get("examples", 96))
+            )
+            if tier == "probe":
+                per_criterion = int(
+                    panel_spec.get(
+                        "probe_examples_per_criterion",
+                        generation_settings.get("probe_examples_per_criterion", 30),
+                    )
+                )
+                if per_criterion < 1:
+                    raise ValueError("probe examples per criterion must be positive")
+                criterion_count = len(
+                    {str(record.get("family", "unknown")) for record in panel_records}
+                )
+                maximum_examples = min(full_examples, per_criterion * criterion_count)
+                selection_seed = int.from_bytes(
+                    hashlib.sha256(
+                        f"probe-v1:{phase.get('name') if phase else 'all'}:{status_epoch}:{panel_name}"
+                        .encode("utf-8")
+                    ).digest()[:8],
+                    "big",
+                )
+            else:
+                maximum_examples = full_examples
+                selection_seed = None
             generation_rows_name = (
-                f"generation_validation_{panel_name}_{suffix}.jsonl"
+                f"generation_validation_{panel_name}_{suffix}_{tier}.jsonl"
                 if configured_generation_panels
-                else f"generation_validation_{suffix}.jsonl"
+                else f"generation_validation_{suffix}_{tier}.jsonl"
             )
             generation_rows_path = work_dir / generation_rows_name
 
@@ -1940,6 +2040,7 @@ def train_math_tower(
                                 str(phase.get("name")) if phase is not None else None
                             ),
                             "panel": panel_name,
+                            "validation_tier": tier,
                             **progress,
                         },
                         started_at=started_at,
@@ -1950,11 +2051,7 @@ def train_math_tower(
                 model,
                 tokenizer,
                 panel_records,
-                maximum_examples=int(
-                    panel_spec.get(
-                        "examples", generation_settings.get("examples", 96)
-                    )
-                ),
+                maximum_examples=maximum_examples,
                 batch_size=int(
                     panel_spec.get(
                         "batch_size", generation_settings.get("batch_size", 16)
@@ -1975,11 +2072,14 @@ def train_math_tower(
                 rows_path=generation_rows_path,
                 input_view=collator.input_view,
                 require_eos=bool(generation_settings.get("require_eos", False)),
+                selection_seed=selection_seed,
                 progress_callback=report_panel_progress,
             )
             generation_panels[panel_name]["split"] = str(
                 panel_spec.get("split", "validation")
             )
+            generation_panels[panel_name]["validation_tier"] = tier
+            generation_panels[panel_name]["selection_seed"] = selection_seed
             if work_dir != artifact_dir:
                 atomic_copy_file(
                     generation_rows_path,
@@ -2315,6 +2415,7 @@ def train_math_tower(
                         / max(1, trained_examples),
                         preservation_rows=preserved_rows,
                         preservation_weight=preservation_weight,
+                        runtime_math_profile=runtime_math_profile,
                     )
                     write_status(
                         _status_payload(
@@ -2352,6 +2453,17 @@ def train_math_tower(
             )
             generation_validation: dict[str, Any] | None = None
             generation_panels: dict[str, dict[str, Any]] = {}
+            probe_acceptance: dict[str, Any] | None = None
+            full_confirmation_acceptance: dict[str, Any] | None = None
+            full_confirmation_due = False
+            next_probe_streak = probe_consecutive_passes
+            probe_required_passes = int(
+                contract.get("curriculum", {}).get(
+                    "generation_probe_consecutive_passes", 2
+                )
+            )
+            if probe_required_passes < 1:
+                raise ValueError("generation probe consecutive passes must be positive")
             if (
                 manifest.get("format") in {
                     "cftn_text_broad_math_v2",
@@ -2361,17 +2473,76 @@ def train_math_tower(
                 and epoch % max(1, int(generation_settings.get("every_epochs", 1)))
                 == 0
             ):
-                generation_panels, generation_validation = (
+                probe_panels, probe_validation = (
                     evaluate_generation_panels_for_phase(
                         phase,
                         suffix=f"epoch_{epoch:04d}",
                         status_epoch=epoch,
+                        tier="probe",
                     )
                 )
+                probe_acceptance = _phase_generation_acceptance(
+                    phase=phase,
+                    generation_panels=probe_panels,
+                    validation=validation,
+                    epoch=epoch,
+                    phase_epoch=phase_epoch,
+                )
+                probe_pass = bool(
+                    probe_acceptance is not None and probe_acceptance["pass"]
+                )
+                next_probe_streak = (
+                    probe_consecutive_passes + 1 if probe_pass else 0
+                )
+                full_confirmation_due = next_probe_streak >= probe_required_passes
+                if full_confirmation_due:
+                    generation_panels, generation_validation = (
+                        evaluate_generation_panels_for_phase(
+                            phase,
+                            suffix=f"epoch_{epoch:04d}",
+                            status_epoch=epoch,
+                            tier="full",
+                        )
+                    )
+                    full_confirmation_acceptance = _phase_generation_acceptance(
+                        phase=phase,
+                        generation_panels=generation_panels,
+                        validation=validation,
+                        epoch=epoch,
+                        phase_epoch=phase_epoch,
+                    )
+                    phase_acceptance = full_confirmation_acceptance
+                else:
+                    generation_panels, generation_validation = (
+                        probe_panels,
+                        probe_validation,
+                    )
+                    phase_acceptance = dict(probe_acceptance or {})
+                    phase_acceptance.update(
+                        validation_tier="probe",
+                        probe_consecutive_passes=next_probe_streak,
+                        probe_required_passes=probe_required_passes,
+                        full_confirmation_due=False,
+                    )
+                    # A probe is deliberately non-eligible evidence.
+                    phase_acceptance["pass"] = False
                 validation["generation"] = generation_validation
                 validation["generation_panels"] = generation_panels
+                validation["generation_probe"] = probe_validation
+                validation["generation_probe_panels"] = probe_panels
+                validation["generation_full_confirmation"] = (
+                    generation_validation if full_confirmation_due else None
+                )
                 validation["generation_panel_scope"] = str(
                     generation_settings.get("panel_scope", "all_configured_v1")
+                )
+            else:
+                phase_acceptance = _phase_generation_acceptance(
+                    phase=phase,
+                    generation_panels=generation_panels,
+                    validation=validation,
+                    epoch=epoch,
+                    phase_epoch=phase_epoch,
                 )
             if generation_validation is not None:
                 panel_accuracies = [
@@ -2407,13 +2578,6 @@ def train_math_tower(
                     validation["answer_head_accuracy"]
                 ) - 1e-6 * float(validation["loss"])
                 selection_basis = "answer_head_accuracy"
-            phase_acceptance = _phase_generation_acceptance(
-                phase=phase,
-                generation_panels=generation_panels,
-                validation=validation,
-                epoch=epoch,
-                phase_epoch=phase_epoch,
-            )
             if retention_baseline is not None:
                 observed = generation_panels["broad"]
                 minimum = max(0.0, float(retention_baseline["accuracy"]) - float(contract["retention_baseline"]["maximum_drop"]))
@@ -2451,14 +2615,23 @@ def train_math_tower(
             checkpoint_curriculum_state = competency_curriculum_state
             curriculum_transition = None
             if competency_curriculum_enabled:
+                # The two probe passes establish that a full panel is worth
+                # paying for. Only a full-panel pass may consume the phase's
+                # required confirmation and advance the curriculum.
+                accepted_full_confirmation = bool(
+                    full_confirmation_acceptance is not None
+                    and full_confirmation_acceptance["pass"]
+                )
+                state_for_transition = dict(competency_curriculum_state)
+                if accepted_full_confirmation:
+                    state_for_transition["consecutive_passes"] = max(
+                        0, int(phase["advance_after_consecutive_passes"]) - 1
+                    )
                 checkpoint_curriculum_state, curriculum_transition = (
                     _update_competency_curriculum_state(
                         phases=phases,
-                        state=competency_curriculum_state,
-                        accepted=bool(
-                            phase_acceptance is not None
-                            and phase_acceptance["pass"]
-                        ),
+                        state=state_for_transition,
+                        accepted=accepted_full_confirmation,
                         policy=str(
                             contract.get("curriculum", {}).get(
                                 "transition_policy", "competency_gated_v1"
@@ -2466,6 +2639,10 @@ def train_math_tower(
                         ),
                     )
                 )
+                if bool(curriculum_transition["advance"]) or bool(
+                    curriculum_transition["complete"]
+                ) or full_confirmation_due:
+                    next_probe_streak = 0
                 phase_gate = (
                     phase_acceptance
                     if any(
@@ -2489,6 +2666,7 @@ def train_math_tower(
                 "preservation_weight": preservation_weight,
                 "preservation_sources": sorted(preservation_sources),
                 "learning_rate": optimizer.param_groups[0]["lr"],
+                "runtime_math_profile": runtime_math_profile,
                 "phase_local_optimization": {
                     "enabled": phase_local_enabled,
                     "optimizer_reset_this_epoch": phase_optimizer_reset,
@@ -2520,6 +2698,11 @@ def train_math_tower(
                 "checkpoint_eligible": checkpoint_eligible,
                 "checkpoint_promoted": promote_best,
                 "curriculum_acceptance": phase_acceptance,
+                "generation_probe_acceptance": probe_acceptance,
+                "generation_full_confirmation_acceptance": full_confirmation_acceptance,
+                "generation_probe_consecutive_passes": next_probe_streak,
+                "generation_probe_required_passes": probe_required_passes,
+                "generation_full_confirmation_due": full_confirmation_due,
                 "curriculum_gate": phase_gate,
                 "curriculum_transition": curriculum_transition,
                 "competency_curriculum_state": (
@@ -2588,6 +2771,8 @@ def train_math_tower(
                         else None
                     ),
                     "optimizer_phase_name": optimizer_phase_name,
+                    "runtime_math_profile": runtime_math_profile,
+                    "probe_consecutive_passes": next_probe_streak,
                 },
             )
             checkpoint_path = work_dir / f"checkpoint_epoch_{epoch:04d}.pth"

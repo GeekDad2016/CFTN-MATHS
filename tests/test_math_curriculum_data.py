@@ -44,6 +44,35 @@ def _config() -> dict:
     }
 
 
+def test_v11_stage5_remediation_appends_only_the_three_failed_criteria():
+    root = Path(__file__).parents[1]
+    original = json.loads(
+        (root / "config" / "math_master_experiment_v11.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    remediation = json.loads(
+        (
+            root / "config" / "math_master_experiment_v11_stage5_remediation.json"
+        ).read_text(encoding="utf-8")
+    )
+    changed = {
+        criterion: remediation["criterion_train_targets"][criterion]
+        for criterion, count in original["criterion_train_targets"].items()
+        if remediation["criterion_train_targets"][criterion] != count
+    }
+    assert changed == {
+        "2MD-2": 5000,
+        "KS2-LONG-MULTIPLY": 7500,
+        "KS2-EXACT-DIVIDE": 7500,
+    }
+    assert remediation["dataset_recipe"] == original["dataset_recipe"]
+    assert remediation["generator_version"] == original["generator_version"]
+    assert sum(remediation["criterion_train_targets"].values()) == remediation[
+        "total_train_records"
+    ]
+
+
 def _master_config() -> dict:
     return {
         **_config(),

@@ -77,6 +77,20 @@ def test_stratified_validation_panel_covers_cohorts_before_repeating():
     }
 
 
+def test_seeded_stratified_panel_is_reproducible_but_varies_its_draw():
+    records = [
+        _record("a", "addition", 1, str(index))
+        for index in range(6)
+    ] + [
+        _record("b", "fraction", 2, str(index))
+        for index in range(6)
+    ]
+    first = stratified_validation_panel(records, 8, selection_seed=713)
+    repeat = stratified_validation_panel(records, 8, selection_seed=713)
+    assert [row["record_id"] for row in first] == [row["record_id"] for row in repeat]
+    assert len({row["family"] for row in first}) == 2
+
+
 def test_generation_panel_reports_failures_and_writes_audit_rows(
     tmp_path, monkeypatch
 ):

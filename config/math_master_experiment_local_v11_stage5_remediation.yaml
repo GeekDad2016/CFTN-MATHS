@@ -1,0 +1,111 @@
+project:
+  name: cftn_math_master_experiment_local_v11_stage5_remediation
+  seed: 29082026
+  artifact_root: ${CFTN_ARTIFACT_ROOT:-C:/CFTN/artifacts/math_master_experiment_v11_stage5_remediation}
+  data_root: ${CFTN_DATA_ROOT:-C:/CFTN/.datasets/math_master_experiment_v11_stage5_remediation}
+
+data:
+  format: cftn_canonical_math_curriculum_v1
+  calibration_examples: 1
+  train_examples: 121622
+  validation_examples: 850
+  test_examples: 850
+  heldout_language_examples: 1
+  extrapolation_examples: 1
+  compositional_examples: 1
+  max_math_length: 2048
+  max_gpt_length: 512
+  curriculum:
+    enabled: true
+    examples_per_epoch: 512
+    sampling: with_replacement
+    minimum_epochs_per_phase: 10
+    maximum_epochs_per_phase: 150
+    advance_after_consecutive_passes: 2
+    phases:
+      - name: placeholder_replaced_by_runner
+        through_epoch: 120
+        max_difficulty: 3
+
+gpt:
+  model_name: gpt2
+  local_files_only: true
+  receiver_layers: [3, 5]
+
+math_tower:
+  layers: 8
+  hidden_size: 256
+  attention_heads: 8
+  feed_forward_size: 1024
+  dropout: 0.1
+  max_sequence_length: 2048
+  receiver_layers: [2, 5]
+  answer_min: -512
+  answer_max: 512
+
+bridge:
+  message_tokens: 8
+  message_width: 256
+  attention_heads: 8
+  dropout: 0.1
+  gate_hidden_size: 256
+  gate_init: -2.0
+  zero_init_output: true
+
+math_training:
+  batch_size: 8
+  eval_batch_size: 16
+  max_epochs: 1800
+  minimum_epochs: 10
+  early_stop_patience: 1800
+  learning_rate: 0.0003
+  minimum_learning_rate: 0.00001
+  warmup_fraction: 0.005
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  answer_head_weight: 0.0
+  answer_token_weight: 4.0
+  precision: bf16
+  num_workers: 0
+  report_every_steps: 4
+  objective: computation_hybrid_v2
+  role_weights: [0.15, 0.65, 0.20]
+  hybrid_role_fraction: 0.5
+  target_mode: full_trace_v1
+  input_view: shared_problem_v1
+
+bridge_training:
+  batch_size: 8
+  eval_batch_size: 8
+  max_epochs: 1
+  minimum_epochs: 1
+  early_stop_patience: 1
+  learning_rate: 0.0001
+  minimum_learning_rate: 0.00001
+  warmup_fraction: 0.0
+  weight_decay: 0.0
+  gradient_clip: 1.0
+  math_loss_weight: 1.0
+  gpt_loss_weight: 1.0
+  answer_head_weight: 0.0
+  precision: bf16
+  num_workers: 0
+  report_every_steps: 10
+
+evaluation:
+  batch_size: 8
+  maximum_generation_examples: 64
+  max_math_new_tokens: 2048
+  max_gpt_new_tokens: 32
+  bootstrap_samples: 100
+
+monitoring:
+  status_interval_minutes: 5
+  detailed_report_every_epochs: 1
+  keep_latest_checkpoints: 3
+
+gpt_calibration:
+  batch_size: 8
+  candidate_batch_size: 8
+  maximum_examples: 1
+  max_new_tokens: 224

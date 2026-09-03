@@ -109,8 +109,6 @@ class MathTower(nn.Module):
         """
 
         batch, tokens, _ = hidden.shape
-        if batch != 1:
-            raise ValueError("cached math decoding currently requires batch size 1")
         heads = int(block.self_attn.num_heads)
         head_size = self.hidden_size // heads
         normalized = block.norm1(hidden)
@@ -149,22 +147,28 @@ class MathTower(nn.Module):
     def begin_cached_generation(
         self, input_ids: torch.Tensor
     ) -> tuple[MathTowerKVCache, MathTowerOutput]:
-        """Prefill one unpadded prompt and return its reusable greedy state."""
+        """Prefill equally sized prompts and return reusable greedy state.
+
+        Callers group prompts by prefix length before using this method.  That
+        keeps every row unpadded, which is essential because the cache has one
+        shared position counter for the active batch.
+        """
 
         if self.training:
             raise RuntimeError("cached generation is eval-only")
-        if input_ids.ndim != 2 or input_ids.shape[0] != 1:
-            raise ValueError("cached math decoding expects input IDs shaped [1, L]")
-        _, tokens = input_ids.shape
+        if input_ids.ndim != 2 or input_ids.shape[0] < 1:
+            raise ValueError("cached math decoding expects input IDs shaped [B, L]")
+        batch, tokens = input_ids.shape
         if not 0 < tokens <= self.max_sequence_length:
             raise ValueError("cached math prompt length is outside the supported range")
         positions = torch.arange(tokens, device=input_ids.device).unsqueeze(0)
+        positions = positions.expand(batch, -1)
         hidden = self.dropout(
             self.token_embedding(input_ids) + self.position_embedding(positions)
         )
         heads = int(self.blocks[0].self_attn.num_heads) if self.blocks else 1
         head_size = self.hidden_size // heads
-        cache_shape = (1, heads, self.max_sequence_length, head_size)
+        cache_shape = (batch, heads, self.max_sequence_length, head_size)
         keys = [hidden.new_empty(cache_shape) for _ in self.blocks]
         values = [hidden.new_empty(cache_shape) for _ in self.blocks]
         for index, block in enumerate(self.blocks):
@@ -181,7 +185,7 @@ class MathTower(nn.Module):
         answer_logits = (
             self.answer_head(hidden[:, -1])
             if self.answer_head_enabled
-            else hidden.new_zeros((1, self.answer_max - self.answer_min + 1))
+            else hidden.new_zeros((batch, self.answer_max - self.answer_min + 1))
         )
         return MathTowerKVCache(keys=keys, values=values, length=tokens), MathTowerOutput(
             logits=logits,
@@ -190,7 +194,7 @@ class MathTower(nn.Module):
         )
 
     def cached_generation_step(
-        self, cache: MathTowerKVCache, token_id: int
+        self, cache: MathTowerKVCache, token_id: int | torch.Tensor
     ) -> MathTowerOutput:
         """Append one token to an eval-only cache and predict the following token."""
 
@@ -199,8 +203,16 @@ class MathTower(nn.Module):
         if cache.length >= self.max_sequence_length:
             raise ValueError("cached math decoding exceeded max_sequence_length")
         device = cache.keys[0].device if cache.keys else self.token_embedding.weight.device
-        input_ids = torch.tensor([[int(token_id)]], dtype=torch.long, device=device)
-        positions = torch.tensor([[cache.length]], dtype=torch.long, device=device)
+        batch = int(cache.keys[0].shape[0]) if cache.keys else 1
+        if torch.is_tensor(token_id):
+            input_ids = token_id.to(device=device, dtype=torch.long).reshape(-1, 1)
+        else:
+            input_ids = torch.full(
+                (batch, 1), int(token_id), dtype=torch.long, device=device
+            )
+        if input_ids.shape[0] != batch:
+            raise ValueError("cached generation token batch does not match cache batch")
+        positions = torch.full_like(input_ids, cache.length)
         hidden = self.dropout(
             self.token_embedding(input_ids) + self.position_embedding(positions)
         )
@@ -224,6 +236,26 @@ class MathTower(nn.Module):
                 else hidden.new_zeros((1, self.answer_max - self.answer_min + 1))
             ),
         )
+
+    def compact_cached_generation(
+        self, cache: MathTowerKVCache, active_rows: torch.Tensor | list[int]
+    ) -> MathTowerKVCache:
+        """Discard finished rows from an eval-only cached-generation batch."""
+
+        if cache.keys:
+            device = cache.keys[0].device
+            batch = int(cache.keys[0].shape[0])
+        else:
+            device = self.token_embedding.weight.device
+            batch = 1
+        rows = torch.as_tensor(active_rows, dtype=torch.long, device=device).reshape(-1)
+        if rows.numel() == 0:
+            raise ValueError("cached generation compaction requires at least one row")
+        if int(rows.min().item()) < 0 or int(rows.max().item()) >= batch:
+            raise ValueError("cached generation compaction row is outside the cache batch")
+        cache.keys = [value.index_select(0, rows).contiguous() for value in cache.keys]
+        cache.values = [value.index_select(0, rows).contiguous() for value in cache.values]
+        return cache
 
     def forward(
         self,

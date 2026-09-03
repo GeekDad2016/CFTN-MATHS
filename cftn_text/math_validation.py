@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -101,9 +102,9 @@ def summarize_teacher_forced_breakdowns(
 
 
 def stratified_validation_panel(
-    records: Iterable[dict[str, Any]], maximum: int
+    records: Iterable[dict[str, Any]], maximum: int, *, selection_seed: int | None = None
 ) -> list[dict[str, Any]]:
-    """Select deterministic round-robin coverage across source/family/difficulty."""
+    """Select stratified coverage, optionally with a reproducible random draw."""
 
     maximum = max(0, int(maximum))
     buckets: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
@@ -114,7 +115,10 @@ def stratified_validation_panel(
             int(record.get("difficulty", 0)),
         )
         buckets[key].append(record)
-    ordered = [buckets[key] for key in sorted(buckets)]
+    ordered = [list(buckets[key]) for key in sorted(buckets)]
+    if selection_seed is not None:
+        for index, bucket in enumerate(ordered):
+            random.Random(int(selection_seed) + index * 1_000_003).shuffle(bucket)
     selected: list[dict[str, Any]] = []
     offset = 0
     while len(selected) < maximum:
@@ -144,13 +148,16 @@ def evaluate_generation_panel(
     rows_path: str | Path | None = None,
     input_view: str = SHARED_MATH_INPUT_VIEW,
     require_eos: bool = False,
+    selection_seed: int | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run a compact native greedy-generation panel during math training."""
 
     from .specialist_evaluation import generate_math_tower
 
-    selected = stratified_validation_panel(records, maximum_examples)
+    selected = stratified_validation_panel(
+        records, maximum_examples, selection_seed=selection_seed
+    )
     eligible: list[dict[str, Any]] = []
     excluded_over_context = 0
     for record in selected:

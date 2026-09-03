@@ -95,6 +95,39 @@ def test_dashboard_accepts_live_interim_metrics_with_null_gate(tmp_path: Path) -
     assert compact["phase"] is None
 
 
+def test_dashboard_exposes_live_generation_validation_progress(tmp_path: Path, monkeypatch) -> None:
+    import tools.serve_math_master_dashboard as dashboard
+
+    artifact = tmp_path / "run"
+    artifact.mkdir()
+    (artifact / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "metrics": {
+                    "phase": "generation_validation",
+                    "curriculum_phase": "ks2_four_operations",
+                    "panel": "active_05",
+                    "completed_examples": 24,
+                    "total_examples": 360,
+                    "elapsed_seconds": 12.5,
+                    "effective_batch_size": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"phases": [], "splits": {}}), encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard, "load_config", lambda _path: {"data": {"curriculum": {}}}
+    )
+    snapshot = dashboard.collect_snapshot(artifact, manifest, tmp_path / "config.yaml")
+    assert snapshot["live"]["phase"] == "generation_validation"
+    assert snapshot["live"]["completed_examples"] == 24
+    assert "Live validation progress" in PAGE
+
+
 def test_dashboard_prefers_per_epoch_acceptance_over_terminal_gate() -> None:
     from tools.serve_math_master_dashboard import _compact_metric
 

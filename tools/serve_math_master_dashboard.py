@@ -340,6 +340,19 @@ def collect_snapshot(
         "live": {
             "learning_rate": live_metrics.get("learning_rate", latest.get("learning_rate")),
             "gpu": _gpu_snapshot(),
+            "phase": live_metrics.get("phase"),
+            "curriculum_phase": live_metrics.get("curriculum_phase"),
+            "panel": live_metrics.get("panel"),
+            "completed_examples": live_metrics.get("completed_examples"),
+            "total_examples": live_metrics.get("total_examples"),
+            "elapsed_seconds": live_metrics.get("elapsed_seconds"),
+            "effective_batch_size": live_metrics.get("effective_batch_size"),
+            "context_limit_hits": live_metrics.get("context_limit_hits"),
+            "budget_hits": live_metrics.get("budget_hits"),
+            "oom_batch_retries": live_metrics.get("oom_batch_retries"),
+            "epoch_batch_completed": live_metrics.get("epoch_batch_completed"),
+            "epoch_batches_total": live_metrics.get("epoch_batches_total"),
+            "epoch_progress": live_metrics.get("epoch_progress"),
         },
         "generation_cap_watch": _generation_cap_watch(
             latest_validation.get("generation_panels")
@@ -388,6 +401,12 @@ async function showExamples(key){let modal=document.querySelector('#examples-mod
 document.addEventListener('click',event=>{let button=event.target.closest('[data-criterion]');if(button)showExamples(button.dataset.criterion)});document.querySelector('#examples-close').addEventListener('click',()=>document.querySelector('#examples-modal').close());
 async function refresh(){try{let r=await fetch('/api/status',{cache:'no-store'});draw(await r.json())}catch(err){document.querySelector('#stamp').textContent='Dashboard error: '+err}}refresh();setInterval(refresh,30000);
 </script></body></html>"""
+
+# Keep live activity separate from the historical metric cards above: a long
+# native-generation panel is validation work, not a stalled training epoch.
+PAGE += r"""<script>
+(()=>{const priorDraw=draw;function liveActivity(d){const live=d.live||{},phase=live.phase,old=document.querySelector('#live-activity');if(old)old.remove();let body='';if(phase==='generation_validation'){const done=Number(live.completed_examples||0),total=Number(live.total_examples||0),fraction=total?Math.min(1,done/total):0;body='<section id="live-activity" class="card"><h2>Live validation progress</h2><div class="metrics"><div class="metric"><span>Activity</span><b class="warn">Generating validation answers</b></div><div class="metric"><span>Curriculum phase / panel</span><b>'+e(live.curriculum_phase)+' / '+e(live.panel)+'</b></div><div class="metric"><span>Completed</span><b>'+e(done)+' / '+e(total)+' ('+e((100*fraction).toFixed(1))+'%)</b></div><div class="metric"><span>Elapsed</span><b>'+dur(live.elapsed_seconds)+'</b></div><div class="metric"><span>Effective generation batch</span><b>'+e(live.effective_batch_size)+'</b></div><div class="metric"><span>Context / budget hits</span><b>'+e(live.context_limit_hits)+' / '+e(live.budget_hits)+'</b></div><div class="metric"><span>OOM retries</span><b>'+e(live.oom_batch_retries)+'</b></div></div><div class="bar"><i style="width:'+(100*fraction)+'%"></i></div><p class="muted">This is native greedy generation for the acceptance panel; it runs after teacher-forced training and can use more VRAM.</p></section>'}else if(phase==='training'){const done=Number(live.epoch_batch_completed||0),total=Number(live.epoch_batches_total||0),fraction=total?Math.min(1,done/total):0;body='<section id="live-activity" class="card"><h2>Live training progress</h2><div class="metrics"><div class="metric"><span>Activity</span><b class="ok">Teacher-forced training</b></div><div class="metric"><span>Mini-batches</span><b>'+e(done)+' / '+e(total)+' ('+e((100*fraction).toFixed(1))+'%)</b></div></div><div class="bar"><i style="width:'+(100*fraction)+'%"></i></div></section>'}if(body)document.querySelector('#overview').insertAdjacentHTML('afterend',body)}draw=function(d){priorDraw(d);liveActivity(d)};refresh()})();
+</script>"""
 
 
 def make_handler(artifact: Path, manifest: Path, config: Path, contract_profile: str):

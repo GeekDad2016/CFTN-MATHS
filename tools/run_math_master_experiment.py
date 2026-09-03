@@ -61,6 +61,7 @@ def build_contract(
                 "batch_size": 8,
                 "max_new_tokens": 224,
                 "failure_examples": 4,
+                "probe_examples_per_criterion": 30,
             }
         )
         quota_groups = [
@@ -89,6 +90,7 @@ def build_contract(
                     "batch_size": 8,
                     "max_new_tokens": 224,
                     "failure_examples": 4,
+                    "probe_examples_per_criterion": 30,
                 }
             )
             quota_groups.append(
@@ -161,6 +163,7 @@ def build_contract(
         "curriculum": {
             "transition_policy": "competency_gated_v3",
             "examples_per_epoch": examples_per_epoch,
+            "generation_probe_consecutive_passes": 2,
             "phase_local_optimization": {
                 "enabled": True,
                 "reset_optimizer": True,
@@ -411,6 +414,24 @@ def main() -> None:
         default="v5",
     )
     parser.add_argument("--initial-checkpoint")
+    parser.add_argument(
+        "--initial-phase-index",
+        type=int,
+        help=(
+            "Start a fresh recovery continuation at this curriculum phase from "
+            "--initial-checkpoint. The model weights are retained, while the "
+            "optimizer, scheduler, and phase streak are reset."
+        ),
+    )
+    parser.add_argument(
+        "--math-batch-size",
+        type=int,
+        help=(
+            "Runtime-only maths batch size. On a resumed run, changing it "
+            "resets the optimizer and scheduler while preserving model, data, "
+            "and curriculum state; the transition is checkpointed."
+        ),
+    )
     args = parser.parse_args()
 
     data_root = Path(args.data).resolve()
@@ -467,6 +488,16 @@ def main() -> None:
         contract = build_v11_procedural_contract(contract, manifest)
     if args.initial_checkpoint:
         contract["source_checkpoint_sha256"] = file_sha256(args.initial_checkpoint)
+    if args.initial_phase_index is not None:
+        if not args.initial_checkpoint:
+            raise ValueError("--initial-phase-index requires --initial-checkpoint")
+        if not 0 <= args.initial_phase_index < len(contract["phases"]):
+            raise ValueError("--initial-phase-index is outside the curriculum")
+        contract["initial_competency_curriculum_state"] = {
+            "phase_index": int(args.initial_phase_index),
+            "phase_epoch": 0,
+            "consecutive_passes": 0,
+        }
     max_batches = None
     if args.command == "smoke":
         contract = build_smoke_contract(contract)
@@ -484,6 +515,7 @@ def main() -> None:
         working_directory=artifact,
         recovery_contract=contract,
         initial_checkpoint=None if resume else args.initial_checkpoint,
+        runtime_math_batch_size=args.math_batch_size,
     )
     metrics = result.get("metrics", {})
     gpu = metrics.get("gpu", result.get("gpu", {}))
