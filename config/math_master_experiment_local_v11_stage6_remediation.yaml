@@ -74,6 +74,24 @@ math_training:
   target_mode: full_trace_v1
   input_view: shared_problem_v1
 
+bridge_training:
+  batch_size: 8
+  eval_batch_size: 8
+  max_epochs: 1
+  minimum_epochs: 1
+  early_stop_patience: 1
+  learning_rate: 0.0001
+  minimum_learning_rate: 0.00001
+  warmup_fraction: 0.0
+  weight_decay: 0.0
+  gradient_clip: 1.0
+  math_loss_weight: 1.0
+  gpt_loss_weight: 1.0
+  answer_head_weight: 0.0
+  precision: bf16
+  num_workers: 0
+  report_every_steps: 10
+
 evaluation:
   batch_size: 8
   maximum_generation_examples: 64
