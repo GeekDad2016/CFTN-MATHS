@@ -1,8 +1,8 @@
 {
   "format": "cftn_canonical_math_curriculum_v1",
   "curriculum_profile": "master_experiment_v1",
-  "dataset_recipe": "canonical_v11_ks2_procedures_v1",
-  "generator_version": "v11_ks2_procedures_v1",
+  "dataset_recipe": "canonical_v11_stage7_powers_v1",
+  "generator_version": "v11_stage7_powers_v1",
   "procedure_schema": "compact_executable_v2",
   "trace_acceptance_metric": "semantic_v1",
   "seed": 29082026,

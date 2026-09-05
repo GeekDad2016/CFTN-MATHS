@@ -16,6 +16,10 @@ from typing import Any, Iterable, Iterator
 from .config import canonical_json
 from .data_generator import file_sha256
 from .math_curriculum_v11_generator import V11_DATASET_RECIPE, solve_v11_procedure
+from .math_curriculum_v11_stage7_powers_generator import (
+    V11_STAGE7_POWERS_DATASET_RECIPE,
+    powers_candidate_irs,
+)
 from .v2_data import make_v2_record, validate_v2_record
 
 
@@ -121,8 +125,11 @@ def _sha(value: Any) -> str:
 def _generator_source_path(config: dict[str, Any]) -> Path:
     """Return the versioned generator source recorded by a dataset manifest."""
 
-    if str(config.get("dataset_recipe", "")) == V11_DATASET_RECIPE:
+    recipe = str(config.get("dataset_recipe", ""))
+    if recipe == V11_DATASET_RECIPE:
         return Path(__file__).with_name("math_curriculum_v11_generator.py")
+    if recipe == V11_STAGE7_POWERS_DATASET_RECIPE:
+        return Path(__file__).with_name("math_curriculum_v11_stage7_powers_generator.py")
     return Path(__file__)
 
 
@@ -664,6 +671,12 @@ def _candidate_irs(
             for variant in _variant_specs(criterion):
                 yield {**base, **variant}
         return
+    if dataset_recipe == V11_STAGE7_POWERS_DATASET_RECIPE:
+        if criterion == "KS3-POWERS":
+            yield from powers_candidate_irs()
+        else:
+            yield from _base_candidate_irs(criterion)
+        return
     if dataset_recipe in {V10_DATASET_RECIPE, V11_DATASET_RECIPE}:
         # V10 retains the V5 mathematical domains.  Its difference is the
         # versioned multiplication procedure emitted below, not a change to
@@ -751,7 +764,7 @@ def solve_math_ir(
     if procedure_schema not in PROCEDURE_SCHEMAS:
         raise ValueError(f"unsupported procedure schema: {procedure_schema}")
     op = math_ir["op"]
-    if dataset_recipe == V11_DATASET_RECIPE:
+    if dataset_recipe in {V11_DATASET_RECIPE, V11_STAGE7_POWERS_DATASET_RECIPE}:
         v11 = solve_v11_procedure(math_ir, criterion=criterion)
         if v11 is not None:
             return v11
