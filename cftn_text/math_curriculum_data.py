@@ -20,6 +20,11 @@ from .math_curriculum_v11_stage7_powers_generator import (
     V11_STAGE7_POWERS_DATASET_RECIPE,
     powers_candidate_irs,
 )
+from .math_curriculum_v11_stage8_powers_generator import (
+    V11_STAGE8_POWERS_DATASET_RECIPE,
+    powers_candidate_irs as stage8_powers_candidate_irs,
+    solve_stage8_powers_procedure,
+)
 from .v2_data import make_v2_record, validate_v2_record
 
 
@@ -439,6 +444,15 @@ def _variant_specs(criterion: str) -> tuple[dict[str, str], ...]:
             ),
             ("locate", "bound", "decompose", "verify"),
         ),
+        "KS3-POWERS": (
+            ("integer_power",),
+            (
+                "repeated_multiplication",
+                "successive_powers",
+                "paired_squares",
+                "sign_then_magnitude",
+            ),
+        ),
         "2AS-1": (
             (
                 "equation", "part_whole", "number_line", "base_ten", "ten_frame",
@@ -677,6 +691,12 @@ def _candidate_irs(
         else:
             yield from _base_candidate_irs(criterion)
         return
+    if dataset_recipe == V11_STAGE8_POWERS_DATASET_RECIPE:
+        if criterion == "KS3-POWERS":
+            yield from stage8_powers_candidate_irs()
+        else:
+            yield from _base_candidate_irs(criterion)
+        return
     if dataset_recipe in {V10_DATASET_RECIPE, V11_DATASET_RECIPE}:
         # V10 retains the V5 mathematical domains.  Its difference is the
         # versioned multiplication procedure emitted below, not a change to
@@ -691,6 +711,9 @@ def _candidate_irs(
 def _uses_pedagogical_variants(criterion: str, dataset_recipe: str | None) -> bool:
     return dataset_recipe == V6_DATASET_RECIPE or (
         dataset_recipe == V9_DATASET_RECIPE and criterion in V9_VARIANT_CRITERIA
+    ) or (
+        dataset_recipe == V11_STAGE8_POWERS_DATASET_RECIPE
+        and criterion == "KS3-POWERS"
     )
 
 
@@ -764,6 +787,10 @@ def solve_math_ir(
     if procedure_schema not in PROCEDURE_SCHEMAS:
         raise ValueError(f"unsupported procedure schema: {procedure_schema}")
     op = math_ir["op"]
+    if dataset_recipe == V11_STAGE8_POWERS_DATASET_RECIPE:
+        stage8 = solve_stage8_powers_procedure(math_ir, criterion=criterion)
+        if stage8 is not None:
+            return stage8
     if dataset_recipe in {V11_DATASET_RECIPE, V11_STAGE7_POWERS_DATASET_RECIPE}:
         v11 = solve_v11_procedure(math_ir, criterion=criterion)
         if v11 is not None:

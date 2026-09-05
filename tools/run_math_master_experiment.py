@@ -11,6 +11,9 @@ from cftn_text.math_curriculum_data import audit_dataset, prepare_dataset
 from cftn_text.math_curriculum_v11_stage7_powers_generator import (
     V11_STAGE7_POWERS_DATASET_RECIPE,
 )
+from cftn_text.math_curriculum_v11_stage8_powers_generator import (
+    V11_STAGE8_POWERS_DATASET_RECIPE,
+)
 from cftn_text.training import train_math_tower
 
 
@@ -363,6 +366,7 @@ def build_v11_procedural_contract(contract: dict, manifest: dict) -> dict:
     if manifest.get("config", {}).get("dataset_recipe") not in {
         "canonical_v11_ks2_procedures_v1",
         V11_STAGE7_POWERS_DATASET_RECIPE,
+        V11_STAGE8_POWERS_DATASET_RECIPE,
     }:
         raise ValueError("V11 contract requires the sealed V11 procedural dataset")
     return build_v10_multiplication_contract(contract, manifest)
