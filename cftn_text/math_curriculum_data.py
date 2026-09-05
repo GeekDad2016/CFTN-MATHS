@@ -25,6 +25,10 @@ from .math_curriculum_v11_stage8_powers_generator import (
     powers_candidate_irs as stage8_powers_candidate_irs,
     solve_stage8_powers_procedure,
 )
+from .math_curriculum_v11_stage8_powers_generator_v2 import (
+    V11_STAGE8_POWERS_V2_DATASET_RECIPE,
+    powers_candidate_irs as stage8_v2_powers_candidate_irs,
+)
 from .v2_data import make_v2_record, validate_v2_record
 
 
@@ -697,6 +701,12 @@ def _candidate_irs(
         else:
             yield from _base_candidate_irs(criterion)
         return
+    if dataset_recipe == V11_STAGE8_POWERS_V2_DATASET_RECIPE:
+        if criterion == "KS3-POWERS":
+            yield from stage8_v2_powers_candidate_irs()
+        else:
+            yield from _base_candidate_irs(criterion)
+        return
     if dataset_recipe in {V10_DATASET_RECIPE, V11_DATASET_RECIPE}:
         # V10 retains the V5 mathematical domains.  Its difference is the
         # versioned multiplication procedure emitted below, not a change to
@@ -713,6 +723,9 @@ def _uses_pedagogical_variants(criterion: str, dataset_recipe: str | None) -> bo
         dataset_recipe == V9_DATASET_RECIPE and criterion in V9_VARIANT_CRITERIA
     ) or (
         dataset_recipe == V11_STAGE8_POWERS_DATASET_RECIPE
+        and criterion == "KS3-POWERS"
+    ) or (
+        dataset_recipe == V11_STAGE8_POWERS_V2_DATASET_RECIPE
         and criterion == "KS3-POWERS"
     )
 
@@ -787,7 +800,10 @@ def solve_math_ir(
     if procedure_schema not in PROCEDURE_SCHEMAS:
         raise ValueError(f"unsupported procedure schema: {procedure_schema}")
     op = math_ir["op"]
-    if dataset_recipe == V11_STAGE8_POWERS_DATASET_RECIPE:
+    if dataset_recipe in {
+        V11_STAGE8_POWERS_DATASET_RECIPE,
+        V11_STAGE8_POWERS_V2_DATASET_RECIPE,
+    }:
         stage8 = solve_stage8_powers_procedure(math_ir, criterion=criterion)
         if stage8 is not None:
             return stage8
